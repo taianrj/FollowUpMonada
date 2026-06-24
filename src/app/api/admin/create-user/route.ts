@@ -109,10 +109,13 @@ export async function POST(request: Request) {
       }
     }
 
-    const actionLink = linkData?.properties?.action_link;
-    if (!actionLink) {
-      return NextResponse.json({ error: 'Não foi possível obter o link de acesso.' }, { status: 500 });
+    const tokenHash = linkData?.properties?.hashed_token;
+    const verificationType = linkData?.properties?.verification_type || (isNewUser ? 'invite' : 'recovery');
+    if (!tokenHash) {
+      return NextResponse.json({ error: 'Não foi possível obter o token de acesso.' }, { status: 500 });
     }
+
+    const appActionLink = `${origin}/login?mode=reset&token_hash=${tokenHash}&type=${verificationType}`;
 
     // 5. Adiciona na lista de colaboradores se for um novo usuário e não estiver cadastrado
     if (isNewUser) {
@@ -135,7 +138,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ 
       success: true, 
-      link: actionLink, 
+      link: appActionLink, 
       isNewUser, 
       user: linkData.user 
     });

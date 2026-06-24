@@ -23,21 +23,46 @@ export default function LoginPage() {
     const searchParams = new URLSearchParams(window.location.search);
     let subscription: any = null;
 
+    const tokenHash = searchParams.get('token_hash');
+    const verificationType = searchParams.get('type') || 'recovery';
+
     if (searchParams.get('mode') === 'reset') {
       setMode('reset');
       
-      // Busca o e-mail do usuário ativo temporariamente para preencher o formulário de redefinição
-      const fetchResetUser = async () => {
-        try {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (user) {
-            setEmail(user.email || '');
+      const processAuth = async () => {
+        if (tokenHash) {
+          setLoading(true);
+          try {
+            const { data, error } = await supabase.auth.verifyOtp({
+              token_hash: tokenHash,
+              type: verificationType as any
+            });
+            if (error) {
+              console.error('Erro verifyOtp:', error);
+              setError('O link de acesso/recuperação é inválido ou já expirou. Por favor, solicite outro ao administrador.');
+            } else if (data?.user) {
+              setEmail(data.user.email || '');
+            }
+          } catch (err: any) {
+            console.error('Erro ao verificar OTP:', err);
+            setError('Erro ao validar link de acesso.');
+          } finally {
+            setLoading(false);
           }
-        } catch (e) {
-          console.error('Erro ao obter usuário para redefinição:', e);
+        } else {
+          // Caso padrão (sem token_hash na URL)
+          try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+              setEmail(user.email || '');
+            }
+          } catch (e) {
+            console.error('Erro ao obter usuário para redefinição:', e);
+          }
         }
       };
-      fetchResetUser();
+
+      processAuth();
 
       // Escuta mudanças de autenticação para preencher o e-mail assim que o hash for processado
       const { data } = supabase.auth.onAuthStateChange((event, session) => {

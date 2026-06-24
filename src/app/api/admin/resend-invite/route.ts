@@ -91,14 +91,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Erro ao gerar link de ${type}: ` + linkError.message }, { status: 500 });
     }
 
-    const actionLink = linkData?.properties?.action_link;
-    if (!actionLink) {
-      return NextResponse.json({ error: 'Não foi possível obter o link de acesso.' }, { status: 500 });
+    const tokenHash = linkData?.properties?.hashed_token;
+    const verificationType = linkData?.properties?.verification_type || type;
+    if (!tokenHash) {
+      return NextResponse.json({ error: 'Não foi possível obter o token de acesso.' }, { status: 500 });
     }
+
+    const appActionLink = `${origin}/login?mode=reset&token_hash=${tokenHash}&type=${verificationType}`;
 
     return NextResponse.json({ 
       success: true, 
-      link: actionLink, 
+      link: appActionLink, 
       isNewUser: !isConfirmed 
     });
   } catch (error: any) {
