@@ -50,10 +50,32 @@ export default function LoginPage() {
     
     let errorParam = searchParams.get('error');
     
-    // Captura erros no fragmento de hash da URL (padrão de redirecionamento do Supabase Auth para links expirados)
+    // Captura erros ou decodifica o e-mail do token se presente no fragmento de hash da URL
     if (typeof window !== 'undefined' && window.location.hash) {
       try {
         const hashParams = new URLSearchParams(window.location.hash.substring(1));
+        
+        // Decodificação direta do JWT do token no hash para preenchimento síncrono imediato do e-mail
+        const accessToken = hashParams.get('access_token');
+        if (accessToken) {
+          try {
+            const base64Url = accessToken.split('.')[1];
+            const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+            const jsonPayload = decodeURIComponent(
+              window.atob(base64)
+                .split('')
+                .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+                .join('')
+            );
+            const payload = JSON.parse(jsonPayload);
+            if (payload && payload.email) {
+              setEmail(payload.email);
+            }
+          } catch (jwtErr) {
+            console.error('Erro ao decodificar JWT do hash:', jwtErr);
+          }
+        }
+
         const errorCode = hashParams.get('error_code');
         const errorDesc = hashParams.get('error_description');
         
