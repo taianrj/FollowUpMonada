@@ -55,7 +55,7 @@ export async function POST(request: Request) {
 
     // 5. Configura redirecionamento para definição de senha
     const origin = new URL(request.url).origin;
-    const redirectTo = `${origin}/auth/callback?next=${encodeURIComponent('/login?mode=reset')}`;
+    const redirectTo = `${origin}/login?mode=reset`;
 
     const type = isConfirmed ? 'recovery' : 'invite';
     let linkData: any = null;

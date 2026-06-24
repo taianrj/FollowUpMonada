@@ -43,7 +43,7 @@ export async function POST(request: Request) {
 
     // 4. Configura redirecionamento para definição de senha no primeiro acesso
     const origin = new URL(request.url).origin;
-    const redirectTo = `${origin}/auth/callback?next=${encodeURIComponent('/login?mode=reset')}`;
+    const redirectTo = `${origin}/login?mode=reset`;
 
     // Verificar se existe no profiles primeiro
     const { data: existingProfile } = await supabaseAdmin
