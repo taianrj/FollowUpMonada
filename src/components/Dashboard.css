@@ -1479,6 +1479,34 @@ textarea.formInput {
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
   }
+
+  /* Ajustes da Tela de Cadastros Gerais no Mobile */
+  .mainContent {
+    padding: 1.25rem;
+  }
+
+  .cadastrosGrid {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+
+  .tabsContainer {
+    overflow-x: auto;
+    white-space: nowrap;
+    padding-bottom: 0.75rem;
+    -webkit-overflow-scrolling: touch;
+    gap: 0.25rem;
+  }
+
+  .tabButton {
+    flex-shrink: 0;
+    padding: 0.6rem 1rem;
+    font-size: 0.875rem;
+  }
+
+  .cadastrosFormCard {
+    padding: 1.25rem;
+  }
 }
 
 /* Estilos de Abas de Modais (Auditoria e Edição) */
