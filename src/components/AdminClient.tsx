@@ -111,6 +111,7 @@ export default function AdminClient({ profiles: initialProfiles, currentProfile 
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
+          userId: profile.id,
           email: profile.email,
           name: profile.name || '',
           role: profile.role
