@@ -1,0 +1,290 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+
+:root {
+  color-scheme: dark;
+  /* Color Palette - Slate Premium Theme */
+  --bg-primary: #090d16;
+  --bg-secondary: #111827;
+  --bg-card: #1f2937;
+  --bg-card-hover: #374151;
+  --border-color: #2e3b4e;
+  --border-focus: #4f46e5;
+  
+  --text-primary: #f9fafb;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  
+  --accent-blue: #2563eb;
+  --accent-blue-hover: #1d4ed8;
+  --accent-purple: #6366f1;
+  --accent-purple-hover: #4f46e5;
+  --accent-glow: rgba(99, 102, 241, 0.15);
+  
+  /* Status Colors */
+  --status-aguardando-cliente: #f59e0b; /* Amber */
+  --status-aguardando-texto: #f97316; /* Orange */
+  --status-ajuste: #06b6d4; /* Cyan */
+  --status-aguardando-aprovacao: #8b5cf6; /* Violet */
+  --status-resolvido: #10b981; /* Emerald */
+  
+  --status-aguardando-cliente-bg: rgba(245, 158, 11, 0.1);
+  --status-aguardando-texto-bg: rgba(249, 115, 22, 0.1);
+  --status-ajuste-bg: rgba(6, 182, 212, 0.1);
+  --status-aguardando-aprovacao-bg: rgba(139, 92, 246, 0.1);
+  --status-resolvido-bg: rgba(16, 185, 129, 0.1);
+
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --shadow-glow: 0 0 20px 0 rgba(99, 102, 241, 0.25);
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+  font-family: var(--font-sans);
+}
+
+html, body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Utilities */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+/* Notificações Toasts */
+.toastContainer {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  z-index: 9999;
+  max-width: 380px;
+  width: calc(100% - 48px);
+}
+
+.toastItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-md);
+  background-color: rgba(17, 24, 39, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-lg), var(--shadow-glow);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.4;
+  animation: toastSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  position: relative;
+  overflow: hidden;
+}
+
+.toastIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.toastContent {
+  flex: 1;
+  padding-right: 8px;
+  word-break: break-word;
+}
+
+.toastCloseBtn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.25rem;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color var(--transition-fast);
+}
+
+.toastCloseBtn:hover {
+  color: var(--text-primary);
+}
+
+/* Tipos de Toasts */
+.toast-success {
+  border-left: 4px solid var(--status-resolvido);
+}
+.toast-success .toastIcon {
+  color: var(--status-resolvido);
+}
+
+.toast-error {
+  border-left: 4px solid #ef4444;
+}
+.toast-error .toastIcon {
+  color: #ef4444;
+}
+
+.toast-warning {
+  border-left: 4px solid var(--status-aguardando-cliente);
+}
+.toast-warning .toastIcon {
+  color: var(--status-aguardando-cliente);
+}
+
+.toast-info {
+  border-left: 4px solid var(--status-ajuste);
+}
+.toast-info .toastIcon {
+  color: var(--status-ajuste);
+}
+
+/* Animação dos Toasts */
+@keyframes toastSlideIn {
+  from {
+    transform: translateY(24px) scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* Modal de Confirmação Customizado */
+.confirmOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(9, 13, 22, 0.8);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.confirmModal {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.75rem;
+  max-width: 440px;
+  width: calc(100% - 32px);
+  box-shadow: var(--shadow-lg), var(--shadow-glow);
+  animation: scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.confirmHeader {
+  display: flex;
+  align-items: center;
+}
+
+.confirmTitle {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+}
+
+.confirmBody {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.confirmFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.btnConfirmCancel {
+  min-width: 90px;
+  justify-content: center;
+}
+
+.btnConfirmSubmit {
+  min-width: 100px;
+  justify-content: center;
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%) !important;
+}
+
+.btnConfirmSubmit:hover {
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2) !important;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Fallback de estilo de dropdown nativo */
+select option {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+}
+select option:disabled {
+  color: var(--text-muted) !important;
+}
