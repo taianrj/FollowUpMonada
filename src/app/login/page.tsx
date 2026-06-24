@@ -184,8 +184,8 @@ export default function LoginPage() {
 
       setSuccessMsg('Senha redefinida com sucesso! Redirecionando...');
       setTimeout(() => {
-        router.push('/');
-        router.refresh();
+        // Redireciona limpando fisicamente todos os tokens e parâmetros da URL
+        window.location.href = '/';
       }, 1500);
     } catch (err: any) {
       console.error(err);
