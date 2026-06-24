@@ -57,7 +57,10 @@ export default function LoginPage() {
         
         // Decodificação direta do JWT do token no hash para preenchimento síncrono imediato do e-mail
         const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+
         if (accessToken) {
+          // 1. Decodifica o e-mail localmente para preenchimento rápido na UI
           try {
             const base64Url = accessToken.split('.')[1];
             const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
@@ -74,6 +77,18 @@ export default function LoginPage() {
           } catch (jwtErr) {
             console.error('Erro ao decodificar JWT do hash:', jwtErr);
           }
+
+          // 2. Define a sessão manualmente no cliente do Supabase para garantir que updateUser funcione sem erros de "Auth session missing"
+          supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken || ''
+          }).then(({ data, error }) => {
+            if (error) {
+              console.error('Erro ao definir sessão manualmente no cliente:', error.message);
+            } else if (data?.user) {
+              setEmail(data.user.email || '');
+            }
+          });
         }
 
         const errorCode = hashParams.get('error_code');
