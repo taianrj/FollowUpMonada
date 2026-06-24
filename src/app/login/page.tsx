@@ -24,8 +24,30 @@ export default function LoginPage() {
     if (searchParams.get('mode') === 'reset') {
       setMode('reset');
     }
-    const errorParam = searchParams.get('error');
+    
+    let errorParam = searchParams.get('error');
+    
+    // Captura erros no fragmento de hash da URL (padrão de redirecionamento do Supabase Auth para links expirados)
+    if (typeof window !== 'undefined' && window.location.hash) {
+      try {
+        const hashParams = new URLSearchParams(window.location.hash.substring(1));
+        const errorCode = hashParams.get('error_code');
+        const errorDesc = hashParams.get('error_description');
+        
+        if (errorCode === 'otp_expired' || (errorDesc && errorDesc.toLowerCase().includes('expired'))) {
+          errorParam = 'O link de acesso/recuperação enviado por e-mail expirou ou já foi utilizado. Por favor, tente enviar novamente.';
+        } else if (hashParams.get('error')) {
+          errorParam = errorDesc || hashParams.get('error');
+        }
+      } catch (e) {
+        console.error('Erro ao ler fragmento de hash:', e);
+      }
+    }
+    
     if (errorParam) {
+      if (errorParam === 'Falha na autenticação') {
+        errorParam = 'Falha na autenticação. O link de e-mail pode ter expirado, ter sido consumido pelo seu servidor de e-mail (antivírus) ou já foi utilizado. Por favor, solicite outro.';
+      }
       setError(errorParam);
     }
   }, []);
