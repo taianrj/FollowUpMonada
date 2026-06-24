@@ -23,6 +23,19 @@ export default function LoginPage() {
     const searchParams = new URLSearchParams(window.location.search);
     if (searchParams.get('mode') === 'reset') {
       setMode('reset');
+      
+      // Busca o e-mail do usuário ativo temporariamente para preencher o formulário de redefinição
+      const fetchResetUser = async () => {
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            setEmail(user.email || '');
+          }
+        } catch (e) {
+          console.error('Erro ao obter usuário para redefinição:', e);
+        }
+      };
+      fetchResetUser();
     }
     
     let errorParam = searchParams.get('error');
@@ -170,6 +183,20 @@ export default function LoginPage() {
     if (mode === 'reset') {
       return (
         <form onSubmit={handleReset}>
+          <div className="formGroup">
+            <label className="formLabel" htmlFor="email-reset">E-mail de Acesso</label>
+            <input
+              className="formInput"
+              type="email"
+              id="email-reset"
+              name="email"
+              autoComplete="username"
+              value={email}
+              disabled
+              required
+            />
+          </div>
+
           <div className="formGroup">
             <label className="formLabel" htmlFor="password">Nova Senha</label>
             <input
