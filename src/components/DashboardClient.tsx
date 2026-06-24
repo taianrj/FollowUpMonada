@@ -145,6 +145,11 @@ export default function DashboardClient({
 
   // Arquivar / Desarquivar Tarefa
   const handleArchiveTask = async (taskId: string, archive: boolean) => {
+    if (profile?.role !== 'admin') {
+      showToast('Apenas administradores podem arquivar ou desarquivar demandas.', 'warning');
+      return;
+    }
+
     const actionText = archive ? 'arquivar' : 'desarquivar';
     const titleText = archive ? 'Arquivar Demanda' : 'Desarquivar Demanda';
     
@@ -261,6 +266,11 @@ export default function DashboardClient({
   // Salvar Demanda (Criar ou Editar)
   const handleSaveManualTask = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (profile?.role !== 'admin') {
+      showToast('Apenas administradores podem criar ou editar demandas.', 'warning');
+      return;
+    }
+
     if (!manualClientName || !manualDescription.trim()) return;
 
     setManualLoading(true);
@@ -368,6 +378,11 @@ export default function DashboardClient({
 
   // Processar texto com IA do Gemini
   const handleProcessAiText = async () => {
+    if (profile?.role !== 'admin') {
+      showToast('Apenas administradores podem processar textos com IA.', 'warning');
+      return;
+    }
+
     if (!aiText.trim()) return;
 
     setAiLoading(true);
@@ -458,24 +473,26 @@ export default function DashboardClient({
               {showArchived ? 'Demandas Arquivadas' : 'Painel de Demandas'}
             </h1>
           </div>
-          <div className="headerActions">
-            <button className="btn btnAi" onClick={() => { setAiError(null); setIsAiModalOpen(true); }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-                <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-                <line x1="12" y1="22.08" x2="12" y2="12"></line>
-              </svg>
-              Processar com IA
-            </button>
-            
-            <button className="btn btnPrimary" onClick={openCreateModal}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-              Nova Demanda
-            </button>
-          </div>
+          {profile?.role === 'admin' && (
+            <div className="headerActions">
+              <button className="btn btnAi" onClick={() => { setAiError(null); setIsAiModalOpen(true); }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                  <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                  <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                </svg>
+                Processar com IA
+              </button>
+              
+              <button className="btn btnPrimary" onClick={openCreateModal}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                Nova Demanda
+              </button>
+            </div>
+          )}
         </header>
 
         {/* Resumo de Estatísticas Sutis - Barra Horizontal Compacta */}
@@ -653,52 +670,63 @@ export default function DashboardClient({
                         </td>
                         <td style={{ textAlign: 'right', verticalAlign: 'middle' }}>
                           <div className="actionsCell">
-                            {/* Botão de Edição Completa */}
+                            {/* Botão de Edição Completa / Visualização */}
                             <button 
                               className="iconBtn" 
                               onClick={() => openEditModal(task)}
-                              title="Editar Demanda"
+                              title={profile?.role === 'admin' ? "Editar Demanda" : "Visualizar Demanda"}
                             >
-                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"></path>
-                              </svg>
-                            </button>
-
-                            {/* Botão de Histórico Direto */}
-                            <button 
-                              className="iconBtn" 
-                              onClick={() => openHistoryModal(task)}
-                              title="Visualizar Histórico de Alterações"
-                            >
-                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                                <polyline points="3 3 3 8 8 8"></polyline>
-                                <line x1="12" y1="7" x2="12" y2="12"></line>
-                                <line x1="12" y1="12" x2="16" y2="14"></line>
-                              </svg>
-                            </button>
-
-                            {/* Botão de Arquivamento */}
-                            <button 
-                              className="iconBtn" 
-                              onClick={() => handleArchiveTask(task.id, !task.is_archived)}
-                              title={task.is_archived ? "Desarquivar Demanda" : "Arquivar Demanda"}
-                            >
-                              {task.is_archived ? (
-                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <polyline points="21 8 21 21 3 21 3 8"></polyline>
-                                  <rect x="1" y="3" width="22" height="5"></rect>
-                                  <polyline points="10 12 12 14 14 12"></polyline>
+                              {profile?.role === 'admin' ? (
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                  <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"></path>
                                 </svg>
                               ) : (
-                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <polyline points="21 8 21 21 3 21 3 8"></polyline>
-                                  <rect x="1" y="3" width="22" height="5"></rect>
-                                  <line x1="10" y1="12" x2="14" y2="12"></line>
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                  <circle cx="12" cy="12" r="3"></circle>
                                 </svg>
                               )}
                             </button>
+
+                            {/* Botão de Histórico Direto (Apenas Admin) */}
+                            {profile?.role === 'admin' && (
+                              <button 
+                                className="iconBtn" 
+                                onClick={() => openHistoryModal(task)}
+                                title="Visualizar Histórico de Alterações"
+                              >
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                                  <polyline points="3 3 3 8 8 8"></polyline>
+                                  <line x1="12" y1="7" x2="12" y2="12"></line>
+                                  <line x1="12" y1="12" x2="16" y2="14"></line>
+                                </svg>
+                              </button>
+                            )}
+
+                            {/* Botão de Arquivamento (Apenas Admin) */}
+                            {profile?.role === 'admin' && (
+                              <button 
+                                className="iconBtn" 
+                                onClick={() => handleArchiveTask(task.id, !task.is_archived)}
+                                title={task.is_archived ? "Desarquivar Demanda" : "Arquivar Demanda"}
+                              >
+                                {task.is_archived ? (
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <polyline points="21 8 21 21 3 21 3 8"></polyline>
+                                    <rect x="1" y="3" width="22" height="5"></rect>
+                                    <polyline points="10 12 12 14 14 12"></polyline>
+                                  </svg>
+                                ) : (
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <polyline points="21 8 21 21 3 21 3 8"></polyline>
+                                    <rect x="1" y="3" width="22" height="5"></rect>
+                                    <line x1="10" y1="12" x2="14" y2="12"></line>
+                                  </svg>
+                                )}
+                              </button>
+                            )}
 
                             {/* Botão de Exclusão (Admin) */}
                             {profile?.role === 'admin' && (
@@ -780,52 +808,63 @@ export default function DashboardClient({
                       </div>
 
                       <div className="mobileCardActions">
-                        {/* Editar */}
+                        {/* Editar / Detalhes */}
                         <button 
                           className="iconBtn" 
                           onClick={() => openEditModal(task)}
-                          title="Editar Demanda"
+                          title={profile?.role === 'admin' ? "Editar Demanda" : "Visualizar Demanda"}
                         >
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                            <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"></path>
-                          </svg>
-                        </button>
-
-                        {/* Histórico */}
-                        <button 
-                          className="iconBtn" 
-                          onClick={() => openHistoryModal(task)}
-                          title="Visualizar Histórico de Alterações"
-                        >
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                            <polyline points="3 3 3 8 8 8"></polyline>
-                            <line x1="12" y1="7" x2="12" y2="12"></line>
-                            <line x1="12" y1="12" x2="16" y2="14"></line>
-                          </svg>
-                        </button>
-
-                        {/* Arquivar / Desarquivar */}
-                        <button 
-                          className="iconBtn" 
-                          onClick={() => handleArchiveTask(task.id, !task.is_archived)}
-                          title={task.is_archived ? "Desarquivar Demanda" : "Arquivar Demanda"}
-                        >
-                          {task.is_archived ? (
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <polyline points="21 8 21 21 3 21 3 8"></polyline>
-                              <rect x="1" y="3" width="22" height="5"></rect>
-                              <polyline points="10 12 12 14 14 12"></polyline>
+                          {profile?.role === 'admin' ? (
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                              <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"></path>
                             </svg>
                           ) : (
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <polyline points="21 8 21 21 3 21 3 8"></polyline>
-                              <rect x="1" y="3" width="22" height="5"></rect>
-                              <line x1="10" y1="12" x2="14" y2="12"></line>
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                              <circle cx="12" cy="12" r="3"></circle>
                             </svg>
                           )}
                         </button>
+
+                        {/* Histórico (Apenas Admin) */}
+                        {profile?.role === 'admin' && (
+                          <button 
+                            className="iconBtn" 
+                            onClick={() => openHistoryModal(task)}
+                            title="Visualizar Histórico de Alterações"
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                              <polyline points="3 3 3 8 8 8"></polyline>
+                              <line x1="12" y1="7" x2="12" y2="12"></line>
+                              <line x1="12" y1="12" x2="16" y2="14"></line>
+                            </svg>
+                          </button>
+                        )}
+
+                        {/* Arquivar / Desarquivar (Apenas Admin) */}
+                        {profile?.role === 'admin' && (
+                          <button 
+                            className="iconBtn" 
+                            onClick={() => handleArchiveTask(task.id, !task.is_archived)}
+                            title={task.is_archived ? "Desarquivar Demanda" : "Arquivar Demanda"}
+                          >
+                            {task.is_archived ? (
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <polyline points="21 8 21 21 3 21 3 8"></polyline>
+                                <rect x="1" y="3" width="22" height="5"></rect>
+                                <polyline points="10 12 12 14 14 12"></polyline>
+                              </svg>
+                            ) : (
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <polyline points="21 8 21 21 3 21 3 8"></polyline>
+                                <rect x="1" y="3" width="22" height="5"></rect>
+                                <line x1="10" y1="12" x2="14" y2="12"></line>
+                              </svg>
+                            )}
+                          </button>
+                        )}
 
                         {/* Deletar */}
                         {profile?.role === 'admin' && (
@@ -870,33 +909,37 @@ export default function DashboardClient({
                             {task.clients?.name || 'Cliente'}
                           </span>
                           <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
-                            <button 
-                              className="iconBtn"
-                              style={{ padding: '0.2rem' }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openHistoryModal(task);
-                              }}
-                              title="Visualizar Histórico de Alterações"
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                                <polyline points="3 3 3 8 8 8"></polyline>
-                                <line x1="12" y1="7" x2="12" y2="12"></line>
-                                <line x1="12" y1="12" x2="16" y2="14"></line>
-                              </svg>
-                            </button>
-                            <button 
-                              className="iconBtn"
-                              style={{ padding: '0.2rem', fontSize: '1.1rem', lineHeight: '1' }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleArchiveTask(task.id, !task.is_archived);
-                              }}
-                              title={task.is_archived ? "Desarquivar" : "Arquivar"}
-                            >
-                              ×
-                            </button>
+                            {profile?.role === 'admin' && (
+                              <button 
+                                className="iconBtn"
+                                style={{ padding: '0.2rem' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openHistoryModal(task);
+                                }}
+                                title="Visualizar Histórico de Alterações"
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                                  <polyline points="3 3 3 8 8 8"></polyline>
+                                  <line x1="12" y1="7" x2="12" y2="12"></line>
+                                  <line x1="12" y1="12" x2="16" y2="14"></line>
+                                </svg>
+                              </button>
+                            )}
+                            {profile?.role === 'admin' && (
+                              <button 
+                                className="iconBtn"
+                                style={{ padding: '0.2rem', fontSize: '1.1rem', lineHeight: '1' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleArchiveTask(task.id, !task.is_archived);
+                                }}
+                                title={task.is_archived ? "Desarquivar" : "Arquivar"}
+                              >
+                                ×
+                              </button>
+                            )}
                           </div>
                         </div>
 
@@ -1009,13 +1052,13 @@ export default function DashboardClient({
             <div className="modalContent">
               <div className="modalHeader">
                 <h2 className="modalTitle">
-                  {editingTask ? 'Editar Demanda' : 'Cadastrar Nova Demanda'}
+                  {editingTask ? (profile?.role === 'admin' ? 'Editar Demanda' : 'Detalhes da Demanda') : 'Cadastrar Nova Demanda'}
                 </h2>
                 <button className="modalCloseBtn" onClick={() => setIsManualModalOpen(false)}>×</button>
               </div>
 
-              {/* Abas do Modal (Visível apenas em modo Edição) */}
-              {editingTask && (
+              {/* Abas do Modal (Visível apenas em modo Edição para Administradores) */}
+              {editingTask && profile?.role === 'admin' && (
                 <div className="modalTabs">
                   <button
                     type="button"
@@ -1045,6 +1088,7 @@ export default function DashboardClient({
                         className="formInput"
                         value={manualClientName}
                         onChange={(e) => setManualClientName(e.target.value)}
+                        disabled={profile?.role !== 'admin'}
                         required
                       >
                         <option value="">-- Escolha um Cliente --</option>
@@ -1062,6 +1106,7 @@ export default function DashboardClient({
                         placeholder="O que precisa ser feito?"
                         value={manualDescription}
                         onChange={(e) => setManualDescription(e.target.value)}
+                        disabled={profile?.role !== 'admin'}
                         required
                       />
                     </div>
@@ -1071,36 +1116,41 @@ export default function DashboardClient({
                       <label className="formLabel">Responsáveis Encarregados</label>
                       <div 
                         className="multiSelectContainer formInput"
-                        onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                        onClick={() => profile?.role === 'admin' && setIsDropdownOpen(!isDropdownOpen)}
+                        style={{ cursor: profile?.role === 'admin' ? 'pointer' : 'default' }}
                       >
                         {selectedCollaborators.map((r, i) => (
-                          <span key={i} className="multiSelectTag">
+                          <span key={i} className="multiSelectTag" style={{ paddingRight: profile?.role === 'admin' ? '0.4rem' : '0.6rem' }}>
                             {r}
-                            <button
-                              type="button"
-                              className="multiSelectRemoveBtn"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedCollaborators(selectedCollaborators.filter(item => item !== r));
-                              }}
-                              title="Remover"
-                            >
-                              ×
-                            </button>
+                            {profile?.role === 'admin' && (
+                              <button
+                                type="button"
+                                className="multiSelectRemoveBtn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedCollaborators(selectedCollaborators.filter(item => item !== r));
+                                }}
+                                title="Remover"
+                              >
+                                ×
+                              </button>
+                            )}
                           </span>
                         ))}
                         
                         {selectedCollaborators.length === 0 && (
                           <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', userSelect: 'none' }}>
-                            Clique para selecionar...
+                            {profile?.role === 'admin' ? 'Clique para selecionar...' : 'Sem responsáveis definidos'}
                           </span>
                         )}
 
-                        <span className="multiSelectTrigger">
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-secondary)' }}>
-                            <polyline points="6 9 12 15 18 9"></polyline>
-                          </svg>
-                        </span>
+                        {profile?.role === 'admin' && (
+                          <span className="multiSelectTrigger">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-secondary)' }}>
+                              <polyline points="6 9 12 15 18 9"></polyline>
+                            </svg>
+                          </span>
+                        )}
                       </div>
 
                       {/* Menu Dropdown Customizado */}
@@ -1141,6 +1191,7 @@ export default function DashboardClient({
                         className="formInput"
                         value={manualStatus}
                         onChange={(e) => setManualStatus(e.target.value)}
+                        disabled={profile?.role !== 'admin'}
                         required
                       >
                         {statuses.map(s => (
@@ -1158,15 +1209,20 @@ export default function DashboardClient({
                         placeholder="Contexto adicional ou notas"
                         value={manualObservations}
                         onChange={(e) => setManualObservations(e.target.value)}
+                        disabled={profile?.role !== 'admin'}
                       />
                     </div>
                   </div>
 
                   <div className="modalFooter">
-                    <button className="btn btnSecondary" type="button" onClick={() => setIsManualModalOpen(false)}>Cancelar</button>
-                    <button className="btn btnPrimary" type="submit" disabled={manualLoading}>
-                      {manualLoading ? 'Salvando...' : (editingTask ? 'Salvar Alterações' : 'Criar Demanda')}
+                    <button className="btn btnSecondary" type="button" onClick={() => setIsManualModalOpen(false)}>
+                      {profile?.role === 'admin' ? 'Cancelar' : 'Fechar'}
                     </button>
+                    {profile?.role === 'admin' && (
+                      <button className="btn btnPrimary" type="submit" disabled={manualLoading}>
+                        {manualLoading ? 'Salvando...' : (editingTask ? 'Salvar Alterações' : 'Criar Demanda')}
+                      </button>
+                    )}
                   </div>
                 </form>
               ) : (

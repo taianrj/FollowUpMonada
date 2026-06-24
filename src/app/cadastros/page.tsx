@@ -25,6 +25,11 @@ export default async function CadastrosPage() {
 
   const profile = profileData as Profile | null;
 
+  // Bloqueia acesso de colaboradores
+  if (!profile || profile.role !== 'admin') {
+    redirect('/');
+  }
+
   // 3. Busca todos os clientes
   const { data: clients } = await supabase
     .from('clients')

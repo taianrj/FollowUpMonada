@@ -52,16 +52,18 @@ export default function Sidebar({ profile, isOpen, onClose }: SidebarProps) {
             Painel de Demandas
           </button>
           
-          <button 
-            className={`navLink ${pathname === '/cadastros' ? 'navLinkActive' : ''}`}
-            onClick={() => router.push('/cadastros')}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 20h9"></path>
-              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
-            </svg>
-            Cadastros Gerais
-          </button>
+          {isAdmin && (
+            <button 
+              className={`navLink ${pathname === '/cadastros' ? 'navLinkActive' : ''}`}
+              onClick={() => router.push('/cadastros')}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+              </svg>
+              Cadastros Gerais
+            </button>
+          )}
           
           {isAdmin && (
             <button 
@@ -82,11 +84,16 @@ export default function Sidebar({ profile, isOpen, onClose }: SidebarProps) {
 
       <div className="sidebarUser">
         <div className="userInfo">
-          <span className="userEmail" title={profile?.email || ''}>
-            {profile?.email || 'carregando...'}
+          <span className="userEmail" title={profile?.email || ''} style={{ fontWeight: 600, color: 'var(--text-primary)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {profile?.name || profile?.email || 'carregando...'}
           </span>
+          {profile?.name && (
+            <span className="userEmailSub" title={profile.email} style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '0.1rem' }}>
+              {profile.email}
+            </span>
+          )}
           {profile && (
-            <span className={`roleBadge ${profile.role === 'admin' ? 'roleAdmin' : 'roleCollaborator'}`}>
+            <span className={`roleBadge ${profile.role === 'admin' ? 'roleAdmin' : 'roleCollaborator'}`} style={{ marginTop: '0.35rem', display: 'inline-block', width: 'fit-content' }}>
               {profile.role === 'admin' ? 'Administrador' : 'Colaborador'}
             </span>
           )}
