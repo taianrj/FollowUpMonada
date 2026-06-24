@@ -21,6 +21,8 @@ export default function LoginPage() {
 
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search);
+    let subscription: any = null;
+
     if (searchParams.get('mode') === 'reset') {
       setMode('reset');
       
@@ -36,6 +38,14 @@ export default function LoginPage() {
         }
       };
       fetchResetUser();
+
+      // Escuta mudanças de autenticação para preencher o e-mail assim que o hash for processado
+      const { data } = supabase.auth.onAuthStateChange((event, session) => {
+        if (session?.user) {
+          setEmail(session.user.email || '');
+        }
+      });
+      subscription = data.subscription;
     }
     
     let errorParam = searchParams.get('error');
@@ -63,6 +73,12 @@ export default function LoginPage() {
       }
       setError(errorParam);
     }
+
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
