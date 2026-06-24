@@ -41,43 +41,104 @@ export async function POST(request: Request) {
       }
     );
 
-    // 4. Envia o convite por e-mail
+    // 4. Configura redirecionamento para definição de senha no primeiro acesso
     const origin = new URL(request.url).origin;
     const redirectTo = `${origin}/auth/callback?next=${encodeURIComponent('/login?mode=reset')}`;
 
-    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
-      email.trim(),
-      {
-        redirectTo,
-        data: {
-          name: name.trim(),
-          role: role
-        }
-      }
-    );
-
-    if (inviteError) {
-      return NextResponse.json({ error: 'Erro ao convidar usuário no Supabase Auth: ' + inviteError.message }, { status: 500 });
-    }
-
-    // 5. Adiciona na lista de colaboradores se não estiver lá
-    const { data: existingCollab } = await supabaseAdmin
-      .from('collaborators')
-      .select('id')
-      .eq('name', name.trim())
+    // Verificar se existe no profiles primeiro
+    const { data: existingProfile } = await supabaseAdmin
+      .from('profiles')
+      .select('id, email')
+      .eq('email', email.trim())
       .maybeSingle();
 
-    if (!existingCollab) {
-      const { error: collabInsertErr } = await supabaseAdmin
-        .from('collaborators')
-        .insert({ name: name.trim() });
-      
-      if (collabInsertErr) {
-        console.error('Erro ao registrar novo colaborador na lista:', collabInsertErr);
+    let linkData: any = null;
+    let isNewUser = true;
+
+    if (existingProfile) {
+      isNewUser = false;
+      const { data: recoveryData, error: recoveryError } = await supabaseAdmin.auth.admin.generateLink({
+        type: 'recovery',
+        email: email.trim(),
+        options: {
+          redirectTo
+        }
+      });
+
+      if (recoveryError) {
+        return NextResponse.json({ error: 'Erro ao gerar link de recuperação para usuário existente: ' + recoveryError.message }, { status: 500 });
+      }
+      linkData = recoveryData;
+    } else {
+      const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.generateLink({
+        type: 'invite',
+        email: email.trim(),
+        options: {
+          redirectTo,
+          data: {
+            name: name.trim(),
+            role: role
+          }
+        }
+      });
+
+      if (inviteError) {
+        // Fallback caso o usuário já esteja cadastrado no Auth do Supabase mas não no profiles
+        if (inviteError.message && (
+          inviteError.message.includes('already been registered') || 
+          inviteError.message.includes('already exists')
+        )) {
+          isNewUser = false;
+          const { data: recoveryData, error: recoveryError } = await supabaseAdmin.auth.admin.generateLink({
+            type: 'recovery',
+            email: email.trim(),
+            options: {
+              redirectTo
+            }
+          });
+
+          if (recoveryError) {
+            return NextResponse.json({ error: 'Erro ao gerar link de recuperação (fallback): ' + recoveryError.message }, { status: 500 });
+          }
+          linkData = recoveryData;
+        } else {
+          return NextResponse.json({ error: 'Erro ao gerar link de convite: ' + inviteError.message }, { status: 500 });
+        }
+      } else {
+        linkData = inviteData;
       }
     }
 
-    return NextResponse.json({ success: true, user: inviteData.user });
+    const actionLink = linkData?.properties?.action_link;
+    if (!actionLink) {
+      return NextResponse.json({ error: 'Não foi possível obter o link de acesso.' }, { status: 500 });
+    }
+
+    // 5. Adiciona na lista de colaboradores se for um novo usuário e não estiver cadastrado
+    if (isNewUser) {
+      const { data: existingCollab } = await supabaseAdmin
+        .from('collaborators')
+        .select('id')
+        .eq('name', name.trim())
+        .maybeSingle();
+
+      if (!existingCollab) {
+        const { error: collabInsertErr } = await supabaseAdmin
+          .from('collaborators')
+          .insert({ name: name.trim() });
+        
+        if (collabInsertErr) {
+          console.error('Erro ao registrar novo colaborador na lista:', collabInsertErr);
+        }
+      }
+    }
+
+    return NextResponse.json({ 
+      success: true, 
+      link: actionLink, 
+      isNewUser, 
+      user: linkData.user 
+    });
   } catch (error: any) {
     console.error('Erro na API de criação de usuário:', error);
     return NextResponse.json({ error: error.message || 'Erro interno do servidor.' }, { status: 500 });

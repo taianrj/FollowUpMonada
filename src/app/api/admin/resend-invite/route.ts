@@ -41,45 +41,66 @@ export async function POST(request: Request) {
       }
     );
 
-    // 4. Se tiver userId, verifica se ele já está confirmado no Auth para evitar reenvio desnecessário
+    // 4. Verifica se o usuário já confirmou sua conta anteriormente no Auth para decidir o tipo de link a gerar
+    let isConfirmed = false;
+    let authUser: any = null;
+
     if (userId) {
-      const { data: { user: authUser }, error: getUserError } = await supabaseAdmin.auth.admin.getUserById(userId);
-      if (!getUserError && authUser) {
-        const isConfirmed = !!authUser.email_confirmed_at || !!authUser.last_sign_in_at;
-        if (isConfirmed) {
-          return NextResponse.json({ 
-            error: 'Este usuário já concluiu o cadastro e confirmou sua conta anteriormente. Caso ele tenha esquecido a senha, oriente-o a usar a opção "Esqueci minha senha" na tela de login.' 
-          }, { status: 400 });
-        }
+      const { data: { user }, error: getUserError } = await supabaseAdmin.auth.admin.getUserById(userId);
+      if (!getUserError && user) {
+        authUser = user;
+        isConfirmed = !!user.email_confirmed_at || !!user.last_sign_in_at;
       }
     }
 
-    // 5. Configura redirecionamento para definição de senha no primeiro acesso
+    // 5. Configura redirecionamento para definição de senha
     const origin = new URL(request.url).origin;
     const redirectTo = `${origin}/auth/callback?next=${encodeURIComponent('/login?mode=reset')}`;
 
-    // 6. Envia o convite por e-mail de novo
-    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
-      email.trim(),
-      {
-        redirectTo,
-        data: {
-          name: (name || '').trim(),
-          role: role || 'collaborator'
-        }
-      }
-    );
+    const type = isConfirmed ? 'recovery' : 'invite';
+    let linkData: any = null;
+    let linkError: any = null;
 
-    if (inviteError) {
-      if (inviteError.message && inviteError.message.includes('already been registered')) {
-        return NextResponse.json({ 
-          error: 'Este usuário já concluiu o cadastro e confirmou sua conta anteriormente. Caso ele tenha esquecido a senha, oriente-o a usar a opção "Esqueci minha senha" na tela de login.' 
-        }, { status: 400 });
-      }
-      return NextResponse.json({ error: 'Erro ao reenviar convite no Supabase Auth: ' + inviteError.message }, { status: 500 });
+    if (type === 'invite') {
+      const { data, error } = await supabaseAdmin.auth.admin.generateLink({
+        type: 'invite',
+        email: email.trim(),
+        options: {
+          redirectTo,
+          data: {
+            name: (name || '').trim(),
+            role: role || 'collaborator'
+          }
+        }
+      });
+      linkData = data;
+      linkError = error;
+    } else {
+      const { data, error } = await supabaseAdmin.auth.admin.generateLink({
+        type: 'recovery',
+        email: email.trim(),
+        options: {
+          redirectTo
+        }
+      });
+      linkData = data;
+      linkError = error;
     }
 
-    return NextResponse.json({ success: true, user: inviteData.user });
+    if (linkError) {
+      return NextResponse.json({ error: `Erro ao gerar link de ${type}: ` + linkError.message }, { status: 500 });
+    }
+
+    const actionLink = linkData?.properties?.action_link;
+    if (!actionLink) {
+      return NextResponse.json({ error: 'Não foi possível obter o link de acesso.' }, { status: 500 });
+    }
+
+    return NextResponse.json({ 
+      success: true, 
+      link: actionLink, 
+      isNewUser: !isConfirmed 
+    });
   } catch (error: any) {
     console.error('Erro na API de reenvio de convite:', error);
     return NextResponse.json({ error: error.message || 'Erro interno do servidor.' }, { status: 500 });

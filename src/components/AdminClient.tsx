@@ -36,6 +36,20 @@ export default function AdminClient({ profiles: initialProfiles, currentProfile 
   const [editError, setEditError] = useState<string | null>(null);
   const [resendingEmails, setResendingEmails] = useState<string[]>([]);
 
+  // Estados para exibição do link gerado
+  const [isLinkModalOpen, setIsLinkModalOpen] = useState(false);
+  const [generatedLink, setGeneratedLink] = useState('');
+  const [generatedLinkEmail, setGeneratedLinkEmail] = useState('');
+  const [isGeneratedLinkNewUser, setIsGeneratedLinkNewUser] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyLink = () => {
+    if (!generatedLink) return;
+    navigator.clipboard.writeText(generatedLink);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   const refreshProfiles = async () => {
     const { data: refreshed } = await supabase
       .from('profiles')
@@ -124,7 +138,13 @@ export default function AdminClient({ profiles: initialProfiles, currentProfile 
         throw new Error(result.error || 'Erro ao reenviar convite.');
       }
       
-      showToast(`Convite reenviado com sucesso para ${profile.email}!`, 'success');
+      setGeneratedLink(result.link);
+      setGeneratedLinkEmail(profile.email);
+      setIsGeneratedLinkNewUser(result.isNewUser);
+      setIsLinkModalOpen(true);
+      setCopied(false);
+      
+      showToast(`Link de acesso gerado com sucesso para ${profile.email}!`, 'success');
     } catch (err: any) {
       console.error(err);
       showToast(err.message || 'Erro ao reenviar convite.', 'error');
@@ -159,7 +179,19 @@ export default function AdminClient({ profiles: initialProfiles, currentProfile 
         throw new Error(result.error || 'Erro ao adicionar usuário.');
       }
 
-      showToast('Usuário convidado com sucesso! E-mail enviado.', 'success');
+      setGeneratedLink(result.link);
+      setGeneratedLinkEmail(addEmail.trim());
+      setIsGeneratedLinkNewUser(result.isNewUser);
+      setIsLinkModalOpen(true);
+      setCopied(false);
+
+      showToast(
+        result.isNewUser 
+          ? 'Link de ativação gerado com sucesso!' 
+          : 'Link de recuperação gerado com sucesso!', 
+        'success'
+      );
+      
       setIsAddModalOpen(false);
       setAddName('');
       setAddEmail('');
@@ -308,7 +340,7 @@ export default function AdminClient({ profiles: initialProfiles, currentProfile 
               <form onSubmit={handleAddUser}>
                 <div className="modalBody">
                   <p className="modalDescription" style={{ marginBottom: '1.5rem' }}>
-                    Cadastre o nome e e-mail do usuário. Um convite será enviado por e-mail para que ele defina sua senha no primeiro acesso.
+                    Cadastre o nome e e-mail do usuário. O sistema identificará se ele é novo ou já possui cadastro e gerará o link de acesso correspondente para você copiar e enviar.
                   </p>
 
                   {addError && (
@@ -365,7 +397,7 @@ export default function AdminClient({ profiles: initialProfiles, currentProfile 
                     Cancelar
                   </button>
                   <button className="btn btnPrimary" type="submit" disabled={addLoading}>
-                    {addLoading ? 'Enviando Convite...' : 'Enviar Convite'}
+                    {addLoading ? 'Gerando Link...' : 'Gerar Link de Acesso'}
                   </button>
                 </div>
               </form>
@@ -465,6 +497,70 @@ export default function AdminClient({ profiles: initialProfiles, currentProfile 
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* Modal de Exibição de Link Gerado */}
+        {isLinkModalOpen && (
+          <div className="modalOverlay">
+            <div className="modalContent" style={{ maxWidth: '500px' }}>
+              <div className="modalHeader">
+                <h2 className="modalTitle">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '0.5rem', color: 'var(--accent-purple)' }}>
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                  </svg>
+                  Link de Acesso Gerado
+                </h2>
+                <button className="modalCloseBtn" onClick={() => setIsLinkModalOpen(false)}>×</button>
+              </div>
+
+              <div className="modalBody">
+                <p className="modalDescription" style={{ marginBottom: '1.25rem' }}>
+                  {isGeneratedLinkNewUser ? (
+                    <>
+                      O usuário <strong>{generatedLinkEmail}</strong> não possui cadastro ativo. Copie o link de <strong>ativação de conta</strong> abaixo e envie para ele:
+                    </>
+                  ) : (
+                    <>
+                      O usuário <strong>{generatedLinkEmail}</strong> já possui cadastro. Copie o link de <strong>redefinição de senha</strong> abaixo e envie para ele:
+                    </>
+                  )}
+                </p>
+
+                <div className="formGroup">
+                  <label className="formLabel">Link para envio</label>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input
+                      type="text"
+                      className="formInput"
+                      value={generatedLink}
+                      readOnly
+                      onClick={(e) => (e.target as HTMLInputElement).select()}
+                      style={{ backgroundColor: 'var(--bg-input-disabled, #1e293b)', cursor: 'pointer' }}
+                    />
+                    <button
+                      className="btn btnPrimary"
+                      onClick={handleCopyLink}
+                      style={{ whiteSpace: 'nowrap', minWidth: '90px' }}
+                    >
+                      {copied ? 'Copiado!' : 'Copiar'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="infoBox" style={{ marginTop: '1.25rem', padding: '0.75rem', borderRadius: '6px', backgroundColor: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.2)', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  <strong style={{ color: 'var(--accent-purple)', display: 'block', marginBottom: '0.25rem' }}>Como proceder?</strong>
+                  Envie este link para o usuário através do WhatsApp, Teams, e-mail ou outro meio de comunicação direta. O link permitirá que ele defina sua senha com segurança.
+                </div>
+              </div>
+
+              <div className="modalFooter" style={{ marginTop: '1.5rem' }}>
+                <button className="btn btnSecondary" type="button" onClick={() => setIsLinkModalOpen(false)} style={{ width: '100%' }}>
+                  Fechar
+                </button>
+              </div>
             </div>
           </div>
         )}
