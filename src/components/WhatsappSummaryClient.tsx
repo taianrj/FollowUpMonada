@@ -704,104 +704,107 @@ export default function WhatsappSummaryClient({
             </div>
           )}
 
-          {/* Card de Configuração de Processamento Simples */}
-          <div style={{
-            backgroundColor: 'var(--bg-secondary)',
-            borderRadius: 'var(--radius-lg)',
-            border: '1px solid var(--border-color)',
-            padding: '1.75rem',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '1.5rem'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.25rem' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>Gerar Novo Resumo</h3>
-                <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
-                  Importa conversas do WhatsApp do dia selecionado e gera a análise de tarefas de forma automatizada.
-                </p>
-              </div>
-
-              {/* Data, Atalhos e Botão de Ação Única */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', backgroundColor: 'var(--bg-primary)', padding: '0.2rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-                  <button 
-                    type="button" 
-                    onClick={() => {
-                      const yesterday = new Date();
-                      yesterday.setDate(yesterday.getDate() - 1);
-                      setSummaryDate(yesterday.toISOString().split('T')[0]);
-                    }}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: '0.78rem', padding: '0.35rem 0.65rem', cursor: 'pointer', fontWeight: 600 }}
-                  >
-                    Ontem
-                  </button>
-                  <span style={{ color: 'var(--border-color)', fontSize: '0.75rem' }}>|</span>
-                  <button 
-                    type="button" 
-                    onClick={() => setSummaryDate(new Date().toISOString().split('T')[0])}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: '0.78rem', padding: '0.35rem 0.65rem', cursor: 'pointer', fontWeight: 600 }}
-                  >
-                    Hoje
-                  </button>
+          {/* Card de Configuração de Processamento Simples - Apenas visível se conectado */}
+          {integrationConnected && whatsappStatus === 'connected' && (
+            <div style={{
+              backgroundColor: 'var(--bg-secondary)',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--border-color)',
+              padding: '1.75rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1.5rem',
+              animation: 'fadeIn 0.3s ease-out'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.25rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>Gerar Novo Resumo</h3>
+                  <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
+                    Importa conversas do WhatsApp do dia selecionado e gera a análise de tarefas de forma automatizada.
+                  </p>
                 </div>
 
-                <input
-                  type="date"
-                  value={summaryDate}
-                  onChange={(e) => setSummaryDate(e.target.value)}
-                  style={{
-                    backgroundColor: 'var(--bg-primary)',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-primary)',
-                    padding: '0.45rem 0.75rem',
-                    borderRadius: 'var(--radius-md)',
-                    fontSize: '0.85rem',
-                    outline: 'none'
-                  }}
-                />
+                {/* Data, Atalhos e Botão de Ação Única */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', backgroundColor: 'var(--bg-primary)', padding: '0.2rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+                    <button 
+                      type="button" 
+                      onClick={() => {
+                        const yesterday = new Date();
+                        yesterday.setDate(yesterday.getDate() - 1);
+                        setSummaryDate(yesterday.toISOString().split('T')[0]);
+                      }}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: '0.78rem', padding: '0.35rem 0.65rem', cursor: 'pointer', fontWeight: 600 }}
+                    >
+                      Ontem
+                    </button>
+                    <span style={{ color: 'var(--border-color)', fontSize: '0.75rem' }}>|</span>
+                    <button 
+                      type="button" 
+                      onClick={() => setSummaryDate(new Date().toISOString().split('T')[0])}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: '0.78rem', padding: '0.35rem 0.65rem', cursor: 'pointer', fontWeight: 600 }}
+                    >
+                      Hoje
+                    </button>
+                  </div>
 
-                <button
-                  type="button"
-                  className="btn btnSecondary"
-                  onClick={handleOpenMessagesModal}
-                  disabled={isLoading || !apiToken}
-                  style={{
-                    padding: '0.55rem 1.35rem',
-                    fontSize: '0.85rem',
-                    fontWeight: 600,
-                    border: '1px solid var(--border-color)',
-                    cursor: apiToken ? 'pointer' : 'not-allowed',
-                    opacity: apiToken ? 1 : 0.6,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.5rem'
-                  }}
-                >
-                  👁️ Ver Mensagens
-                </button>
+                  <input
+                    type="date"
+                    value={summaryDate}
+                    onChange={(e) => setSummaryDate(e.target.value)}
+                    style={{
+                      backgroundColor: 'var(--bg-primary)',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-primary)',
+                      padding: '0.45rem 0.75rem',
+                      borderRadius: 'var(--radius-md)',
+                      fontSize: '0.85rem',
+                      outline: 'none'
+                    }}
+                  />
 
-                <button
-                  type="button"
-                  className="btn btnPrimary"
-                  onClick={handleSyncAndGenerateSummary}
-                  disabled={isLoading || !apiToken}
-                  style={{
-                    padding: '0.55rem 1.35rem',
-                    fontSize: '0.85rem',
-                    fontWeight: 700,
-                    background: 'linear-gradient(135deg, var(--accent-purple) 0%, #4f46e5 100%)',
-                    boxShadow: '0 4px 12px rgba(99, 102, 241, 0.25)',
-                    cursor: apiToken ? 'pointer' : 'not-allowed',
-                    opacity: apiToken ? 1 : 0.6
-                  }}
-                >
-                  {isLoading ? '⚙️ Processando...' : '⚡ Sincronizar & Gerar Resumo'}
-                </button>
+                  <button
+                    type="button"
+                    className="btn btnSecondary"
+                    onClick={handleOpenMessagesModal}
+                    disabled={isLoading || !apiToken}
+                    style={{
+                      padding: '0.55rem 1.35rem',
+                      fontSize: '0.85rem',
+                      fontWeight: 600,
+                      border: '1px solid var(--border-color)',
+                      cursor: apiToken ? 'pointer' : 'not-allowed',
+                      opacity: apiToken ? 1 : 0.6,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.5rem'
+                    }}
+                  >
+                    👁️ Ver Mensagens
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn btnPrimary"
+                    onClick={handleSyncAndGenerateSummary}
+                    disabled={isLoading || !apiToken}
+                    style={{
+                      padding: '0.55rem 1.35rem',
+                      fontSize: '0.85rem',
+                      fontWeight: 700,
+                      background: 'linear-gradient(135deg, var(--accent-purple) 0%, #4f46e5 100%)',
+                      boxShadow: '0 4px 12px rgba(99, 102, 241, 0.25)',
+                      cursor: apiToken ? 'pointer' : 'not-allowed',
+                      opacity: apiToken ? 1 : 0.6
+                    }}
+                  >
+                    {isLoading ? '⚙️ Processando...' : '⚡ Sincronizar & Gerar Resumo'}
+                  </button>
+                </div>
               </div>
-            </div>
 
-          </div>
+            </div>
+          )}
 
           {/* Estado de Carregamento Premium com Skeleton */}
           {isLoading && (
