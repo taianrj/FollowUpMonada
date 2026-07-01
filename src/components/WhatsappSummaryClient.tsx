@@ -657,7 +657,7 @@ export default function WhatsappSummaryClient({
             }}>
               <div className="spinner" style={{ width: '18px', height: '18px', border: '2px solid rgba(168, 85, 247, 0.1)', borderTop: '2px solid var(--accent-purple)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
               <span style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
-                Verificando conexão com o WhatsApp na nuvem (isso pode levar até 45 segundos para acordar o servidor gratuito)...
+                Verificando conexão com o WhatsApp na nuvem...
               </span>
             </div>
           ) : integrationConnected && whatsappStatus === 'connected' ? (
