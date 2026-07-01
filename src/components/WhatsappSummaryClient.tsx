@@ -70,6 +70,8 @@ export default function WhatsappSummaryClient({
   const [isCheckingStatus, setIsCheckingStatus] = useState(true);
   const [checkAttempts, setCheckAttempts] = useState(0);
   const [connectedUser, setConnectedUser] = useState<{ id: string; name?: string } | null>(null);
+  const [whatsappSyncStatus, setWhatsappSyncStatus] = useState<string>('completed'); // 'pending' | 'syncing' | 'completed'
+  const [whatsappMessagesCount, setWhatsappMessagesCount] = useState<number>(0);
 
   // Estados para o Modal de Criação de Demanda preenchido
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
@@ -206,13 +208,13 @@ export default function WhatsappSummaryClient({
     
     checkConnectionStatus(apiUrl, apiToken);
     
-    // Polling a cada 3 segundos na fase de inicialização para acompanhar o boot rápido do Render, e a cada 15 segundos depois
+    // Polling a cada 3 segundos na fase de inicialização ou sincronização para atualizar rápido, e a cada 15 segundos depois
     const interval = setInterval(() => {
       checkConnectionStatus(apiUrl, apiToken);
-    }, isCheckingStatus ? 3000 : 15000);
+    }, (isCheckingStatus || whatsappSyncStatus !== 'completed') ? 3000 : 15000);
     
     return () => clearInterval(interval);
-  }, [apiToken, isCheckingStatus, apiUrl]);
+  }, [apiToken, isCheckingStatus, whatsappSyncStatus, apiUrl]);
 
   // Função auxiliar para testar conexão com o WhatsApp
   const checkConnectionStatus = async (url: string, token: string) => {
@@ -229,6 +231,8 @@ export default function WhatsappSummaryClient({
         const data = await response.json();
         setIntegrationConnected(true);
         setWhatsappStatus(data.status);
+        setWhatsappSyncStatus(data.syncStatus || 'completed');
+        setWhatsappMessagesCount(data.messagesCount || 0);
         
         // Define os dados do usuário conectado
         if (data.status === 'connected') {
@@ -254,6 +258,8 @@ export default function WhatsappSummaryClient({
     setIntegrationConnected(false);
     setWhatsappStatus('disconnected');
     setConnectedUser(null);
+    setWhatsappSyncStatus('completed');
+    setWhatsappMessagesCount(0);
     
     // Tenta carregar até 8 vezes (8 * 3s = 24 segundos) antes de dar timeout do spinner de inicialização
     setCheckAttempts(prev => {
@@ -860,8 +866,8 @@ export default function WhatsappSummaryClient({
             </div>
           )}
 
-          {/* Card de Configuração de Processamento Simples - Apenas visível se conectado */}
-          {integrationConnected && whatsappStatus === 'connected' && (
+          {/* Card de Configuração de Processamento Simples - Apenas visível se conectado e sincronização concluída */}
+          {integrationConnected && whatsappStatus === 'connected' && whatsappSyncStatus === 'completed' && (
             <div style={{
               backgroundColor: 'var(--bg-secondary)',
               borderRadius: 'var(--radius-lg)',
@@ -959,6 +965,45 @@ export default function WhatsappSummaryClient({
                 </div>
               </div>
 
+            </div>
+          )}
+
+          {/* Card de Sincronização em Andamento - Visível se conectado mas ainda sincronizando histórico */}
+          {integrationConnected && whatsappStatus === 'connected' && whatsappSyncStatus !== 'completed' && (
+            <div style={{
+              backgroundColor: 'var(--bg-secondary)',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid rgba(245, 158, 11, 0.25)',
+              padding: '1.75rem',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '1rem',
+              textAlign: 'center',
+              animation: 'fadeIn 0.3s ease-out',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div className="spinner" style={{ width: '28px', height: '28px', border: '3px solid rgba(245, 158, 11, 0.1)', borderTop: '3px solid #f59e0b', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#f59e0b', margin: 0 }}>
+                  🔄 Sincronizando mensagens com o celular...
+                </h3>
+                <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0, maxWidth: '500px' }}>
+                  Por favor, aguarde alguns instantes enquanto importamos o histórico recente de conversas para podermos gerar os resumos com total precisão.
+                </p>
+              </div>
+              <div style={{
+                fontSize: '0.78rem',
+                backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                padding: '0.35rem 0.85rem',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--text-muted)',
+                fontWeight: 600,
+                border: '1px solid var(--border-color)'
+              }}>
+                Mensagens processadas até o momento: <strong style={{ color: '#fff' }}>{whatsappMessagesCount}</strong>
+              </div>
             </div>
           )}
 
