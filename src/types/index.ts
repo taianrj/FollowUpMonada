@@ -48,3 +48,28 @@ export interface Task {
     color: string;
   };
 }
+
+export interface WhatsappClientSummary {
+  client_name: string;
+  client_id: string | null;
+  general_summary: string;
+  key_points: string[];
+  suggested_tasks: {
+    description: string;
+    responsibles: string[];
+    status: string;
+    observations: string;
+  }[];
+}
+
+export interface WhatsappSummary {
+  id: string;
+  summary_date: string;
+  raw_text: string;
+  summary_data: {
+    summaries: WhatsappClientSummary[];
+  };
+  created_by: string | null;
+  created_at: string;
+}
+

@@ -173,3 +173,45 @@ $$ language plpgsql;
 create or replace trigger update_tasks_updated_at
     before update on public.tasks
     for each row execute procedure public.update_updated_at_column();
+
+-- ==========================================
+-- 9. TABELA DE RESUMOS DE WHATSAPP
+-- ==========================================
+create table if not exists public.whatsapp_summaries (
+    id uuid default gen_random_uuid() primary key,
+    summary_date date not null default current_date,
+    raw_text text not null,
+    summary_data jsonb not null,
+    created_by uuid references public.profiles(id) on delete set null,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Habilitar RLS para resumos de whatsapp
+alter table public.whatsapp_summaries enable row level security;
+
+-- Políticas para WHATSAPP_SUMMARIES
+create policy "Qualquer usuário autenticado pode ver resumos"
+    on public.whatsapp_summaries for select
+    to authenticated
+    using (true);
+
+create policy "Qualquer usuário autenticado pode cadastrar resumos"
+    on public.whatsapp_summaries for insert
+    to authenticated
+    with check (true);
+
+create policy "Qualquer usuário autenticado pode atualizar resumos"
+    on public.whatsapp_summaries for update
+    to authenticated
+    using (true);
+
+create policy "Apenas administradores podem deletar resumos"
+    on public.whatsapp_summaries for delete
+    to authenticated
+    using (
+        exists (
+            select 1 from public.profiles
+            where id = auth.uid() and role = 'admin'
+        )
+    );
+
