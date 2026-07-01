@@ -696,7 +696,11 @@ app.get('/status', checkAuth, async (req, res) => {
     connected: instance.connectionStatus === 'connected',
     qrAvailable: !!instance.currentQr,
     syncStatus: instance.syncStatus,
-    messagesCount: instance.messagesProcessedCount
+    messagesCount: instance.messagesProcessedCount,
+    user: instance.sock && instance.sock.user ? {
+      id: instance.sock.user.id,
+      name: instance.sock.user.name
+    } : null
   });
 });
 

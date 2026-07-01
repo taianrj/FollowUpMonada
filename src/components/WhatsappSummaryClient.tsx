@@ -68,6 +68,8 @@ export default function WhatsappSummaryClient({
   const [modalMessagesText, setModalMessagesText] = useState<string>('');
   const [isLoadingModalMessages, setIsLoadingModalMessages] = useState(false);
   const [isCheckingStatus, setIsCheckingStatus] = useState(true);
+  const [checkAttempts, setCheckAttempts] = useState(0);
+  const [connectedUser, setConnectedUser] = useState<{ id: string; name?: string } | null>(null);
 
   // Passos de carregamento animados para entreter o usuário enquanto a IA processa
   const loadingSteps = [
@@ -159,12 +161,13 @@ export default function WhatsappSummaryClient({
     
     checkConnectionStatus(apiUrl, apiToken);
     
+    // Polling a cada 3 segundos na fase de inicialização para acompanhar o boot rápido do Render, e a cada 15 segundos depois
     const interval = setInterval(() => {
       checkConnectionStatus(apiUrl, apiToken);
-    }, 10000); // Roda a cada 10 segundos
+    }, isCheckingStatus ? 3000 : 15000);
     
     return () => clearInterval(interval);
-  }, [apiToken]);
+  }, [apiToken, isCheckingStatus, apiUrl]);
 
   // Função auxiliar para testar conexão com o WhatsApp
   const checkConnectionStatus = async (url: string, token: string) => {
@@ -181,16 +184,40 @@ export default function WhatsappSummaryClient({
         const data = await response.json();
         setIntegrationConnected(true);
         setWhatsappStatus(data.status);
+        
+        // Define os dados do usuário conectado
+        if (data.status === 'connected') {
+          setConnectedUser(data.user || null);
+          setIsCheckingStatus(false);
+          setCheckAttempts(0);
+        } else {
+          setConnectedUser(null);
+          // Se o servidor respondeu, mas não está conectado (ex: qrcode ou disconnected), 
+          // significa que o servidor está online e respondendo. Não precisamos continuar checando no spinner.
+          setIsCheckingStatus(false);
+          setCheckAttempts(0);
+        }
       } else {
-        setIntegrationConnected(false);
-        setWhatsappStatus('disconnected');
+        handleStatusFailure();
       }
     } catch (e) {
-      setIntegrationConnected(false);
-      setWhatsappStatus('disconnected');
-    } finally {
-      setIsCheckingStatus(false);
+      handleStatusFailure();
     }
+  };
+
+  const handleStatusFailure = () => {
+    setIntegrationConnected(false);
+    setWhatsappStatus('disconnected');
+    setConnectedUser(null);
+    
+    // Tenta carregar até 8 vezes (8 * 3s = 24 segundos) antes de dar timeout do spinner de inicialização
+    setCheckAttempts(prev => {
+      const next = prev + 1;
+      if (next >= 8) {
+        setIsCheckingStatus(false);
+      }
+      return next;
+    });
   };
 
   // Polling para obter o QR Code dinâmico quando o modal está aberto
@@ -673,7 +700,13 @@ export default function WhatsappSummaryClient({
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#34d399' }}>
                 <span className="pulseGreen" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#10b981', borderRadius: '50%' }}></span>
-                WhatsApp Conectado e Ativo
+                {connectedUser ? (
+                  <span>
+                    WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser.name || connectedUser.id.split('@')[0]}</strong>
+                  </span>
+                ) : (
+                  'WhatsApp Conectado e Ativo'
+                )}
               </div>
               <button 
                 type="button" 
