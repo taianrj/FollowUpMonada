@@ -72,6 +72,7 @@ export default function WhatsappSummaryClient({
   const [connectedUser, setConnectedUser] = useState<{ id: string; name?: string } | null>(null);
   const [whatsappSyncStatus, setWhatsappSyncStatus] = useState<string>('completed'); // 'pending' | 'syncing' | 'completed'
   const [whatsappMessagesCount, setWhatsappMessagesCount] = useState<number>(0);
+  const [whatsappContactsCount, setWhatsappContactsCount] = useState<number>(0);
 
   // Estados para o Modal de Criação de Demanda preenchido
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
@@ -233,6 +234,7 @@ export default function WhatsappSummaryClient({
         setWhatsappStatus(data.status);
         setWhatsappSyncStatus(data.syncStatus || 'completed');
         setWhatsappMessagesCount(data.messagesCount || 0);
+        setWhatsappContactsCount(data.contactsCount || 0);
         
         // Define os dados do usuário conectado
         if (data.status === 'connected') {
@@ -260,6 +262,7 @@ export default function WhatsappSummaryClient({
     setConnectedUser(null);
     setWhatsappSyncStatus('completed');
     setWhatsappMessagesCount(0);
+    setWhatsappContactsCount(0);
     
     // Tenta carregar até 8 vezes (8 * 3s = 24 segundos) antes de dar timeout do spinner de inicialização
     setCheckAttempts(prev => {
@@ -1000,9 +1003,15 @@ export default function WhatsappSummaryClient({
                 borderRadius: 'var(--radius-md)',
                 color: 'var(--text-muted)',
                 fontWeight: 600,
-                border: '1px solid var(--border-color)'
+                border: '1px solid var(--border-color)',
+                display: 'flex',
+                gap: '0.5rem',
+                flexWrap: 'wrap',
+                justifyContent: 'center'
               }}>
-                Mensagens processadas até o momento: <strong style={{ color: '#fff' }}>{whatsappMessagesCount}</strong>
+                <span>Mensagens processadas: <strong style={{ color: '#fff' }}>{whatsappMessagesCount}</strong></span>
+                <span style={{ color: 'var(--border-color)' }}>|</span>
+                <span>Contatos sincronizados: <strong style={{ color: '#fff' }}>{whatsappContactsCount}</strong></span>
               </div>
             </div>
           )}

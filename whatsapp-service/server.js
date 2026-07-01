@@ -698,6 +698,7 @@ app.get('/status', checkAuth, async (req, res) => {
     qrAvailable: !!instance.currentQr,
     syncStatus: instance.syncStatus,
     messagesCount: instance.messagesProcessedCount,
+    contactsCount: Object.keys(instance.contactsCache || {}).length,
     user: instance.sock && instance.sock.user ? {
       id: instance.sock.user.id,
       name: instance.sock.user.name
