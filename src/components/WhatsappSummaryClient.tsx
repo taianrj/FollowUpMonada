@@ -702,7 +702,7 @@ export default function WhatsappSummaryClient({
                 <span className="pulseGreen" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#10b981', borderRadius: '50%' }}></span>
                 {connectedUser ? (
                   <span>
-                    WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser.name || connectedUser.id.split('@')[0]}</strong>
+                    WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser.name || connectedUser.id.split('@')[0].split(':')[0]}</strong>
                   </span>
                 ) : (
                   'WhatsApp Conectado e Ativo'
