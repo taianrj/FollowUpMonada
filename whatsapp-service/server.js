@@ -794,7 +794,7 @@ app.get('/qr', checkAuth, async (req, res) => {
         <body>
           <div class="card">
             <h2>Escanear QR Code 📱</h2>
-            <p>Abra o WhatsApp no celular, vai em Aparelhos Conectados e escaneie o código abaixo:</p>
+            <p>Abra o WhatsApp no celular, vá em Dispositivos Conectados e escaneie o código abaixo:</p>
             <img src="${qrImage}" alt="QR Code do WhatsApp"/>
             <p style="color: #64748b; font-size: 0.8rem;">Esta página se atualiza automaticamente a cada 10 segundos.</p>
             <a href="/${keyParam}" class="btn">Voltar ao Início</a>

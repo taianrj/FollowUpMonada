@@ -1142,7 +1142,7 @@ export default function WhatsappSummaryClient({
             </h3>
             
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
-              Abra o WhatsApp no seu celular, acesse <strong>Aparelhos Conectados</strong> e escaneie o código abaixo:
+              Abra o WhatsApp no seu celular, acesse <strong>Dispositivos Conectados</strong> e escaneie o código abaixo:
             </p>
 
             <div style={{
