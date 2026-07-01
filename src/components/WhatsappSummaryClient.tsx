@@ -55,7 +55,7 @@ export default function WhatsappSummaryClient({
   const [dragOver, setDragOver] = useState(false);
 
   // Estados da integração do WhatsApp
-  const [apiUrl, setApiUrl] = useState('https://monada-whatsapp-service.fly.dev');
+  const [apiUrl, setApiUrl] = useState(process.env.NEXT_PUBLIC_WHATSAPP_SERVICE_URL || 'https://followupmonada.onrender.com');
   const [apiToken, setApiToken] = useState('');
   const [integrationConnected, setIntegrationConnected] = useState(false);
   const [whatsappStatus, setWhatsappStatus] = useState<string>('disconnected');
