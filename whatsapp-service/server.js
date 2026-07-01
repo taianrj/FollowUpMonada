@@ -857,9 +857,16 @@ app.get('/messages', checkAuth, async (req, res) => {
       for (const chatKey in grouped) {
         const chat = grouped[chatKey];
         const chatMessagesText = chat.messages.map(m => {
-          const time = new Date(m.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+          const dateTimeStr = new Date(m.timestamp).toLocaleString('pt-BR', {
+            timeZone: 'America/Sao_Paulo',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+          });
           const senderName = m.fromMe ? 'Eu' : (m.name || m.sender);
-          return `  [${time}] ${senderName}: ${m.text}`;
+          return `  [${dateTimeStr}] ${senderName}: ${m.text}`;
         }).join('\n');
         
         formattedChats.push(`--- Conversa com: ${chat.name} (${chatKey}) ---\n${chatMessagesText}`);
