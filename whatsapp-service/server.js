@@ -104,7 +104,8 @@ async function connectUserWhatsApp(userId) {
     version,
     syncFullHistory: true, // Força o envio do histórico recente completo do celular ao parear
     printQRInTerminal: false, // Desativado (evita avisos no log)
-    logger: logger
+    logger: logger,
+    browser: ['FollowUp Mônada', 'Chrome', '1.0'] // Customiza a exibição no celular do usuário
   });
 
   instance.sock = sock;
