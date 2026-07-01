@@ -71,6 +71,51 @@ export default function WhatsappSummaryClient({
   const [checkAttempts, setCheckAttempts] = useState(0);
   const [connectedUser, setConnectedUser] = useState<{ id: string; name?: string } | null>(null);
 
+  // Estados para o Modal de Criação de Demanda preenchido
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [modalClientId, setModalClientId] = useState('');
+  const [modalDescription, setModalDescription] = useState('');
+  const [selectedCollaborators, setSelectedCollaborators] = useState<string[]>([]);
+  const [modalStatus, setModalStatus] = useState('');
+  const [modalObservations, setModalObservations] = useState('');
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [manualLoading, setManualLoading] = useState(false);
+  const [collaborators, setCollaborators] = useState<any[]>([]);
+  const [pendingTaskInfo, setPendingTaskInfo] = useState<{
+    task: { description: string; responsibles: string[]; status: string; observations: string },
+    clientSummary: WhatsappClientSummary,
+    taskIndex: number
+  } | null>(null);
+
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Efeito para fechar o dropdown customizado de responsáveis ao clicar fora
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
+
+  // Carrega os colaboradores do banco de dados na inicialização
+  useEffect(() => {
+    const fetchCollaborators = async () => {
+      const { data, error } = await supabase
+        .from('collaborators')
+        .select('*')
+        .order('name', { ascending: true });
+      if (!error && data) {
+        setCollaborators(data);
+      }
+    };
+    fetchCollaborators();
+  }, []);
+
   // Passos de carregamento animados para entreter o usuário enquanto a IA processa
   const loadingSteps = [
     'Analisando conversas do WhatsApp...',
@@ -419,8 +464,8 @@ export default function WhatsappSummaryClient({
     }
   };
 
-  // Cria uma tarefa sugerida diretamente no Kanban
-  const handleCreateSuggestedTask = async (
+  // Prepara e abre o modal de criação de tarefa sugerida com campos pré-preenchidos
+  const handleOpenSuggestedTaskModal = async (
     task: { description: string; responsibles: string[]; status: string; observations: string },
     clientSummary: WhatsappClientSummary,
     taskIndex: number
@@ -450,11 +495,11 @@ export default function WhatsappSummaryClient({
 
         finalClientId = newClient.id;
         
-        // Atualiza a lista de clientes localmente para não precisar recarregar
+        // Atualiza a lista de clientes localmente
         const updatedClients = [...clients, newClient].sort((a, b) => a.name.localeCompare(b.name));
         setClients(updatedClients);
         
-        // Atualiza também o client_id no resumo ativo para cliques futuros
+        // Atualiza também o client_id no resumo ativo
         if (activeSummary) {
           const updatedSummaries = activeSummary.summary_data.summaries.map(s => {
             if (s.client_name === clientSummary.client_name) {
@@ -473,15 +518,66 @@ export default function WhatsappSummaryClient({
       const statusExists = statuses.some(s => s.id === task.status);
       const finalStatus = statusExists ? task.status : (statuses[0]?.id || 'aguardando cliente');
 
-      // 3. Cadastra a tarefa vinculada ao cliente correto
+      // 3. Mapeia e filtra os responsáveis sugeridos que batem com os colaboradores existentes no banco
+      const mappedResponsibles: string[] = [];
+      task.responsibles.forEach(name => {
+        const match = collaborators.find(c => c.name.toLowerCase().trim() === name.toLowerCase().trim());
+        if (match) {
+          mappedResponsibles.push(match.name);
+        }
+      });
+
+      // 4. Preenche os estados do modal
+      setModalClientId(finalClientId || '');
+      setModalDescription(task.description.trim());
+      setSelectedCollaborators(mappedResponsibles);
+      setModalStatus(finalStatus);
+      setModalObservations(task.observations?.trim() || '');
+      
+      // Guarda a tarefa pendente para o sucesso
+      setPendingTaskInfo({
+        task,
+        clientSummary,
+        taskIndex
+      });
+
+      // Abre o modal
+      setIsTaskModalOpen(true);
+    } catch (error: any) {
+      console.error(error);
+      showToast('Erro ao inicializar formulário da demanda: ' + error.message, 'error');
+    }
+  };
+
+  // Grava de fato a demanda no banco após o usuário revisar/editar no modal
+  const handleSaveSuggestedTask = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingTaskInfo) return;
+
+    if (!modalClientId) {
+      showToast('Por favor, selecione um cliente.', 'warning');
+      return;
+    }
+
+    if (!modalDescription.trim()) {
+      showToast('Por favor, descreva a demanda.', 'warning');
+      return;
+    }
+
+    setManualLoading(true);
+    const { clientSummary, taskIndex } = pendingTaskInfo;
+    const taskKey = `${clientSummary.client_name}-${taskIndex}`;
+
+    try {
+      // 1. Insere a demanda editada no banco
       const { data: newTask, error: taskErr } = await supabase
         .from('tasks')
         .insert({
-          client_id: finalClientId,
-          description: task.description.trim(),
-          responsibles: task.responsibles,
-          status: finalStatus,
-          observations: task.observations?.trim() || '',
+          client_id: modalClientId,
+          description: modalDescription.trim(),
+          responsibles: selectedCollaborators,
+          status: modalStatus,
+          observations: modalObservations.trim(),
           is_archived: false,
           created_by: profile?.id
         })
@@ -492,24 +588,30 @@ export default function WhatsappSummaryClient({
         throw new Error('Erro ao inserir tarefa: ' + taskErr.message);
       }
 
-      // 4. Registra histórico de auditoria da criação
+      // 2. Registra histórico de auditoria
       await supabase.from('task_history').insert({
         task_id: newTask.id,
         changed_by: profile?.id,
         action: 'create',
         created_by_ai: true,
-        ai_provider: 'Gemini WhatsApp Extractor'
+        ai_provider: 'Gemini WhatsApp Extractor (Revisado)'
       });
 
-      // 5. Marca a tarefa como criada na UI
+      // 3. Marca a tarefa como criada na UI
       setCreatedTasksKeys(prev => ({ ...prev, [taskKey]: true }));
-      showToast(`Demanda "${task.description}" criada com sucesso no painel!`, 'success');
+      showToast(`Demanda "${modalDescription.trim()}" criada com sucesso!`, 'success');
       
-      // Dá um refresh nas rotas em segundo plano para o Kanban principal ler a nova tarefa
+      // Fecha o modal e limpa
+      setIsTaskModalOpen(false);
+      setPendingTaskInfo(null);
+      
+      // Dá um refresh nas rotas para atualizar o Kanban principal
       router.refresh();
     } catch (error: any) {
       console.error(error);
       showToast('Erro ao criar demanda: ' + error.message, 'error');
+    } finally {
+      setManualLoading(false);
     }
   };
 
@@ -903,17 +1005,6 @@ export default function WhatsappSummaryClient({
                 <h2 style={{ fontSize: '1.3rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                   Resumo Semântico do Dia - {new Date(activeSummary.summary_date + 'T00:00:00').toLocaleDateString('pt-BR')}
                 </h2>
-                <button
-                  type="button"
-                  className="btn btnSecondary"
-                  onClick={() => {
-                    navigator.clipboard.writeText(JSON.stringify(activeSummary.summary_data, null, 2));
-                    showToast('Copiado para a área de transferência!', 'success');
-                  }}
-                  style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}
-                >
-                  📋 Copiar JSON
-                </button>
               </div>
 
               {/* Grid de Clientes no Resumo */}
@@ -1036,7 +1127,7 @@ export default function WhatsappSummaryClient({
                                             justifyContent: 'center',
                                             background: isCreated ? 'rgba(255,255,255,0.05)' : undefined
                                           }}
-                                          onClick={() => handleCreateSuggestedTask(task, clientSummary, tIndex)}
+                                          onClick={() => handleOpenSuggestedTaskModal(task, clientSummary, tIndex)}
                                           disabled={isCreated}
                                         >
                                           {isCreated ? '✓ Criado' : '➕ Criar'}
@@ -1347,6 +1438,157 @@ export default function WhatsappSummaryClient({
                 Fechar Painel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Unificado: Criação ou Edição de Demanda a partir do WhatsApp */}
+      {isTaskModalOpen && (
+        <div className="modalOverlay" style={{ zIndex: 1100 }}>
+          <div className="modalContent" style={{ minWidth: '450px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-lg)' }}>
+            <div className="modalHeader" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '0.85rem' }}>
+              <h2 className="modalTitle" style={{ fontSize: '1.2rem', fontWeight: 700 }}>Cadastrar Nova Demanda</h2>
+              <button className="modalCloseBtn" onClick={() => setIsTaskModalOpen(false)}>×</button>
+            </div>
+
+            <form onSubmit={handleSaveSuggestedTask}>
+              <div className="modalBody" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', padding: '1.25rem 0' }}>
+                
+                {/* Dropdown de Clientes */}
+                <div className="formGroup">
+                  <label className="formLabel">Cliente da Demanda</label>
+                  <select
+                    className="formInput"
+                    value={modalClientId}
+                    onChange={(e) => setModalClientId(e.target.value)}
+                    required
+                  >
+                    <option value="">-- Escolha um Cliente --</option>
+                    {clients.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Descrição da Demanda */}
+                <div className="formGroup">
+                  <label className="formLabel">Descrição da Demanda</label>
+                  <textarea
+                    className="formInput"
+                    placeholder="O que precisa ser feito?"
+                    value={modalDescription}
+                    onChange={(e) => setModalDescription(e.target.value)}
+                    required
+                    style={{ minHeight: '80px' }}
+                  />
+                </div>
+
+                {/* Seleção Múltipla de Responsáveis Customizada */}
+                <div className="formGroup" ref={dropdownRef} style={{ position: 'relative' }}>
+                  <label className="formLabel">Responsáveis Encarregados</label>
+                  <div 
+                    className="multiSelectContainer formInput"
+                    onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                    style={{ cursor: 'pointer', display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center', minHeight: '40px' }}
+                  >
+                    {selectedCollaborators.map((r, i) => (
+                      <span key={i} className="multiSelectTag" style={{ paddingRight: '0.4rem' }}>
+                        {r}
+                        <button
+                          type="button"
+                          className="multiSelectRemoveBtn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedCollaborators(selectedCollaborators.filter(item => item !== r));
+                          }}
+                          title="Remover"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    
+                    {selectedCollaborators.length === 0 && (
+                      <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', userSelect: 'none' }}>
+                        Clique para selecionar...
+                      </span>
+                    )}
+
+                    <span className="multiSelectTrigger">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-secondary)' }}>
+                        <polyline points="6 9 12 15 18 9"></polyline>
+                      </svg>
+                    </span>
+                  </div>
+
+                  {/* Menu Dropdown de Colaboradores */}
+                  {isDropdownOpen && (
+                    <div className="customDropdownMenu" style={{ position: 'absolute', width: '100%', zIndex: 1200, maxHeight: '200px', overflowY: 'auto' }}>
+                      {collaborators.filter(c => !selectedCollaborators.includes(c.name)).length === 0 ? (
+                        <div className="disabledItem">
+                          {collaborators.length === 0 
+                            ? "Nenhum colaborador cadastrado." 
+                            : "Todos os colaboradores já selecionados."}
+                        </div>
+                      ) : (
+                        collaborators
+                          .filter(c => !selectedCollaborators.includes(c.name))
+                          .map(c => (
+                            <button
+                              type="button"
+                              key={c.id}
+                              className="customDropdownItem"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedCollaborators([...selectedCollaborators, c.name]);
+                                setIsDropdownOpen(false);
+                              }}
+                            >
+                              {c.name}
+                            </button>
+                          ))
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Dropdown de Status */}
+                <div className="formGroup">
+                  <label className="formLabel">Status da Demanda</label>
+                  <select
+                    className="formInput"
+                    value={modalStatus}
+                    onChange={(e) => setModalStatus(e.target.value)}
+                    required
+                  >
+                    {statuses.map(s => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Observações Extras */}
+                <div className="formGroup">
+                  <label className="formLabel">Observações Extras</label>
+                  <textarea
+                    className="formInput"
+                    style={{ minHeight: '60px' }}
+                    placeholder="Contexto adicional ou notas"
+                    value={modalObservations}
+                    onChange={(e) => setModalObservations(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="modalFooter" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.85rem', display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                <button className="btn btnSecondary" type="button" onClick={() => setIsTaskModalOpen(false)}>
+                  Cancelar
+                </button>
+                <button className="btn btnPrimary" type="submit" disabled={manualLoading}>
+                  {manualLoading ? 'Salvando...' : 'Criar Demanda'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

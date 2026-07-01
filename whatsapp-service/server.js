@@ -835,12 +835,37 @@ app.get('/messages', checkAuth, async (req, res) => {
     const rawData = fs.readFileSync(filePath, 'utf8');
     const messages = JSON.parse(rawData);
     
+    // Sempre ordena cronologicamente por timestamp (crescente: do mais antigo ao mais recente)
+    messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
     const formatText = req.query.format === 'text';
     if (formatText) {
-      const textResult = messages.map(m => {
-        const time = new Date(m.timestamp).toLocaleTimeString('pt-BR');
-        return `[${time}] ${m.name} (${m.sender}): ${m.text}`;
-      }).join('\n');
+      // Agrupa por remetente/conversa para a IA processar sem misturas
+      const grouped = {};
+      messages.forEach(m => {
+        const chatKey = m.sender;
+        if (!grouped[chatKey]) {
+          grouped[chatKey] = {
+            name: m.name || m.sender,
+            messages: []
+          };
+        }
+        grouped[chatKey].messages.push(m);
+      });
+
+      const formattedChats = [];
+      for (const chatKey in grouped) {
+        const chat = grouped[chatKey];
+        const chatMessagesText = chat.messages.map(m => {
+          const time = new Date(m.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+          const senderName = m.fromMe ? 'Eu' : (m.name || m.sender);
+          return `  [${time}] ${senderName}: ${m.text}`;
+        }).join('\n');
+        
+        formattedChats.push(`--- Conversa com: ${chat.name} (${chatKey}) ---\n${chatMessagesText}`);
+      }
+
+      const textResult = formattedChats.join('\n\n');
       return res.send(textResult);
     }
 
