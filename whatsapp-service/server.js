@@ -854,9 +854,31 @@ app.get('/messages', checkAuth, async (req, res) => {
         grouped[chatKey].messages.push(m);
       });
 
+      // Obtém contatos da instância ativa na memória para extrair nomes reais de conversas
+      const instance = instances[cleanUserId];
+      const contactsCache = instance ? (instance.contactsCache || {}) : {};
+
       const formattedChats = [];
       for (const chatKey in grouped) {
         const chat = grouped[chatKey];
+
+        // 1. Tenta pegar o nome da conversa pelo cache de contatos
+        const jid = chatKey.includes('-') ? `${chatKey}@g.us` : `${chatKey}@s.whatsapp.net`;
+        let displayName = contactsCache[jid];
+        
+        // 2. Se não estiver no cache, procura nas mensagens desse chat a primeira que não seja do próprio usuário ("Eu")
+        if (!displayName) {
+          const nonMeMessage = chat.messages.find(m => !m.fromMe);
+          if (nonMeMessage) {
+            displayName = nonMeMessage.name; // Pega o nome de perfil da outra pessoa ou participante do grupo
+          }
+        }
+        
+        // 3. Se ainda assim não achar ou for "Eu", define fallbacks seguros de Grupo ou Contato
+        if (!displayName || displayName === 'Eu') {
+          displayName = chatKey.includes('-') ? 'Grupo' : 'Contato';
+        }
+
         const chatMessagesText = chat.messages.map(m => {
           const dateTimeStr = new Date(m.timestamp).toLocaleString('pt-BR', {
             timeZone: 'America/Sao_Paulo',
@@ -870,7 +892,7 @@ app.get('/messages', checkAuth, async (req, res) => {
           return `  [${dateTimeStr}] ${senderName}: ${m.text}`;
         }).join('\n');
         
-        formattedChats.push(`--- Conversa com: ${chat.name} (${chatKey}) ---\n${chatMessagesText}`);
+        formattedChats.push(`--- Conversa com: ${displayName} (${chatKey}) ---\n${chatMessagesText}`);
       }
 
       const textResult = formattedChats.join('\n\n');
