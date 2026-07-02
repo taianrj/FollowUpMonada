@@ -990,28 +990,11 @@ export default function WhatsappSummaryClient({
               <div className="spinner" style={{ width: '28px', height: '28px', border: '3px solid rgba(245, 158, 11, 0.1)', borderTop: '3px solid #f59e0b', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                 <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#f59e0b', margin: 0 }}>
-                  🔄 Sincronizando mensagens com o celular...
+                  🔄 Sincronizando dados com o celular...
                 </h3>
                 <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0, maxWidth: '500px' }}>
                   Por favor, aguarde alguns instantes enquanto importamos o histórico recente de conversas para podermos gerar os resumos com total precisão.
                 </p>
-              </div>
-              <div style={{
-                fontSize: '0.78rem',
-                backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                padding: '0.35rem 0.85rem',
-                borderRadius: 'var(--radius-md)',
-                color: 'var(--text-muted)',
-                fontWeight: 600,
-                border: '1px solid var(--border-color)',
-                display: 'flex',
-                gap: '0.5rem',
-                flexWrap: 'wrap',
-                justifyContent: 'center'
-              }}>
-                <span>Mensagens processadas: <strong style={{ color: '#fff' }}>{whatsappMessagesCount}</strong></span>
-                <span style={{ color: 'var(--border-color)' }}>|</span>
-                <span>Contatos sincronizados: <strong style={{ color: '#fff' }}>{whatsappContactsCount}</strong></span>
               </div>
             </div>
           )}
