@@ -338,6 +338,50 @@ function bestNameFromContact(contact) {
   );
 }
 
+const CONTACT_NAME_FIELDS = [
+  'name',
+  'verifiedName',
+  'notify',
+  'shortName',
+  'pushName',
+  'subject',
+  'displayName',
+  'fullName',
+  'profileName'
+];
+
+function contactNameFields(contact) {
+  if (!contact || typeof contact !== 'object') return {};
+  return CONTACT_NAME_FIELDS.reduce((fields, field) => {
+    const value = normalizeDisplayName(contact[field]);
+    if (value) fields[field] = value;
+    return fields;
+  }, {});
+}
+
+function diagnosticsValue(value) {
+  if (value === null || value === undefined) return value;
+  const valueType = typeof value;
+  if (valueType === 'string' || valueType === 'number' || valueType === 'boolean') return value;
+  if (valueType === 'bigint') return value.toString();
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) return `[bytes:${value.length}]`;
+  if (Array.isArray(value)) return value.slice(0, 20).map(item => {
+    const itemType = typeof item;
+    if (item === null || item === undefined || itemType === 'string' || itemType === 'number' || itemType === 'boolean') return item;
+    if (itemType === 'bigint') return item.toString();
+    return '[object]';
+  });
+  return '[object]';
+}
+
+function diagnosticsShallowObject(value) {
+  if (!value || typeof value !== 'object') return {};
+  return Object.entries(value).reduce((safe, [key, fieldValue]) => {
+    safe[key] = diagnosticsValue(fieldValue);
+    return safe;
+  }, {});
+}
+
 function hasUsableProfileName(contact) {
   const name = bestNameFromContact(contact);
   return !!name && !looksLikeTechnicalName(name);
@@ -2319,6 +2363,44 @@ app.get('/contacts', checkAuth, async (req, res) => {
   });
 });
 
+// Busca diagnostica pontual no cache de contatos sem despejar a lista completa
+app.get('/diagnostics/contact-lookup', checkAuth, async (req, res) => {
+  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  if (!userId) {
+    return res.status(400).json({ error: 'Identificacao de usuario necessaria.' });
+  }
+
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const term = normalizeDisplayName(String(req.query.term || req.query.q || ''));
+  if (!term) {
+    return res.status(400).json({ error: 'Informe o termo em ?term=.' });
+  }
+
+  const instance = instances[cleanUserId];
+  const contacts = mergeContactCaches(
+    loadContactsFromFile(cleanUserId),
+    await loadContactsFromSupabase(cleanUserId),
+    instance ? instance.contactsCache : {}
+  );
+  const loweredTerm = term.toLowerCase();
+  const matches = Object.entries(contacts)
+    .filter(([jid, name]) => jid.toLowerCase().includes(loweredTerm) || String(name).toLowerCase().includes(loweredTerm))
+    .sort(([jidA], [jidB]) => jidA.localeCompare(jidB))
+    .slice(0, 200)
+    .map(([jid, name]) => ({
+      jid,
+      name,
+      technicalName: looksLikeTechnicalName(name)
+    }));
+
+  res.json({
+    term,
+    count: matches.length,
+    truncated: matches.length === 200,
+    matches
+  });
+});
+
 // Diagnostico de integridade para dar confianca sobre ordem, duplicidade e nomes
 app.get('/diagnostics', checkAuth, async (req, res) => {
   const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
@@ -2342,6 +2424,7 @@ app.get('/diagnostics/group-aliases', checkAuth, async (req, res) => {
 
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
   const groupParam = cleanJid(String(req.query.group || ''));
+  const includeRaw = ['1', 'true', 'yes'].includes(String(req.query.raw || '').toLowerCase());
   if (!groupParam) {
     return res.status(400).json({ error: 'Informe o grupo em ?group=.' });
   }
@@ -2367,13 +2450,18 @@ app.get('/diagnostics/group-aliases', checkAuth, async (req, res) => {
     subject: contacts[groupJid] || metadata?.subject || '',
     participants: (metadata?.participants || []).map(participant => {
       const aliases = contactAliasJids(participant);
-      return {
+      const output = {
         id: participant.id || '',
         jid: participant.jid || '',
         lid: participant.lid || '',
         aliases,
+        nameFields: contactNameFields(participant),
         name: bestNameFromAliases(aliases, contacts) || null
       };
+      if (includeRaw) {
+        output.raw = diagnosticsShallowObject(participant);
+      }
+      return output;
     })
   });
 });
