@@ -171,6 +171,19 @@ async function connectUserWhatsApp(userId) {
   if (!instance) return;
 
   console.log(`Iniciando conexão com o WhatsApp para o usuário: ${userId}`);
+  
+  // Limpa de forma segura qualquer socket ou listener anterior para evitar loops de reconexão concorrentes e leaks de memória
+  if (instance.sock) {
+    try {
+      console.log(`[${userId}] Encerrando conexão socket anterior de forma limpa antes de reiniciar...`);
+      instance.sock.ev.removeAllListeners();
+      instance.sock.end();
+    } catch (e) {
+      console.error(`[${userId}] Erro ao fechar socket anterior:`, e);
+    }
+    instance.sock = null;
+  }
+
   instance.connectionStatus = 'connecting';
 
   const userAuthDir = path.join(dataDir, 'auth', userId);
@@ -213,6 +226,10 @@ async function connectUserWhatsApp(userId) {
     logger: logger,
     browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
     markOnlineOnConnect: false, // Mantém as notificações push funcionando no celular do usuário
+    keepAliveIntervalMs: 15000, // Envia pings de keep-alive a cada 15 segundos para evitar que o proxy do Render encerre a conexão por ociosidade
+    connectTimeoutMs: 60000, // Tolera até 60 segundos para conexão inicial
+    retryRequestDelayMs: 2000, // Dá 2 segundos de folga para a rede se estabilizar em retentativas falhas
+    defaultQueryTimeoutMs: 60000, // Evita queries presas em background
     cachedGroupMetadata: async (jid) => {
       return instance.groupMetadataCache ? instance.groupMetadataCache[jid] : undefined;
     },
