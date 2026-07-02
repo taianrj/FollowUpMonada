@@ -525,7 +525,7 @@ async function connectUserWhatsApp(userId) {
       let chatMsgsCount = 0;
       for (const chat of chats) {
         if (chat.messages && chat.messages.length > 0) {
-          const chatMsgs = chat.messages.map(m => m.message).filter(Boolean);
+          const chatMsgs = chat.messages.filter(Boolean);
           if (chatMsgs.length > 0) {
             processUserMessages(chatMsgs);
             chatMsgsCount += chatMsgs.length;
