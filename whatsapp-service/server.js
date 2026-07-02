@@ -16,14 +16,17 @@ const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 8080;
+app.use(express.json({ limit: '1mb' }));
 
 // Configuração do diretório de dados persistentes
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 const authDir = path.join(dataDir, 'auth');
+const contactsDir = path.join(dataDir, 'contacts');
 
 // Garante que os diretórios existam
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(authDir, { recursive: true });
+fs.mkdirSync(contactsDir, { recursive: true });
 
 // Tenta carregar variáveis do .env.local do projeto pai se rodando localmente
 if (!process.env.SUPABASE_URL) {
@@ -117,7 +120,7 @@ async function loadCredsFromSupabase(userId) {
       const data = await response.json();
       if (data && data.length > 0 && data[0].creds) {
         console.log(`[${userId}] Credenciais do WhatsApp encontradas no Supabase.`);
-        return JSON.parse(data[0].creds);
+        return typeof data[0].creds === 'string' ? JSON.parse(data[0].creds) : data[0].creds;
       }
     }
   } catch (err) {
@@ -173,10 +176,440 @@ let connectionStatus = 'connecting'; // 'connecting' | 'qrcode' | 'connected' | 
 let syncStatus = 'pending'; // 'pending' | 'syncing' | 'completed'
 let messagesProcessedCount = 0;
 const contactsCache = {};
+const supabaseDisabledTables = new Set();
+const pendingContactWrites = new Map();
+const pendingContactTimers = new Map();
+
+const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '30', 10));
+const SUPABASE_TIMEOUT_MS = Math.max(2000, parseInt(process.env.SUPABASE_TIMEOUT_MS || '8000', 10));
+const CONTACT_FLUSH_DELAY_MS = Math.max(250, parseInt(process.env.CONTACT_FLUSH_DELAY_MS || '1200', 10));
+const SYNC_IDLE_COMPLETE_MS = Math.max(5000, parseInt(process.env.SYNC_IDLE_COMPLETE_MS || '30000', 10));
+const JSON_INDENT = process.env.NODE_ENV === 'production' ? 0 : 2;
+
+function getSupabaseConfig() {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseKey) return null;
+  return {
+    cleanUrl: supabaseUrl.replace(/\/$/, ''),
+    key: supabaseKey
+  };
+}
+
+async function supabaseRest(table, query = '', options = {}) {
+  if (supabaseDisabledTables.has(table)) return null;
+
+  const config = getSupabaseConfig();
+  if (!config) return null;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SUPABASE_TIMEOUT_MS);
+  const headers = {
+    'apikey': config.key,
+    'Authorization': `Bearer ${config.key}`,
+    ...(options.headers || {})
+  };
+
+  try {
+    const response = await fetch(`${config.cleanUrl}/rest/v1/${table}${query}`, {
+      ...options,
+      headers,
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      if (response.status === 404 || errText.includes('PGRST205') || errText.includes('does not exist')) {
+        supabaseDisabledTables.add(table);
+        console.warn(`[supabase] Tabela ${table} indisponivel. Usando cache local ate a migracao ser aplicada.`);
+        return null;
+      }
+      console.warn(`[supabase] Falha na tabela ${table}:`, response.status, errText.slice(0, 300));
+      return null;
+    }
+
+    return response;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    console.warn(`[supabase] Falha de rede na tabela ${table}:`, err.message || err);
+    return null;
+  }
+}
+
+function stateBlobId(userId, kind, key = 'default') {
+  return `${userId}:${kind}:${key}`;
+}
+
+async function saveStateBlobToSupabase(userId, kind, key, payload) {
+  const id = stateBlobId(userId, kind, key);
+  const response = await supabaseRest(
+    'whatsapp_sessions',
+    '?on_conflict=id',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-dupes,return=minimal'
+      },
+      body: JSON.stringify({
+        id,
+        creds: JSON.stringify(payload),
+        updated_at: new Date().toISOString()
+      })
+    }
+  );
+  return !!response;
+}
+
+async function loadStateBlobFromSupabase(userId, kind, key = 'default') {
+  const id = stateBlobId(userId, kind, key);
+  const response = await supabaseRest(
+    'whatsapp_sessions',
+    `?id=eq.${supabaseEq(id)}&select=creds&limit=1`
+  );
+  if (!response) return null;
+
+  try {
+    const rows = await response.json();
+    const raw = rows?.[0]?.creds;
+    if (!raw) return null;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao carregar snapshot ${kind}/${key}:`, err.message || err);
+    return null;
+  }
+}
+
+function supabaseEq(value) {
+  return encodeURIComponent(String(value));
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function normalizeDisplayName(name) {
+  if (!name || typeof name !== 'string') return '';
+  return name
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function bestNameFromContact(contact) {
+  if (!contact || typeof contact !== 'object') return '';
+  return normalizeDisplayName(
+    contact.name ||
+    contact.verifiedName ||
+    contact.notify ||
+    contact.shortName ||
+    contact.pushName ||
+    contact.subject ||
+    ''
+  );
+}
+
+function looksLikeTechnicalName(name) {
+  if (!name) return true;
+  return name.includes('@') || /^[+\d\s().-]{6,}$/.test(name.trim());
+}
+
+function isBetterContactName(nextName, currentName) {
+  if (!nextName) return false;
+  if (!currentName) return true;
+  if (nextName === currentName) return false;
+  if (looksLikeTechnicalName(nextName) && !looksLikeTechnicalName(currentName)) return false;
+  if (!looksLikeTechnicalName(nextName) && looksLikeTechnicalName(currentName)) return true;
+  return nextName.length > currentName.length;
+}
+
+function jidNumber(jid) {
+  return cleanJid(jid).split('@')[0] || '';
+}
+
+function isGroupJid(jid) {
+  return cleanJid(jid).endsWith('@g.us');
+}
+
+function isSupportedChatJid(jid) {
+  const cleaned = cleanJid(jid);
+  return cleaned.endsWith('@s.whatsapp.net') || cleaned.endsWith('@g.us') || cleaned.endsWith('@lid');
+}
+
+function contactTypeFromJid(jid) {
+  return isGroupJid(jid) ? 'group' : 'contact';
+}
+
+function contactsFilePath(userId) {
+  return path.join(contactsDir, `${userId}.json`);
+}
+
+function loadContactsFromFile(userId) {
+  const filePath = contactsFilePath(userId);
+  try {
+    if (!fs.existsSync(filePath)) return {};
+    const rawData = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(rawData);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao ler cache local de contatos:`, err.message || err);
+    return {};
+  }
+}
+
+function saveContactsToFile(userId, contacts) {
+  const filePath = contactsFilePath(userId);
+  try {
+    fs.mkdirSync(contactsDir, { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(contacts || {}, null, JSON_INDENT), 'utf8');
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao salvar cache local de contatos:`, err.message || err);
+  }
+}
+
+function scheduleContactsFileSave(userId, instance) {
+  if (!instance) return;
+  if (instance.contactsSaveTimer) clearTimeout(instance.contactsSaveTimer);
+  instance.contactsSaveTimer = setTimeout(() => {
+    saveContactsToFile(userId, instance.contactsCache || {});
+    instance.contactsSaveTimer = null;
+  }, 1000);
+}
+
+function queueContactPersist(userId, jid, name, source = 'sync') {
+  const cleanId = cleanJid(jid);
+  const cleanName = normalizeDisplayName(name);
+  if (!cleanId || !cleanName) return;
+
+  if (!pendingContactWrites.has(userId)) {
+    pendingContactWrites.set(userId, new Map());
+  }
+
+  pendingContactWrites.get(userId).set(cleanId, {
+    user_id: userId,
+    jid: cleanId,
+    name: cleanName,
+    type: contactTypeFromJid(cleanId),
+    source,
+    updated_at: new Date().toISOString()
+  });
+
+  if (pendingContactTimers.has(userId)) {
+    clearTimeout(pendingContactTimers.get(userId));
+  }
+
+  pendingContactTimers.set(userId, setTimeout(() => {
+    flushContactPersist(userId).catch(err => {
+      console.warn(`[${userId}] Falha ao persistir contatos pendentes:`, err.message || err);
+    });
+  }, CONTACT_FLUSH_DELAY_MS));
+}
+
+async function flushContactPersist(userId) {
+  const timer = pendingContactTimers.get(userId);
+  if (timer) clearTimeout(timer);
+  pendingContactTimers.delete(userId);
+
+  const pending = pendingContactWrites.get(userId);
+  if (!pending || pending.size === 0) return 0;
+  pendingContactWrites.delete(userId);
+
+  const rows = Array.from(pending.values());
+  let persisted = 0;
+
+  for (const chunk of chunkArray(rows, 500)) {
+    const response = await supabaseRest(
+      'whatsapp_contacts',
+      '?on_conflict=user_id,jid',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-dupes,return=minimal'
+        },
+        body: JSON.stringify(chunk)
+      }
+    );
+    if (response) persisted += chunk.length;
+  }
+
+  if (persisted < rows.length) {
+    const existingSnapshot = await loadStateBlobFromSupabase(userId, 'contacts') || {};
+    const mergedSnapshot = { ...existingSnapshot };
+    for (const row of rows) {
+      if (isBetterContactName(row.name, mergedSnapshot[row.jid])) {
+        mergedSnapshot[row.jid] = row.name;
+      }
+    }
+    await saveStateBlobToSupabase(userId, 'contacts', 'default', mergedSnapshot);
+  }
+
+  return persisted;
+}
+
+async function loadContactsFromSupabase(userId) {
+  const response = await supabaseRest(
+    'whatsapp_contacts',
+    `?user_id=eq.${supabaseEq(userId)}&select=jid,name&limit=20000`
+  );
+  if (!response) {
+    const fallbackContacts = await loadStateBlobFromSupabase(userId, 'contacts');
+    return fallbackContacts && typeof fallbackContacts === 'object' ? fallbackContacts : {};
+  }
+
+  try {
+    const rows = await response.json();
+    return rows.reduce((acc, row) => {
+      const jid = cleanJid(row.jid);
+      const name = normalizeDisplayName(row.name);
+      if (jid && name) acc[jid] = name;
+      return acc;
+    }, {});
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao carregar contatos do Supabase:`, err.message || err);
+  }
+
+  const fallbackContacts = await loadStateBlobFromSupabase(userId, 'contacts');
+  return fallbackContacts && typeof fallbackContacts === 'object' ? fallbackContacts : {};
+}
+
+function mergeContactCaches(...caches) {
+  const merged = {};
+  for (const cache of caches) {
+    if (!cache || typeof cache !== 'object') continue;
+    for (const [jid, name] of Object.entries(cache)) {
+      const cleanId = cleanJid(jid);
+      const cleanName = normalizeDisplayName(name);
+      if (cleanId && isBetterContactName(cleanName, merged[cleanId])) {
+        merged[cleanId] = cleanName;
+      }
+    }
+  }
+  return merged;
+}
+
+function getMessageTimestampMs(msg) {
+  const raw = msg && msg.messageTimestamp;
+  if (!raw) return Date.now();
+  if (typeof raw === 'number') return raw > 1e12 ? raw : raw * 1000;
+  if (typeof raw === 'bigint') {
+    const asNumber = Number(raw);
+    return asNumber > 1e12 ? asNumber : asNumber * 1000;
+  }
+  if (typeof raw === 'object') {
+    if (typeof raw.toNumber === 'function') {
+      const asNumber = raw.toNumber();
+      return asNumber > 1e12 ? asNumber : asNumber * 1000;
+    }
+    if (typeof raw.low === 'number') {
+      return raw.low > 1e12 ? raw.low : raw.low * 1000;
+    }
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? (parsed > 1e12 ? parsed : parsed * 1000) : Date.now();
+}
+
+function messageDateStr(timestamp) {
+  return yyyymmddFormatter.format(new Date(timestamp));
+}
+
+function createDedupeKey(messageObject) {
+  const chat = messageObject.chatJid || `${messageObject.sender || ''}@unknown`;
+  const participant = messageObject.participantJid || messageObject.participant || '';
+  const id = messageObject.id || '';
+  return `${chat}|${participant}|${id}`;
+}
+
+function inferChatJidFromMessage(message) {
+  if (message.chatJid) return cleanJid(message.chatJid);
+  if (!message.sender) return '';
+  if (message.sender.includes('@')) return cleanJid(message.sender);
+  if (message.chatType === 'group' || (message.participant && message.participant !== message.sender)) {
+    return `${message.sender}@g.us`;
+  }
+  return `${message.sender}@s.whatsapp.net`;
+}
+
+function inferParticipantJidFromMessage(message) {
+  if (message.participantJid) return cleanJid(message.participantJid);
+  if (!message.participant) return inferChatJidFromMessage(message);
+  if (message.participant.includes('@')) return cleanJid(message.participant);
+  return `${message.participant}@s.whatsapp.net`;
+}
+
+function normalizeStoredMessage(message) {
+  const chatJid = inferChatJidFromMessage(message);
+  const participantJid = inferParticipantJidFromMessage(message);
+  const normalized = {
+    id: message.id || message.message_id || '',
+    dedupeKey: message.dedupeKey || message.dedupe_key || '',
+    sender: message.sender || message.chat_number || jidNumber(chatJid),
+    chatJid,
+    chatName: normalizeDisplayName(message.chatName || message.chat_name || ''),
+    participant: message.participant || message.participant_number || jidNumber(participantJid),
+    participantJid,
+    name: normalizeDisplayName(message.name || message.display_name || ''),
+    text: typeof message.text === 'string' ? message.text : '',
+    fromMe: Boolean(message.fromMe ?? message.from_me),
+    timestamp: message.timestamp || message.message_timestamp || new Date().toISOString()
+  };
+  normalized.dedupeKey = normalized.dedupeKey || createDedupeKey(normalized);
+  return normalized;
+}
+
+function mergeMessages(localMessages, remoteMessages) {
+  const merged = new Map();
+
+  for (const raw of [...(localMessages || []), ...(remoteMessages || [])]) {
+    const message = normalizeStoredMessage(raw);
+    if (!message.id && !message.text) continue;
+    const key = message.dedupeKey || createDedupeKey(message);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, message);
+      continue;
+    }
+
+    merged.set(key, {
+      ...existing,
+      ...message,
+      chatName: isBetterContactName(message.chatName, existing.chatName) ? message.chatName : existing.chatName,
+      name: isBetterContactName(message.name, existing.name) ? message.name : existing.name,
+      text: message.text || existing.text
+    });
+  }
+
+  return Array.from(merged.values()).sort(compareMessagesChronologically);
+}
+
+function compareMessagesChronologically(a, b) {
+  const timeA = new Date(a.timestamp).getTime();
+  const timeB = new Date(b.timestamp).getTime();
+  if (timeA !== timeB) return timeA - timeB;
+  return String(a.id || '').localeCompare(String(b.id || ''));
+}
+
+function resolveMessageSenderName(message, contactsCache, isGroup) {
+  if (message.fromMe) return 'Eu';
+  const participantJid = message.participantJid || inferParticipantJidFromMessage(message);
+  const cachedName = contactsCache && contactsCache[participantJid];
+  if (cachedName && !looksLikeTechnicalName(cachedName)) return cachedName;
+  if (message.name && !looksLikeTechnicalName(message.name)) return message.name;
+  if (!isGroup && message.chatName && !looksLikeTechnicalName(message.chatName)) return message.chatName;
+  return message.participant || message.sender || jidNumber(participantJid);
+}
 
 // Helper para atualizar retroativamente os nomes das mensagens em arquivos físicos diários
 function updateMessageNamesInFiles(userId, contactId, contactName) {
   const cleanedContactId = cleanJid(contactId);
+  const cleanedContactName = normalizeDisplayName(contactName);
+  if (!cleanedContactId || !cleanedContactName) return;
   const senderNumber = cleanedContactId.split('@')[0];
   const userMsgDir = path.join(dataDir, 'messages', userId);
   try {
@@ -194,14 +627,15 @@ function updateMessageNamesInFiles(userId, contactId, contactName) {
         for (const m of messages) {
           const rawMsgSender = m.participant || m.sender;
           const msgSender = cleanJid(rawMsgSender + (rawMsgSender.includes('@') ? '' : '@s.whatsapp.net')).split('@')[0];
-          if (msgSender === senderNumber && !m.fromMe && m.name !== contactName) {
-            m.name = contactName;
+          if (msgSender === senderNumber && !m.fromMe && isBetterContactName(cleanedContactName, m.name)) {
+            m.name = cleanedContactName;
+            m.participantJid = cleanedContactId;
             modified = true;
           }
         }
         
         if (modified) {
-          fs.writeFileSync(filePath, JSON.stringify(messages, null, 2), 'utf8');
+          fs.writeFileSync(filePath, JSON.stringify(messages, null, JSON_INDENT), 'utf8');
         }
       }
     }
@@ -211,17 +645,32 @@ function updateMessageNamesInFiles(userId, contactId, contactName) {
 }
 
 // Helper para adicionar contato ao cache e disparar atualização nos logs diários
-function addContactToCache(userId, instance, id, name) {
-  if (!id || !name) return;
+function addContactToCache(userId, instance, id, name, source = 'sync') {
+  if (!id || !name || !instance) return false;
   const cleanedId = cleanJid(id);
-  instance.contactsCache[cleanedId] = name;
-  updateMessageNamesInFiles(userId, cleanedId, name);
+  const cleanedName = normalizeDisplayName(name);
+  if (!cleanedId || !cleanedName) return false;
+
+  const currentName = instance.contactsCache[cleanedId];
+  if (!isBetterContactName(cleanedName, currentName)) return false;
+
+  instance.contactsCache[cleanedId] = cleanedName;
+  updateMessageNamesInFiles(userId, cleanedId, cleanedName);
+  scheduleContactsFileSave(userId, instance);
+  queueContactPersist(userId, cleanedId, cleanedName, source);
+  return true;
 }
 
 // Inicia a conexão com o WhatsApp para um usuário específico de forma isolada
 async function connectUserWhatsApp(userId) {
   const instance = instances[userId];
   if (!instance) return;
+  const connectionGeneration = (instance.connectionGeneration || 0) + 1;
+  instance.connectionGeneration = connectionGeneration;
+  if (instance.reconnectTimer) {
+    clearTimeout(instance.reconnectTimer);
+    instance.reconnectTimer = null;
+  }
 
   console.log(`Iniciando conexão com o WhatsApp para o usuário: ${userId}`);
   
@@ -324,6 +773,7 @@ async function connectUserWhatsApp(userId) {
 
   // Monitora alterações na conexão
   sock.ev.on('connection.update', (update) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
     const { connection, lastDisconnect, qr, receivedPendingNotifications } = update;
 
     if (qr) {
@@ -349,7 +799,11 @@ async function connectUserWhatsApp(userId) {
       if (shouldReconnect) {
         console.log(`[${userId}] Tentando reconectar em 5 segundos...`);
         instance.connectionStatus = 'connecting';
-        setTimeout(() => connectUserWhatsApp(userId), 5000);
+        if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
+        instance.reconnectTimer = setTimeout(() => {
+          instance.reconnectTimer = null;
+          connectUserWhatsApp(userId);
+        }, 5000);
       } else {
         console.log(`[${userId}] Desconectado permanentemente (Sessão encerrada pelo celular). Excluindo credenciais...`);
         instance.connectionStatus = 'disconnected';
@@ -364,12 +818,20 @@ async function connectUserWhatsApp(userId) {
           console.error(`[${userId}] Erro ao limpar pasta de auth:`, e);
         }
         console.log(`[${userId}] Reiniciando conexão em 3 segundos para gerar novo QR Code...`);
-        setTimeout(() => connectUserWhatsApp(userId), 3000);
+        if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
+        instance.reconnectTimer = setTimeout(() => {
+          instance.reconnectTimer = null;
+          connectUserWhatsApp(userId);
+        }, 3000);
       }
     } else if (connection === 'open') {
       instance.currentQr = null;
       instance.connectionStatus = 'connected';
       instance.syncStatus = 'syncing';
+      if (instance.reconnectTimer) {
+        clearTimeout(instance.reconnectTimer);
+        instance.reconnectTimer = null;
+      }
       console.log(`[${userId}] WhatsApp conectado com sucesso!`);
       resetUserSyncTimer(userId);
     }
@@ -377,10 +839,11 @@ async function connectUserWhatsApp(userId) {
 
   // Sincroniza a lista de contatos quando houver novos contatos adicionados
   sock.ev.on('contacts.upsert', (contacts) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
     for (const contact of contacts) {
-      const name = contact.name || contact.verifiedName;
+      const name = bestNameFromContact(contact);
       if (contact.id && name) {
-        addContactToCache(userId, instance, contact.id, name);
+        addContactToCache(userId, instance, contact.id, name, 'contacts.upsert');
       }
     }
     resetUserSyncTimer(userId);
@@ -388,10 +851,11 @@ async function connectUserWhatsApp(userId) {
 
   // Atualiza dados dos contatos da agenda caso mudem de nome
   sock.ev.on('contacts.update', (contacts) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
     for (const contact of contacts) {
-      const name = contact.name || contact.verifiedName;
+      const name = bestNameFromContact(contact);
       if (contact.id && name) {
-        addContactToCache(userId, instance, contact.id, name);
+        addContactToCache(userId, instance, contact.id, name, 'contacts.update');
       }
     }
     resetUserSyncTimer(userId);
@@ -399,10 +863,12 @@ async function connectUserWhatsApp(userId) {
 
   // Sincroniza metadados dos grupos e salva no cache para otimizar consultas e evitar rate-limit
   sock.ev.on('groups.update', async ([event]) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
     try {
       if (sock && event.id && instance.groupMetadataCache) {
         const metadata = await sock.groupMetadata(event.id);
         instance.groupMetadataCache[event.id] = metadata;
+        addContactToCache(userId, instance, event.id, metadata.subject || event.subject, 'groups.update');
       }
     } catch (err) {
       console.warn(`[${userId}] Falha ao atualizar cache de grupo no groups.update:`, err.message);
@@ -410,10 +876,12 @@ async function connectUserWhatsApp(userId) {
   });
 
   sock.ev.on('group-participants.update', async (event) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
     try {
       if (sock && event.id && instance.groupMetadataCache) {
         const metadata = await sock.groupMetadata(event.id);
         instance.groupMetadataCache[event.id] = metadata;
+        addContactToCache(userId, instance, event.id, metadata.subject, 'group-participants.update');
       }
     } catch (err) {
       console.warn(`[${userId}] Falha ao atualizar cache de grupo no group-participants.update:`, err.message);
@@ -421,84 +889,104 @@ async function connectUserWhatsApp(userId) {
   });
 
   // Função auxiliar para processar e salvar um lote de mensagens
-  function processUserMessages(messagesList) {
+  async function processUserMessages(messagesList) {
     if (!messagesList || messagesList.length === 0) return;
 
-    // Retém apenas mensagens das últimas 72 horas (3 dias) para economizar RAM/Disco no Render gratuito
-    const threeDaysAgo = Date.now() - (3 * 24 * 60 * 60 * 1000);
+    // Retem apenas uma janela configuravel para evitar que o Render gratuito cresca sem limite.
+    const retentionThreshold = Date.now() - (MESSAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
     const filteredList = messagesList.filter(msg => {
       if (!msg) return false;
-      const msgTimestampMs = (msg.messageTimestamp ? msg.messageTimestamp * 1000 : Date.now());
-      return msgTimestampMs >= threeDaysAgo;
+      return getMessageTimestampMs(msg) >= retentionThreshold;
     });
 
     if (filteredList.length === 0) return;
 
     instance.messagesProcessedCount += filteredList.length;
     resetUserSyncTimer(userId);
-    
+
+    const messageObjects = [];
+
     for (const msg of filteredList) {
       try {
         if (!msg.key || !msg.key.remoteJid) continue;
         
-        const sender = msg.key.remoteJid;
+        const chatJid = cleanJid(msg.key.remoteJid);
         
         // Mantém chats privados (@s.whatsapp.net) e grupos (@g.us).
-        if (!sender.endsWith('@s.whatsapp.net') && !sender.endsWith('@g.us')) continue;
+        if (!isSupportedChatJid(chatJid)) continue;
 
         const fromMe = msg.key.fromMe;
+        const isGroup = isGroupJid(chatJid);
         
         // Determina o nome do remetente individual
-        const participantJid = cleanJid(msg.key.participant || msg.participant || msg.key.remoteJid);
+        const participantJid = cleanJid(msg.key.participant || msg.participant || (isGroup && fromMe && instance.sock?.user?.id) || chatJid);
         
         let pushName = 'Eu';
         if (!fromMe) {
           const savedName = instance.contactsCache[participantJid];
-          pushName = savedName || msg.pushName || participantJid.split('@')[0];
+          pushName = savedName || normalizeDisplayName(msg.pushName) || jidNumber(participantJid);
+          if (msg.pushName) {
+            addContactToCache(userId, instance, participantJid, msg.pushName, 'message.pushName');
+          }
         }
+
+        const chatName = instance.contactsCache[chatJid] || (!isGroup && !fromMe ? pushName : '');
+        if (!isGroup && !fromMe && pushName) {
+          addContactToCache(userId, instance, chatJid, pushName, 'message.chat');
+        }
+
         const text = getMessageText(msg);
 
         // Ignora se não houver texto legível (ex: figurinhas, reações, chamadas de áudio)
         if (!text.trim()) continue;
 
-        const timestamp = (msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000) : new Date());
-        
-        const dateStr = yyyymmddFormatter.format(timestamp); // YYYY-MM-DD usando o formatador global ultra-rápido
+        const timestamp = new Date(getMessageTimestampMs(msg));
         
         const messageObject = {
           id: msg.key.id,
-          sender: cleanJid(sender).split('@')[0],
-          participant: cleanJid(participantJid).split('@')[0], // Identifica quem de fato enviou sem sufixo de dispositivo para compatibilidade retroativa
+          sender: jidNumber(chatJid),
+          chatJid,
+          chatName,
+          participant: jidNumber(participantJid), // Identifica quem de fato enviou sem sufixo de dispositivo para compatibilidade retroativa
+          participantJid,
           name: pushName,
           text: text,
           fromMe: fromMe,
           timestamp: timestamp.toISOString()
         };
+        messageObject.dedupeKey = createDedupeKey(messageObject);
 
-        saveUserMessageToFile(userId, dateStr, messageObject);
+        messageObjects.push(messageObject);
 
       } catch (err) {
         console.error(`[${userId}] Erro ao processar mensagem do lote:`, err);
       }
     }
+
+    const savedMessages = saveUserMessagesBatch(userId, messageObjects);
+    if (savedMessages.length > 0) {
+      await persistMessagesToSupabase(userId, savedMessages);
+    }
   }
 
   // Escuta novas mensagens (enviadas e recebidas em tempo real)
   sock.ev.on('messages.upsert', async (m) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
     if (m.type !== 'notify') return;
-    processUserMessages(m.messages);
+    await processUserMessages(m.messages);
   });
 
   // Escuta o histórico de mensagens inicial enviado pelo WhatsApp na sincronização
   sock.ev.on('messaging-history.set', async ({ chats, contacts, messages }) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
     let totalMessages = 0;
     
     // 0. Sincroniza a lista de contatos da agenda inicial do celular
     if (contacts && contacts.length > 0) {
       for (const contact of contacts) {
-        const name = contact.name || contact.verifiedName;
+        const name = bestNameFromContact(contact);
         if (contact.id && name) {
-          addContactToCache(userId, instance, contact.id, name);
+          addContactToCache(userId, instance, contact.id, name, 'history.contacts');
         }
       }
       console.log(`[${userId}] Sincronizados ${contacts.length} contatos da agenda.`);
@@ -508,9 +996,9 @@ async function connectUserWhatsApp(userId) {
     if (chats && chats.length > 0) {
       let syncGroupNamesCount = 0;
       for (const chat of chats) {
-        const name = chat.name;
+        const name = bestNameFromContact(chat);
         if (chat.id && name) {
-          addContactToCache(userId, instance, chat.id, name);
+          addContactToCache(userId, instance, chat.id, name, 'history.chats');
           if (chat.id.endsWith('@g.us')) {
             syncGroupNamesCount++;
           }
@@ -521,24 +1009,23 @@ async function connectUserWhatsApp(userId) {
     
     // 1. Processa mensagens do array global (se houver)
     if (messages && messages.length > 0) {
-      processUserMessages(messages);
+      await processUserMessages(messages);
       totalMessages += messages.length;
     }
     
     // 2. Extrai e processa mensagens do histórico de cada chat (onde o Baileys agrupa o histórico real)
     if (chats && chats.length > 0) {
       let chatMsgsCount = 0;
-      const threeDaysAgo = Date.now() - (3 * 24 * 60 * 60 * 1000);
+      const retentionThreshold = Date.now() - (MESSAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
       for (const chat of chats) {
         if (chat.messages && chat.messages.length > 0) {
-          // Filtra na origem do chat as mensagens com menos de 3 dias para poupar RAM e CPU
+          // Filtra na origem do chat as mensagens recentes para poupar RAM e CPU
           const chatMsgs = chat.messages.filter(m => {
             if (!m) return false;
-            const msgTimestampMs = (m.messageTimestamp ? m.messageTimestamp * 1000 : Date.now());
-            return msgTimestampMs >= threeDaysAgo;
+            return getMessageTimestampMs(m) >= retentionThreshold;
           });
           if (chatMsgs.length > 0) {
-            processUserMessages(chatMsgs);
+            await processUserMessages(chatMsgs);
             chatMsgsCount += chatMsgs.length;
           }
         }
@@ -546,6 +1033,8 @@ async function connectUserWhatsApp(userId) {
       totalMessages += chatMsgsCount;
     }
     
+    await flushContactPersist(userId);
+    saveContactsToFile(userId, instance.contactsCache || {});
     console.log(`[${userId}] Carga de histórico finalizada. Total de mensagens processadas: ${totalMessages}`);
   });
 }
@@ -554,7 +1043,7 @@ async function connectUserWhatsApp(userId) {
 function getMessageText(msg) {
   if (!msg.message) return '';
   
-  const content = msg.message;
+  const content = unwrapMessageContent(msg.message);
   
   // Trata mensagem de texto simples
   if (content.conversation) return content.conversation;
@@ -567,40 +1056,225 @@ function getMessageText(msg) {
   
   // Trata mensagem de vídeo com legenda
   if (content.videoMessage) return content.videoMessage.caption || '';
+
+  // Trata documentos e locais com legenda/descricao
+  if (content.documentMessage) return content.documentMessage.caption || content.documentMessage.fileName || '';
+  if (content.liveLocationMessage) return content.liveLocationMessage.caption || '';
+  if (content.locationMessage) return content.locationMessage.name || content.locationMessage.address || '';
   
   // Trata mensagem com botões ou interações
-  if (content.buttonsResponseMessage) return content.buttonsResponseMessage.selectedButtonId || '';
-  if (content.templateButtonReplyMessage) return content.templateButtonReplyMessage.selectedId || '';
+  if (content.buttonsResponseMessage) {
+    return content.buttonsResponseMessage.selectedDisplayText || content.buttonsResponseMessage.selectedButtonId || '';
+  }
+  if (content.templateButtonReplyMessage) {
+    return content.templateButtonReplyMessage.selectedDisplayText || content.templateButtonReplyMessage.selectedId || '';
+  }
+  if (content.listResponseMessage) {
+    const reply = content.listResponseMessage.singleSelectReply || {};
+    return content.listResponseMessage.title || content.listResponseMessage.description || reply.selectedRowId || '';
+  }
+  if (content.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
+    try {
+      const params = JSON.parse(content.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
+      return params.display_text || params.title || params.id || '';
+    } catch {
+      return content.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson;
+    }
+  }
+  if (content.pollCreationMessage) return content.pollCreationMessage.name || '';
+  if (content.pollCreationMessageV3) return content.pollCreationMessageV3.name || '';
+  if (content.contactMessage) return content.contactMessage.displayName || '';
 
   return '';
 }
 
-// Salva mensagens localmente em arquivos JSON por data e isolado por usuário
-function saveUserMessageToFile(userId, dateStr, messageObject) {
-  const userMsgDir = path.join(dataDir, 'messages', userId);
-  fs.mkdirSync(userMsgDir, { recursive: true });
-  const filePath = path.join(userMsgDir, `messages-${dateStr}.json`);
-  let messages = [];
+function unwrapMessageContent(content) {
+  let current = content || {};
+  const visited = new Set();
 
-  try {
-    if (fs.existsSync(filePath)) {
-      const rawData = fs.readFileSync(filePath, 'utf8');
-      messages = JSON.parse(rawData);
+  while (current && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+
+    if (current.ephemeralMessage?.message) {
+      current = current.ephemeralMessage.message;
+      continue;
     }
-  } catch (e) {
-    console.error(`Erro ao ler mensagens de ${dateStr} do usuário ${userId}:`, e);
+    if (current.viewOnceMessage?.message) {
+      current = current.viewOnceMessage.message;
+      continue;
+    }
+    if (current.viewOnceMessageV2?.message) {
+      current = current.viewOnceMessageV2.message;
+      continue;
+    }
+    if (current.viewOnceMessageV2Extension?.message) {
+      current = current.viewOnceMessageV2Extension.message;
+      continue;
+    }
+    if (current.documentWithCaptionMessage?.message) {
+      current = current.documentWithCaptionMessage.message;
+      continue;
+    }
+    if (current.editedMessage?.message) {
+      current = current.editedMessage.message;
+      continue;
+    }
+    if (current.protocolMessage?.editedMessage) {
+      current = current.protocolMessage.editedMessage;
+      continue;
+    }
+
+    break;
   }
 
-  // Previne salvar duplicatas
-  const isDuplicate = messages.some(m => m.id === messageObject.id);
-  if (!isDuplicate) {
-    messages.push(messageObject);
+  return current || {};
+}
+
+// Salva mensagens localmente em arquivos JSON por data e isolado por usuário
+function saveUserMessagesBatch(userId, messageObjects) {
+  if (!messageObjects || messageObjects.length === 0) return [];
+
+  const userMsgDir = path.join(dataDir, 'messages', userId);
+  fs.mkdirSync(userMsgDir, { recursive: true });
+  const messagesByDate = new Map();
+  const savedMessages = [];
+
+  for (const rawMessage of messageObjects) {
+    const messageObject = normalizeStoredMessage(rawMessage);
+    if (!messageObject.text || !messageObject.timestamp) continue;
+    const dateStr = messageDateStr(new Date(messageObject.timestamp).getTime());
+    if (!messagesByDate.has(dateStr)) messagesByDate.set(dateStr, []);
+    messagesByDate.get(dateStr).push(messageObject);
+  }
+
+  for (const [dateStr, dateMessages] of messagesByDate.entries()) {
+    const filePath = path.join(userMsgDir, `messages-${dateStr}.json`);
+    let messages = [];
+
     try {
-      fs.writeFileSync(filePath, JSON.stringify(messages, null, 2), 'utf8');
+      if (fs.existsSync(filePath)) {
+        const rawData = fs.readFileSync(filePath, 'utf8');
+        messages = JSON.parse(rawData).map(normalizeStoredMessage);
+      }
+    } catch (e) {
+      console.error(`Erro ao ler mensagens de ${dateStr} do usuário ${userId}:`, e);
+    }
+
+    const seen = new Set(messages.map(m => m.dedupeKey || createDedupeKey(m)));
+    let changed = false;
+
+    for (const messageObject of dateMessages) {
+      const dedupeKey = messageObject.dedupeKey || createDedupeKey(messageObject);
+      if (seen.has(dedupeKey)) continue;
+      messageObject.dedupeKey = dedupeKey;
+      seen.add(dedupeKey);
+      messages.push(messageObject);
+      savedMessages.push(messageObject);
+      changed = true;
+    }
+
+    if (!changed) continue;
+
+    try {
+      messages.sort(compareMessagesChronologically);
+      fs.writeFileSync(filePath, JSON.stringify(messages, null, JSON_INDENT), 'utf8');
     } catch (e) {
       console.error(`Erro ao gravar mensagens de ${dateStr} do usuário ${userId}:`, e);
     }
   }
+
+  return savedMessages;
+}
+
+async function persistMessagesToSupabase(userId, messages) {
+  if (!messages || messages.length === 0) return 0;
+
+  const rows = messages.map(message => {
+    const normalized = normalizeStoredMessage(message);
+    return {
+      user_id: userId,
+      dedupe_key: normalized.dedupeKey,
+      message_id: normalized.id,
+      chat_jid: normalized.chatJid,
+      chat_number: normalized.sender,
+      chat_name: normalized.chatName || null,
+      participant_jid: normalized.participantJid,
+      participant_number: normalized.participant,
+      display_name: normalized.name || null,
+      text: normalized.text,
+      from_me: normalized.fromMe,
+      message_timestamp: normalized.timestamp,
+      message_date: messageDateStr(new Date(normalized.timestamp).getTime()),
+      updated_at: new Date().toISOString()
+    };
+  });
+
+  let persisted = 0;
+  for (const chunk of chunkArray(rows, 250)) {
+    const response = await supabaseRest(
+      'whatsapp_messages',
+      '?on_conflict=user_id,dedupe_key',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-dupes,return=minimal'
+        },
+        body: JSON.stringify(chunk)
+      }
+    );
+    if (response) persisted += chunk.length;
+  }
+
+  if (persisted < rows.length) {
+    const messagesByDate = new Map();
+    for (const message of messages.map(normalizeStoredMessage)) {
+      const dateStr = messageDateStr(new Date(message.timestamp).getTime());
+      if (!messagesByDate.has(dateStr)) messagesByDate.set(dateStr, []);
+      messagesByDate.get(dateStr).push(message);
+    }
+
+    for (const [dateStr, dateMessages] of messagesByDate.entries()) {
+      const existingSnapshot = await loadStateBlobFromSupabase(userId, 'messages', dateStr) || [];
+      const mergedSnapshot = mergeMessages(existingSnapshot, dateMessages);
+      await saveStateBlobToSupabase(userId, 'messages', dateStr, mergedSnapshot);
+    }
+  }
+
+  return persisted;
+}
+
+async function loadMessagesFromSupabase(userId, dateStr) {
+  const response = await supabaseRest(
+    'whatsapp_messages',
+    `?user_id=eq.${supabaseEq(userId)}&message_date=eq.${supabaseEq(dateStr)}&select=dedupe_key,message_id,chat_jid,chat_number,chat_name,participant_jid,participant_number,display_name,text,from_me,message_timestamp&order=message_timestamp.asc&limit=20000`
+  );
+  if (!response) {
+    const fallbackMessages = await loadStateBlobFromSupabase(userId, 'messages', dateStr);
+    return Array.isArray(fallbackMessages) ? fallbackMessages.map(normalizeStoredMessage) : [];
+  }
+
+  try {
+    const rows = await response.json();
+    return rows.map(row => normalizeStoredMessage({
+      dedupe_key: row.dedupe_key,
+      message_id: row.message_id,
+      chat_jid: row.chat_jid,
+      chat_number: row.chat_number,
+      chat_name: row.chat_name,
+      participant_jid: row.participant_jid,
+      participant_number: row.participant_number,
+      display_name: row.display_name,
+      text: row.text,
+      from_me: row.from_me,
+      message_timestamp: row.message_timestamp
+    }));
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao carregar mensagens do Supabase:`, err.message || err);
+  }
+
+  const fallbackMessages = await loadStateBlobFromSupabase(userId, 'messages', dateStr);
+  return Array.isArray(fallbackMessages) ? fallbackMessages.map(normalizeStoredMessage) : [];
 }
 
 // Higieniza o JID removendo IDs de dispositivos pareados para garantir compatibilidade no cache de contatos
@@ -644,7 +1318,7 @@ function resetUserSyncTimer(userId) {
       instance.syncStatus = 'completed';
       console.log(`[${userId}] Sincronização concluída por inatividade de eventos (mensagens e contatos processados).`);
       instance.syncTimer = null;
-    }, 12000); // 12 segundos de tolerância à inatividade de dados
+    }, SYNC_IDLE_COMPLETE_MS);
   }
 }
 
@@ -662,6 +1336,9 @@ async function getOrCreateInstance(userId) {
   }
 
   console.log(`Inicializando instância dinâmica sob demanda para o usuário: ${cleanUserId}`);
+  const localContactsCache = loadContactsFromFile(cleanUserId);
+  const remoteContactsCache = await loadContactsFromSupabase(cleanUserId);
+  const hydratedContactsCache = mergeContactCaches(localContactsCache, remoteContactsCache);
   
   const instanceState = {
     sock: null,
@@ -669,13 +1346,19 @@ async function getOrCreateInstance(userId) {
     connectionStatus: 'connecting',
     syncStatus: 'pending',
     messagesProcessedCount: 0,
-    contactsCache: {},
+    contactsCache: hydratedContactsCache,
     groupMetadataCache: {}, // Cache de metadados dos grupos para otimização e evitar rate-limit do WhatsApp
     lastSyncActivity: Date.now(),
-    syncTimer: null
+    syncTimer: null,
+    contactsSaveTimer: null,
+    reconnectTimer: null,
+    connectionGeneration: 0
   };
 
   instances[cleanUserId] = instanceState;
+  if (Object.keys(hydratedContactsCache).length > 0) {
+    saveContactsToFile(cleanUserId, hydratedContactsCache);
+  }
   
   // Inicia o processo de conexão do Baileys assincronamente
   connectUserWhatsApp(cleanUserId);
@@ -762,6 +1445,174 @@ function denyAccess(req, res) {
       </body>
     </html>
   `);
+}
+
+function readLocalMessagesForDate(userId, dateStr) {
+  const filePath = path.join(dataDir, 'messages', userId, `messages-${dateStr}.json`);
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')).map(normalizeStoredMessage);
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao ler mensagens locais de ${dateStr}:`, err.message || err);
+    return [];
+  }
+}
+
+function listLocalMessageFiles(userId) {
+  const userMsgDir = path.join(dataDir, 'messages', userId);
+  if (!fs.existsSync(userMsgDir)) return [];
+  return fs.readdirSync(userMsgDir)
+    .filter(file => file.startsWith('messages-') && file.endsWith('.json'))
+    .map(file => file.replace('messages-', '').replace('.json', ''))
+    .sort();
+}
+
+function analyzeMessagesIntegrity(messages, contactsCache) {
+  const seen = new Set();
+  let duplicateKeys = 0;
+  let outOfOrder = 0;
+  let missingChatNames = 0;
+  let missingSenderNames = 0;
+  let previousTime = 0;
+
+  for (const raw of messages) {
+    const message = normalizeStoredMessage(raw);
+    const key = message.dedupeKey || createDedupeKey(message);
+    if (seen.has(key)) duplicateKeys++;
+    seen.add(key);
+
+    const currentTime = new Date(message.timestamp).getTime();
+    if (previousTime && currentTime < previousTime) outOfOrder++;
+    previousTime = currentTime;
+
+    const chatName = contactsCache[message.chatJid] || message.chatName;
+    if (!chatName || looksLikeTechnicalName(chatName)) missingChatNames++;
+
+    if (!message.fromMe) {
+      const participantName = contactsCache[message.participantJid] || message.name;
+      if (!participantName || looksLikeTechnicalName(participantName)) missingSenderNames++;
+    }
+  }
+
+  return {
+    total: messages.length,
+    unique: seen.size,
+    duplicateKeys,
+    outOfOrder,
+    missingChatNames,
+    missingSenderNames,
+    firstTimestamp: messages[0]?.timestamp || null,
+    lastTimestamp: messages[messages.length - 1]?.timestamp || null,
+    ok: duplicateKeys === 0 && outOfOrder === 0
+  };
+}
+
+async function buildDiagnostics(userId, dateStr) {
+  const instance = instances[userId];
+  const contacts = mergeContactCaches(
+    loadContactsFromFile(userId),
+    await loadContactsFromSupabase(userId),
+    instance ? instance.contactsCache : {}
+  );
+
+  const dates = dateStr ? [dateStr] : listLocalMessageFiles(userId).slice(-7);
+  const dateStats = [];
+
+  for (const date of dates) {
+    const localMessages = readLocalMessagesForDate(userId, date);
+    const remoteMessages = await loadMessagesFromSupabase(userId, date);
+    const mergedMessages = mergeMessages(localMessages, remoteMessages);
+    dateStats.push({
+      date,
+      localCount: localMessages.length,
+      remoteCount: remoteMessages.length,
+      mergedCount: mergedMessages.length,
+      integrity: analyzeMessagesIntegrity(mergedMessages, contacts)
+    });
+  }
+
+  return {
+    status: instance ? instance.connectionStatus : 'not_initialized',
+    syncStatus: instance ? instance.syncStatus : 'not_initialized',
+    messagesProcessedInSession: instance ? instance.messagesProcessedCount : 0,
+    contactsCount: Object.keys(contacts).length,
+    retentionDays: MESSAGE_RETENTION_DAYS,
+    persistence: {
+      supabaseConfigured: !!getSupabaseConfig(),
+      disabledTables: Array.from(supabaseDisabledTables),
+      fallbackSnapshots: true
+    },
+    dates: dateStats,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+function clearLocalMessageFiles(userId, dateStr) {
+  const userMsgDir = path.join(dataDir, 'messages', userId);
+  if (!fs.existsSync(userMsgDir)) return 0;
+  const files = fs.readdirSync(userMsgDir)
+    .filter(file => file.startsWith('messages-') && file.endsWith('.json'))
+    .filter(file => !dateStr || file === `messages-${dateStr}.json`);
+
+  for (const file of files) {
+    fs.unlinkSync(path.join(userMsgDir, file));
+  }
+
+  return files.length;
+}
+
+async function handleMaintenanceResync(req, res) {
+  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  if (!userId) {
+    return res.status(400).json({ error: 'Identificação de usuário necessária.' });
+  }
+
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const mode = String(req.query.mode || 'soft');
+  const dateStr = req.query.date && /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date)) ? String(req.query.date) : null;
+  let clearedMessageFiles = 0;
+  let clearedContacts = false;
+
+  let instance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
+
+  if (mode === 'desync-local') {
+    clearedMessageFiles = clearLocalMessageFiles(cleanUserId, dateStr);
+    try {
+      const contactsPath = contactsFilePath(cleanUserId);
+      if (fs.existsSync(contactsPath)) fs.unlinkSync(contactsPath);
+      clearedContacts = true;
+    } catch (err) {
+      console.warn(`[${cleanUserId}] Falha ao limpar cache local de contatos:`, err.message || err);
+    }
+    if (instance) {
+      instance.contactsCache = {};
+    }
+  }
+
+  const contacts = mergeContactCaches(
+    loadContactsFromFile(cleanUserId),
+    await loadContactsFromSupabase(cleanUserId),
+    instance ? instance.contactsCache : {}
+  );
+
+  if (instance) {
+    instance.contactsCache = contacts;
+    instance.syncStatus = 'syncing';
+    instance.messagesProcessedCount = 0;
+    resetUserSyncTimer(cleanUserId);
+    saveContactsToFile(cleanUserId, contacts);
+    connectUserWhatsApp(cleanUserId);
+  }
+
+  const diagnostics = await buildDiagnostics(cleanUserId, dateStr || undefined);
+  return res.json({
+    ok: true,
+    mode,
+    clearedMessageFiles,
+    clearedContacts,
+    restarted: !!instance,
+    diagnostics
+  });
 }
 
 // --- ROTAS DO SERVIDOR HTTP ---
@@ -855,6 +1706,8 @@ app.get('/', checkAuth, async (req, res) => {
             </div>
             <button id="btnFetch">🔍 Buscar Mensagens</button>
             <button id="btnContacts" style="background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); font-weight: bold; cursor: pointer; transition: opacity 0.2s; padding: 0.5rem 1.25rem; border: none; border-radius: 6px; color: white;">📋 Ver Contatos</button>
+            <button id="btnDiagnostics" style="background: linear-gradient(135deg, #14b8a6 0%, #0f766e 100%); font-weight: bold; cursor: pointer; transition: opacity 0.2s; padding: 0.5rem 1.25rem; border: none; border-radius: 6px; color: white;">Verificar Integridade</button>
+            <button id="btnResync" style="background: linear-gradient(135deg, #f59e0b 0%, #b45309 100%); font-weight: bold; cursor: pointer; transition: opacity 0.2s; padding: 0.5rem 1.25rem; border: none; border-radius: 6px; color: white;">Ressincronizar Cache</button>
           </div>
 
           <div class="viewer">
@@ -1033,6 +1886,44 @@ app.get('/', checkAuth, async (req, res) => {
               output.textContent = 'Erro ao buscar contatos: ' + err.message;
             }
           });
+
+          // Função para verificar integridade de mensagens, nomes e ordenação
+          document.getElementById('btnDiagnostics').addEventListener('click', async () => {
+            const date = dateInput.value;
+            const output = document.getElementById('output');
+            const label = document.getElementById('viewerLabel');
+            output.textContent = 'Verificando integridade dos dados...';
+            label.textContent = 'Diagnóstico de Integridade:';
+
+            try {
+              const response = await fetch('/diagnostics?date=' + date);
+              if (!response.ok) throw new Error('Erro do servidor: ' + response.status);
+              const data = await response.json();
+              output.textContent = JSON.stringify(data, null, 2);
+            } catch (err) {
+              output.textContent = 'Erro ao verificar integridade: ' + err.message;
+            }
+          });
+
+          // Reinicia o socket e reidrata os caches sem desconectar o WhatsApp do celular
+          document.getElementById('btnResync').addEventListener('click', async () => {
+            const date = dateInput.value;
+            const output = document.getElementById('output');
+            const label = document.getElementById('viewerLabel');
+            if (!confirm('Ressincronizar o cache local sem apagar credenciais nem desconectar o celular?')) return;
+            output.textContent = 'Ressincronizando cache local e reiniciando o socket...';
+            label.textContent = 'Ressincronização:';
+
+            try {
+              const response = await fetch('/maintenance/resync?mode=soft&date=' + date);
+              if (!response.ok) throw new Error('Erro do servidor: ' + response.status);
+              const data = await response.json();
+              output.textContent = JSON.stringify(data, null, 2);
+              updateSyncStatus();
+            } catch (err) {
+              output.textContent = 'Erro ao ressincronizar: ' + err.message;
+            }
+          });
         </script>
       </body>
     </html>
@@ -1054,6 +1945,13 @@ app.get('/status', checkAuth, async (req, res) => {
     syncStatus: instance.syncStatus,
     messagesCount: instance.messagesProcessedCount,
     contactsCount: Object.keys(instance.contactsCache || {}).length,
+    lastSyncActivity: instance.lastSyncActivity ? new Date(instance.lastSyncActivity).toISOString() : null,
+    retentionDays: MESSAGE_RETENTION_DAYS,
+    persistence: {
+      supabaseConfigured: !!getSupabaseConfig(),
+      disabledTables: Array.from(supabaseDisabledTables),
+      fallbackSnapshots: true
+    },
     user: instance.sock && instance.sock.user ? {
       id: instance.sock.user.id,
       name: instance.sock.user.name
@@ -1070,15 +1968,40 @@ app.get('/contacts', checkAuth, async (req, res) => {
 
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
   const instance = instances[cleanUserId];
-  if (!instance) {
-    return res.json({ count: 0, contacts: {} });
+  const localContactsCache = loadContactsFromFile(cleanUserId);
+  const remoteContactsCache = await loadContactsFromSupabase(cleanUserId);
+  const contacts = mergeContactCaches(localContactsCache, remoteContactsCache, instance ? instance.contactsCache : {});
+
+  if (instance) {
+    instance.contactsCache = mergeContactCaches(instance.contactsCache, contacts);
+    scheduleContactsFileSave(cleanUserId, instance);
+  } else if (Object.keys(contacts).length > 0) {
+    saveContactsToFile(cleanUserId, contacts);
   }
 
   res.json({
-    count: Object.keys(instance.contactsCache || {}).length,
-    contacts: instance.contactsCache || {}
+    count: Object.keys(contacts || {}).length,
+    contacts: contacts || {}
   });
 });
+
+// Diagnostico de integridade para dar confianca sobre ordem, duplicidade e nomes
+app.get('/diagnostics', checkAuth, async (req, res) => {
+  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  if (!userId) {
+    return res.status(400).json({ error: 'Identificação de usuário necessária.' });
+  }
+
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const dateQuery = req.query.date;
+  const dateStr = dateQuery && /^\d{4}-\d{2}-\d{2}$/.test(String(dateQuery)) ? String(dateQuery) : undefined;
+  const diagnostics = await buildDiagnostics(cleanUserId, dateStr);
+  res.json(diagnostics);
+});
+
+// Ressincronizacao leve sem apagar credenciais nem exigir novo QR Code
+app.get('/maintenance/resync', checkAuth, handleMaintenanceResync);
+app.post('/maintenance/resync', checkAuth, handleMaintenanceResync);
 
 // Retorna o QR Code em base64 ou status da conexão em JSON para modais
 app.get('/qr-code', checkAuth, async (req, res) => {
@@ -1203,35 +2126,47 @@ app.get('/messages', checkAuth, async (req, res) => {
   const userMsgDir = path.join(dataDir, 'messages', cleanUserId);
   const filePath = path.join(userMsgDir, `messages-${dateStr}.json`);
 
-  if (!fs.existsSync(filePath)) {
-    return res.json({ date: dateStr, count: 0, messages: [] });
-  }
-
   try {
-    const rawData = fs.readFileSync(filePath, 'utf8');
-    const messages = JSON.parse(rawData);
+    let localMessages = [];
+    if (fs.existsSync(filePath)) {
+      const rawData = fs.readFileSync(filePath, 'utf8');
+      localMessages = JSON.parse(rawData);
+    }
+    const remoteMessages = await loadMessagesFromSupabase(cleanUserId, dateStr);
+    const messages = mergeMessages(localMessages, remoteMessages);
+
+    if (messages.length > 0 && (!fs.existsSync(filePath) || remoteMessages.length > localMessages.length)) {
+      fs.mkdirSync(userMsgDir, { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(messages, null, JSON_INDENT), 'utf8');
+    }
     
     // Sempre ordena cronologicamente por timestamp (crescente: do mais antigo ao mais recente)
-    messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    messages.sort(compareMessagesChronologically);
 
     const formatText = req.query.format === 'text';
     if (formatText) {
       // Agrupa por remetente/conversa para a IA processar sem misturas
       const grouped = {};
       messages.forEach(m => {
-        const chatKey = m.sender;
+        const normalized = normalizeStoredMessage(m);
+        const chatKey = normalized.sender;
         if (!grouped[chatKey]) {
           grouped[chatKey] = {
-            name: m.name || m.sender,
+            name: normalized.chatName || normalized.name || normalized.sender,
+            chatJid: normalized.chatJid,
             messages: []
           };
         }
-        grouped[chatKey].messages.push(m);
+        grouped[chatKey].messages.push(normalized);
       });
 
       // Obtém contatos da instância ativa na memória para extrair nomes reais de conversas
       const instance = instances[cleanUserId];
-      const contactsCache = instance ? (instance.contactsCache || {}) : {};
+      const contactsCache = mergeContactCaches(
+        loadContactsFromFile(cleanUserId),
+        await loadContactsFromSupabase(cleanUserId),
+        instance ? (instance.contactsCache || {}) : {}
+      );
 
       const formattedChats = [];
       const dateTimeFormatter = new Intl.DateTimeFormat('pt-BR', {
@@ -1246,11 +2181,11 @@ app.get('/messages', checkAuth, async (req, res) => {
 
       for (const chatKey in grouped) {
         const chat = grouped[chatKey];
-        const isGroup = chatKey.includes('-');
+        const isGroup = isGroupJid(chat.chatJid) || chat.messages.some(m => m.participant && m.participant !== m.sender);
 
         // 1. Tenta pegar o nome da conversa pelo cache de contatos
-        const jid = isGroup ? `${chatKey}@g.us` : `${chatKey}@s.whatsapp.net`;
-        let displayName = contactsCache[jid];
+        const jid = chat.chatJid || (isGroup ? `${chatKey}@g.us` : `${chatKey}@s.whatsapp.net`);
+        let displayName = contactsCache[jid] || chat.messages.find(m => m.chatName)?.chatName;
         
         // 2. Para chats individuais, se não estiver no cache, procura nas mensagens desse chat o nome do contato
         if (!displayName && !isGroup) {
@@ -1267,7 +2202,7 @@ app.get('/messages', checkAuth, async (req, res) => {
 
         const chatMessagesText = chat.messages.map(m => {
           const dateTimeStr = dateTimeFormatter.format(new Date(m.timestamp)).replace(',', '');
-          const senderName = m.fromMe ? 'Eu' : (m.name || m.sender);
+          const senderName = resolveMessageSenderName(m, contactsCache, isGroup);
           return `  [${dateTimeStr}] ${senderName}: ${m.text}`;
         }).join('\n');
         
