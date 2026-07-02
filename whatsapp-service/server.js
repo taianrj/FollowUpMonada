@@ -442,6 +442,18 @@ function bestNameFromAliases(aliasJids, contactsCache) {
   return '';
 }
 
+function phoneFallbackFromAliases(aliasJids, contactsCache) {
+  for (const alias of aliasJids || []) {
+    const cached = normalizeDisplayName(contactsCache?.[cleanJid(alias)] || '');
+    if (cached && looksLikeTechnicalName(cached) && /^\d{8,}$/.test(cached.replace(/\D/g, ''))) {
+      return cached;
+    }
+  }
+
+  const phoneAlias = (aliasJids || []).map(cleanJid).find(alias => alias.endsWith('@s.whatsapp.net'));
+  return phoneAlias ? jidNumber(phoneAlias) : '';
+}
+
 function contactsFilePath(userId) {
   return path.join(contactsDir, `${userId}.json`);
 }
@@ -710,6 +722,9 @@ function resolveMessageSenderName(message, contactsCache, isGroup) {
   if (cachedName && !looksLikeTechnicalName(cachedName)) return cachedName;
   if (message.name && !looksLikeTechnicalName(message.name)) return message.name;
   if (!isGroup && message.chatName && !looksLikeTechnicalName(message.chatName)) return message.chatName;
+  const phoneFallback = phoneFallbackFromAliases(aliases, contactsCache);
+  if (phoneFallback) return phoneFallback;
+  if (cachedName) return cachedName;
   return message.participant || message.sender || jidNumber(participantJid);
 }
 
@@ -777,7 +792,16 @@ function addContactRecordToCache(userId, instance, contact, source = 'sync') {
   if (aliases.length === 0) return false;
 
   const name = bestNameFromContact(contact) || bestNameFromAliases(aliases, instance.contactsCache);
-  if (!name) return false;
+  if (!name) {
+    const phoneFallback = phoneFallbackFromAliases(aliases, instance.contactsCache);
+    if (!phoneFallback) return false;
+
+    let fallbackChanged = false;
+    for (const alias of aliases) {
+      fallbackChanged = addContactToCache(userId, instance, alias, phoneFallback, `${source}.phoneFallback`, false) || fallbackChanged;
+    }
+    return fallbackChanged;
+  }
 
   let changed = false;
   for (const alias of aliases) {
