@@ -478,29 +478,39 @@ function messageParticipantAliases(msg, fallbackJid) {
   }));
 }
 
-function importAliasJids(record) {
-  if (!record || typeof record !== 'object') return [];
-  const candidates = [
-    record.id,
-    record.jid,
-    record.lid,
-    record.phone,
-    record.number,
-    record.phoneNumber,
-    record.phone_number,
-    ...(Array.isArray(record.aliases) ? record.aliases : [])
-  ];
+function relatedAliasesFromCache(aliasJids, contactsCache) {
+  const aliases = uniqueJids(aliasJids || []);
+  if (!contactsCache || aliases.length === 0) return [];
 
-  return uniqueJids(candidates.map(value => {
-    if (!value || typeof value !== 'string') return '';
-    const trimmed = value.trim();
-    if (!trimmed) return '';
-    if (trimmed.includes('@')) return trimmed;
-    const digits = trimmed.replace(/\D/g, '');
-    if (!digits) return '';
-    if (/^\d{14,}$/.test(digits)) return `${digits}@lid`;
-    return `${digits}@s.whatsapp.net`;
-  }));
+  const phoneNumbers = new Set();
+  for (const alias of aliases) {
+    const cleanAlias = cleanJid(alias);
+    if (cleanAlias.endsWith('@s.whatsapp.net')) {
+      const number = jidNumber(cleanAlias);
+      if (number) phoneNumbers.add(number);
+    }
+
+    const cachedName = normalizeDisplayName(contactsCache[cleanAlias] || '');
+    const cachedDigits = cachedName.replace(/\D/g, '');
+    if (cachedDigits && looksLikeTechnicalName(cachedName)) {
+      phoneNumbers.add(cachedDigits);
+    }
+  }
+
+  if (phoneNumbers.size === 0) return [];
+
+  const related = [];
+  for (const phoneNumber of phoneNumbers) {
+    related.push(`${phoneNumber}@s.whatsapp.net`);
+    for (const [cachedJid, cachedName] of Object.entries(contactsCache)) {
+      const normalizedName = normalizeDisplayName(cachedName);
+      if (looksLikeTechnicalName(normalizedName) && normalizedName.replace(/\D/g, '') === phoneNumber) {
+        related.push(cachedJid);
+      }
+    }
+  }
+
+  return uniqueJids(related);
 }
 
 function bestNameFromAliases(aliasJids, contactsCache) {
@@ -862,7 +872,11 @@ function addContactToCache(userId, instance, id, name, source = 'sync', updateFi
 
 function addContactRecordToCache(userId, instance, contact, source = 'sync') {
   if (!contact || !instance) return false;
-  const aliases = contactAliasJids(contact);
+  const baseAliases = contactAliasJids(contact);
+  const aliases = uniqueJids([
+    ...baseAliases,
+    ...relatedAliasesFromCache(baseAliases, instance.contactsCache)
+  ]);
   if (aliases.length === 0) return false;
 
   const name = bestNameFromContact(contact) || bestNameFromAliases(aliases, instance.contactsCache);
@@ -885,11 +899,12 @@ function addContactRecordToCache(userId, instance, contact, source = 'sync') {
 }
 
 function addGroupMetadataToCache(userId, instance, metadata, source = 'groupMetadata') {
-  if (!metadata || !instance) return;
-  addContactToCache(userId, instance, metadata.id, metadata.subject, source);
+  if (!metadata || !instance) return false;
+  let changed = addContactToCache(userId, instance, metadata.id, metadata.subject, source);
   for (const participant of metadata.participants || []) {
-    addContactRecordToCache(userId, instance, participant, `${source}.participant`);
+    changed = addContactRecordToCache(userId, instance, participant, `${source}.participant`) || changed;
   }
+  return changed;
 }
 
 async function persistContactsCacheNow(userId, instance) {
@@ -908,6 +923,7 @@ async function processContactRecords(userId, instance, contacts, source = 'conta
   }
   if (changed > 0) {
     await persistContactsCacheNow(userId, instance);
+    resetUserSyncTimer(userId);
   }
   return changed;
 }
@@ -1231,25 +1247,21 @@ async function connectUserWhatsApp(userId) {
     }
   });
 
-  // Sincroniza a lista de contatos quando houver novos contatos adicionados
-  sock.ev.on('contacts.upsert', (contacts) => {
-    if (instance.connectionGeneration !== connectionGeneration) return;
-    for (const contact of contacts) {
-      addContactRecordToCache(userId, instance, contact, 'contacts.upsert');
-    }
-    resetUserSyncTimer(userId);
-  });
-
-  // Atualiza dados dos contatos da agenda caso mudem de nome
-  sock.ev.on('contacts.update', (contacts) => {
-    if (instance.connectionGeneration !== connectionGeneration) return;
-    for (const contact of contacts) {
-      addContactRecordToCache(userId, instance, contact, 'contacts.update');
-    }
-    resetUserSyncTimer(userId);
-  });
-
   // Sincroniza metadados dos grupos e salva no cache para otimizar consultas e evitar rate-limit
+  sock.ev.on('groups.upsert', async (groups) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
+    let changed = 0;
+    for (const metadata of groups || []) {
+      if (!metadata?.id || !instance.groupMetadataCache) continue;
+      instance.groupMetadataCache[metadata.id] = metadata;
+      if (addGroupMetadataToCache(userId, instance, metadata, 'groups.upsert')) changed++;
+    }
+    if (changed > 0) {
+      await persistContactsCacheNow(userId, instance);
+      resetUserSyncTimer(userId);
+    }
+  });
+
   sock.ev.on('groups.update', async ([event]) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     try {
@@ -1257,6 +1269,8 @@ async function connectUserWhatsApp(userId) {
         const metadata = await sock.groupMetadata(event.id);
         instance.groupMetadataCache[event.id] = metadata;
         addGroupMetadataToCache(userId, instance, metadata, 'groups.update');
+        await persistContactsCacheNow(userId, instance);
+        resetUserSyncTimer(userId);
       }
     } catch (err) {
       console.warn(`[${userId}] Falha ao atualizar cache de grupo no groups.update:`, err.message);
@@ -1309,7 +1323,11 @@ async function connectUserWhatsApp(userId) {
         // Determina o remetente individual e todos os aliases conhecidos (LID + telefone).
         const rawParticipant = msg.key.participant || msg.participant || (isGroup && fromMe && instance.sock?.user?.id) || chatJid;
         const participantJid = ensureUserJid(rawParticipant, /^\d{14,}$/.test(String(rawParticipant || '')) ? 'lid' : 's.whatsapp.net');
-        const participantAliases = messageParticipantAliases(msg, participantJid);
+        const directParticipantAliases = messageParticipantAliases(msg, participantJid);
+        const participantAliases = uniqueJids([
+          ...directParticipantAliases,
+          ...relatedAliasesFromCache(directParticipantAliases, instance.contactsCache)
+        ]);
         
         let pushName = 'Eu';
         if (!fromMe) {
@@ -1383,6 +1401,17 @@ async function connectUserWhatsApp(userId) {
     const changed = await processContactRecords(userId, instance, contacts, 'contacts.update');
     if (changed > 0) {
       console.log(`[${userId}] Atualizados ${changed} contatos via contacts.update.`);
+    }
+  });
+
+  sock.ev.on('chats.phoneNumberShare', async ({ lid, jid }) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
+    if (!lid || !jid) return;
+    const changed = addContactRecordToCache(userId, instance, { id: lid, lid, jid }, 'chats.phoneNumberShare');
+    if (changed) {
+      await persistContactsCacheNow(userId, instance);
+      resetUserSyncTimer(userId);
+      console.log(`[${userId}] Alias telefone/LID recebido via chats.phoneNumberShare: ${lid} -> ${jid}`);
     }
   });
 
@@ -2491,55 +2520,6 @@ app.get('/diagnostics/contact-lookup', checkAuth, async (req, res) => {
     count: matches.length,
     truncated: matches.length === 200,
     matches
-  });
-});
-
-// Importa aliases nome <-> telefone/LID coletados de uma fonte confiavel do usuario (ex: WhatsApp Web oficial)
-app.post('/contacts/import-aliases', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
-  if (!userId) {
-    return res.status(400).json({ error: 'Identificacao de usuario necessaria.' });
-  }
-
-  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
-  const aliases = Array.isArray(req.body?.aliases) ? req.body.aliases : [];
-  if (aliases.length === 0) {
-    return res.status(400).json({ error: 'Informe aliases: [{ name, phone|jid|lid|aliases }].' });
-  }
-
-  const instance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
-  if (!instance) {
-    return res.status(400).json({ error: 'Instancia do usuario indisponivel.' });
-  }
-
-  let imported = 0;
-  const details = [];
-  for (const record of aliases.slice(0, 500)) {
-    const name = normalizeDisplayName(record?.name);
-    const jids = importAliasJids(record);
-    if (!name || jids.length === 0 || looksLikeTechnicalName(name)) {
-      details.push({ name, aliases: jids, imported: false });
-      continue;
-    }
-
-    let changed = false;
-    for (const jid of jids) {
-      changed = addContactToCache(cleanUserId, instance, jid, name, 'manual.import') || changed;
-    }
-    if (changed) imported++;
-    details.push({ name, aliases: jids, imported: changed });
-  }
-
-  if (imported > 0) {
-    await persistContactsCacheNow(cleanUserId, instance);
-  }
-
-  res.json({
-    ok: true,
-    imported,
-    received: aliases.length,
-    processed: Math.min(aliases.length, 500),
-    details
   });
 });
 
