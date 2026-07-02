@@ -211,7 +211,30 @@ async function connectUserWhatsApp(userId) {
     syncFullHistory: true, // Força o envio do histórico recente completo do celular ao parear
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
-    browser: ['FollowUp Mônada', 'Chrome', '1.0'] // Customiza a exibição no celular do usuário
+    browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
+    markOnlineOnConnect: false, // Mantém as notificações push funcionando no celular do usuário
+    cachedGroupMetadata: async (jid) => {
+      return instance.groupMetadataCache ? instance.groupMetadataCache[jid] : undefined;
+    },
+    getMessage: async (key) => {
+      try {
+        const dateStr = new Date().toISOString().split('T')[0];
+        const filePath = path.join(dataDir, 'messages', userId, `messages-${dateStr}.json`);
+        if (fs.existsSync(filePath)) {
+          const rawData = fs.readFileSync(filePath, 'utf8');
+          const messages = JSON.parse(rawData);
+          const found = messages.find(m => m.id === key.id);
+          if (found) {
+            return {
+              conversation: found.text
+            };
+          }
+        }
+      } catch (err) {
+        console.warn(`[${userId}] Falha ao buscar mensagem para getMessage retry:`, err.message);
+      }
+      return undefined;
+    }
   });
 
   instance.sock = sock;
@@ -298,6 +321,29 @@ async function connectUserWhatsApp(userId) {
       }
     }
     resetUserSyncTimer(userId);
+  });
+
+  // Sincroniza metadados dos grupos e salva no cache para otimizar consultas e evitar rate-limit
+  sock.ev.on('groups.update', async ([event]) => {
+    try {
+      if (sock && event.id && instance.groupMetadataCache) {
+        const metadata = await sock.groupMetadata(event.id);
+        instance.groupMetadataCache[event.id] = metadata;
+      }
+    } catch (err) {
+      console.warn(`[${userId}] Falha ao atualizar cache de grupo no groups.update:`, err.message);
+    }
+  });
+
+  sock.ev.on('group-participants.update', async (event) => {
+    try {
+      if (sock && event.id && instance.groupMetadataCache) {
+        const metadata = await sock.groupMetadata(event.id);
+        instance.groupMetadataCache[event.id] = metadata;
+      }
+    } catch (err) {
+      console.warn(`[${userId}] Falha ao atualizar cache de grupo no group-participants.update:`, err.message);
+    }
   });
 
   // Função auxiliar para processar e salvar um lote de mensagens
@@ -502,6 +548,7 @@ async function getOrCreateInstance(userId) {
     syncStatus: 'pending',
     messagesProcessedCount: 0,
     contactsCache: {},
+    groupMetadataCache: {}, // Cache de metadados dos grupos para otimização e evitar rate-limit do WhatsApp
     lastSyncActivity: Date.now(),
     syncTimer: null
   };
