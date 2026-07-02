@@ -847,7 +847,7 @@ function compareMessagesChronologically(a, b) {
 }
 
 function resolveMessageSenderName(message, contactsCache, isGroup) {
-  if (message.fromMe) return 'Eu';
+  if (message.fromMe) return message.name || 'Eu';
   const participantJid = message.participantJid || inferParticipantJidFromMessage(message);
   const aliases = uniqueJids([participantJid, ...(message.participantAliases || [])]);
   const cachedName = bestNameFromAliases(aliases, contactsCache);
