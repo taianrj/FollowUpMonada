@@ -8,7 +8,7 @@ if (!global.crypto) {
   }
 }
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const QRCode = require('qrcode');
 const fs = require('fs');
@@ -1011,7 +1011,7 @@ async function connectUserWhatsApp(userId) {
     syncFullHistory: true, // Força a sincronização do histórico inicial recente
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
-    browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
+    browser: Browsers.windows('Chrome'), // Perfil desktop real para tentar receber histórico completo e push names
     markOnlineOnConnect: false, // Mantém as notificações push funcionando no celular do usuário
     keepAliveIntervalMs: 15000, // Envia pings de keep-alive a cada 15 segundos para evitar que o proxy do Render encerre a conexão por ociosidade
     connectTimeoutMs: 60000, // Tolera até 60 segundos para conexão inicial
