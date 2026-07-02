@@ -798,7 +798,48 @@ export default function WhatsappSummaryClient({
                 Verificando conexão com o WhatsApp na nuvem...
               </span>
             </div>
-          ) : integrationConnected && (whatsappStatus === 'connecting' || whatsappStatus === 'qrcode') ? (
+          ) : integrationConnected && whatsappStatus === 'connecting' ? (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.75rem',
+              backgroundColor: 'rgba(59, 130, 246, 0.08)',
+              border: '1px solid rgba(59, 130, 246, 0.2)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '1.25rem 1.5rem',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#60a5fa' }}>
+                <span className="pulse" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#3b82f6', borderRadius: '50%' }}></span>
+                ⌛ Iniciando Conexão com o WhatsApp...
+              </div>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
+                O servidor está se comunicando com o celular em segundo plano. Por favor, aguarde alguns instantes.
+              </p>
+              <div>
+                <button 
+                  type="button"
+                  className="btn"
+                  disabled
+                  style={{
+                    fontSize: '0.82rem',
+                    padding: '0.5rem 1rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    background: 'rgba(59, 130, 246, 0.15)',
+                    borderRadius: 'var(--radius-md)',
+                    border: 'none',
+                    color: '#60a5fa',
+                    fontWeight: 600,
+                    cursor: 'not-allowed'
+                  }}
+                >
+                  ⌛ Aguardando Inicialização...
+                </button>
+              </div>
+            </div>
+          ) : integrationConnected && whatsappStatus === 'qrcode' ? (
             <div style={{
               display: 'flex',
               flexDirection: 'column',
@@ -810,8 +851,8 @@ export default function WhatsappSummaryClient({
               boxShadow: 'var(--shadow-sm)'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#f59e0b' }}>
-                <span className="pulse" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#f59e0b', borderRadius: '50%' }}></span>
-                {whatsappStatus === 'connecting' ? 'WhatsApp Desconectado (Conectando...)' : 'WhatsApp Desconectado'}
+                <span style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#f59e0b', borderRadius: '50%' }}></span>
+                WhatsApp Desconectado
               </div>
               <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
                 Para poder ler as mensagens e gerar os resumos automáticos, é necessário parear o seu celular.
@@ -834,7 +875,7 @@ export default function WhatsappSummaryClient({
                     cursor: 'pointer'
                   }}
                 >
-                  {whatsappStatus === 'connecting' ? '⌛ Aguardando Inicialização...' : '📱 Conectar Celular (Escanear QR Code)'}
+                  📱 Conectar Celular (Escanear QR Code)
                 </button>
               </div>
             </div>
