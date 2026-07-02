@@ -180,7 +180,7 @@ const supabaseDisabledTables = new Set();
 const pendingContactWrites = new Map();
 const pendingContactTimers = new Map();
 
-const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '30', 10));
+const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '2', 10)); // Padrão de 2 dias (48 horas) para sincronização e retenção de histórico
 const SUPABASE_TIMEOUT_MS = Math.max(2000, parseInt(process.env.SUPABASE_TIMEOUT_MS || '8000', 10));
 const CONTACT_FLUSH_DELAY_MS = Math.max(250, parseInt(process.env.CONTACT_FLUSH_DELAY_MS || '1200', 10));
 const CONTACT_MESSAGE_HYDRATION_INTERVAL_MS = Math.max(60000, parseInt(process.env.CONTACT_MESSAGE_HYDRATION_INTERVAL_MS || '300000', 10));
@@ -1237,6 +1237,13 @@ async function connectUserWhatsApp(userId) {
         clearTimeout(instance.reconnectTimer);
         instance.reconnectTimer = null;
       }
+      
+      // Captura o nome de perfil do próprio dono da conta para usar nas mensagens "fromMe"
+      if (sock.user && sock.user.name) {
+        instance.myPushName = sock.user.name;
+        console.log(`[${userId}] Nome do dono da conta identificado: ${instance.myPushName}`);
+      }
+
       console.log(`[${userId}] WhatsApp conectado com sucesso!`);
       resetUserSyncTimer(userId);
       hydrateContactsFromStoredMessages(userId, instance)
@@ -1339,6 +1346,9 @@ async function connectUserWhatsApp(userId) {
               addContactToCache(userId, instance, alias, msg.pushName, 'message.pushName');
             }
           }
+        } else {
+          // Usa o nome real do dono do celular configurado no WhatsApp
+          pushName = instance.myPushName || 'Eu';
         }
 
         const chatName = instance.contactsCache[chatJid] || (!isGroup && !fromMe ? pushName : '');
@@ -1806,6 +1816,7 @@ async function getOrCreateInstance(userId) {
     messagesProcessedCount: 0,
     contactsCache: hydratedContactsCache,
     groupMetadataCache: {}, // Cache de metadados dos grupos para otimização e evitar rate-limit do WhatsApp
+    myPushName: 'Eu', // Nome de perfil do próprio usuário dono do WhatsApp
     lastSyncActivity: Date.now(),
     syncTimer: null,
     contactsSaveTimer: null,

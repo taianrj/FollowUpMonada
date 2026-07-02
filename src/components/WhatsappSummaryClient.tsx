@@ -798,6 +798,49 @@ export default function WhatsappSummaryClient({
                 Verificando conexão com o WhatsApp na nuvem...
               </span>
             </div>
+          ) : integrationConnected && (whatsappStatus === 'connecting' || whatsappStatus === 'qrcode') ? (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.75rem',
+              backgroundColor: 'rgba(59, 130, 246, 0.08)',
+              border: '1px solid rgba(59, 130, 246, 0.2)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '1.25rem 1.5rem',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#60a5fa' }}>
+                <span className="pulse" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#3b82f6', borderRadius: '50%' }}></span>
+                {whatsappStatus === 'connecting' ? '⌛ Iniciando Conexão com o WhatsApp...' : '📱 Aguardando Pareamento (QR Code Disponível)'}
+              </div>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
+                {whatsappStatus === 'connecting' 
+                  ? 'O servidor está se comunicando com o celular. Por favor, aguarde alguns instantes.' 
+                  : 'O QR Code foi gerado no servidor. Clique no botão abaixo para abrir a tela de escaneamento e conectar a sua conta.'}
+              </p>
+              <div>
+                <button 
+                  type="button"
+                  className="btn"
+                  onClick={() => setIsQrModalOpen(true)}
+                  style={{
+                    fontSize: '0.82rem',
+                    padding: '0.5rem 1rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+                    borderRadius: 'var(--radius-md)',
+                    border: 'none',
+                    color: '#fff',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {whatsappStatus === 'connecting' ? 'Aguardando Inicialização...' : 'Escanear QR Code para Parear'}
+                </button>
+              </div>
+            </div>
           ) : integrationConnected && whatsappStatus === 'connected' ? (
             <div style={{
               display: 'flex',
