@@ -166,6 +166,46 @@ async function deleteCredsFromSupabase(userId) {
   }
 }
 
+async function loadProfileNameFromSupabase(userId) {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  
+  if (!supabaseUrl || !supabaseKey) {
+    return null;
+  }
+
+  const cleanUrl = supabaseUrl.replace(/\/$/, '');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout
+
+  try {
+    const response = await fetch(`${cleanUrl}/rest/v1/profiles?id=eq.${userId}&select=name,email`, {
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.length > 0) {
+        const profileName = data[0].name || (data[0].email ? data[0].email.split('@')[0] : null);
+        if (profileName) {
+          console.log(`[${userId}] Nome do perfil do Supabase carregado: ${profileName}`);
+          return profileName;
+        }
+      }
+    }
+  } catch (err) {
+    clearTimeout(timeoutId);
+    console.error(`[${userId}] Erro de rede ao buscar nome no Supabase profiles:`, err.message || err);
+  }
+  return null;
+}
+
 // Logger silencioso para o Baileys para não sujar o console do Fly.io
 const logger = pino({ level: 'warn' });
 
@@ -1839,6 +1879,15 @@ async function getOrCreateInstance(userId) {
   if (Object.keys(hydratedContactsCache).length > 0) {
     saveContactsToFile(cleanUserId, hydratedContactsCache);
   }
+
+  // Busca o nome do usuário no Supabase profiles para carregar o myPushName real
+  loadProfileNameFromSupabase(cleanUserId).then(name => {
+    if (name) {
+      instanceState.myPushName = name;
+    }
+  }).catch(err => {
+    console.warn(`[${cleanUserId}] Erro ao carregar nome do perfil no Supabase:`, err.message || err);
+  });
   
   // Inicia o processo de conexão do Baileys assincronamente
   connectUserWhatsApp(cleanUserId);
