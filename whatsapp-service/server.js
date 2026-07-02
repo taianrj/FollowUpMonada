@@ -126,8 +126,8 @@ async function connectUserWhatsApp(userId) {
     }
 
     if (receivedPendingNotifications) {
-      instance.syncStatus = 'completed';
-      console.log(`[${userId}] Sincronização do histórico do WhatsApp concluída.`);
+      console.log(`[${userId}] Sincronização de notificações pendentes recebida.`);
+      resetUserSyncTimer(userId);
     }
 
     if (connection === 'close') {
@@ -156,11 +156,9 @@ async function connectUserWhatsApp(userId) {
     } else if (connection === 'open') {
       instance.currentQr = null;
       instance.connectionStatus = 'connected';
-      // Se já estava completo, mantém, senão inicia sincronização
-      if (instance.syncStatus !== 'completed') {
-        instance.syncStatus = 'syncing';
-      }
+      instance.syncStatus = 'syncing';
       console.log(`[${userId}] WhatsApp conectado com sucesso!`);
+      resetUserSyncTimer(userId);
     }
   });
 
@@ -172,6 +170,7 @@ async function connectUserWhatsApp(userId) {
         addContactToCache(userId, instance, contact.id, name);
       }
     }
+    resetUserSyncTimer(userId);
   });
 
   // Atualiza dados dos contatos da agenda caso mudem de nome
@@ -182,12 +181,14 @@ async function connectUserWhatsApp(userId) {
         addContactToCache(userId, instance, contact.id, name);
       }
     }
+    resetUserSyncTimer(userId);
   });
 
   // Função auxiliar para processar e salvar um lote de mensagens
   function processUserMessages(messagesList) {
     if (!messagesList || messagesList.length === 0) return;
     instance.messagesProcessedCount += messagesList.length;
+    resetUserSyncTimer(userId);
     
     for (const msg of messagesList) {
       try {
@@ -341,6 +342,26 @@ function saveUserMessageToFile(userId, dateStr, messageObject) {
 // Dicionário de instâncias ativas em memória
 const instances = {};
 
+// Reseta o timer de inatividade de sincronização do WhatsApp
+function resetUserSyncTimer(userId) {
+  const instance = instances[userId];
+  if (!instance) return;
+
+  instance.lastSyncActivity = Date.now();
+
+  if (instance.connectionStatus === 'connected' && instance.syncStatus !== 'completed') {
+    if (instance.syncTimer) {
+      clearTimeout(instance.syncTimer);
+    }
+
+    instance.syncTimer = setTimeout(() => {
+      instance.syncStatus = 'completed';
+      console.log(`[${userId}] Sincronização concluída por inatividade de eventos (mensagens e contatos processados).`);
+      instance.syncTimer = null;
+    }, 12000); // 12 segundos de tolerância à inatividade de dados
+  }
+}
+
 // Retorna ou cria dinamicamente a instância do WhatsApp de um usuário sob demanda
 async function getOrCreateInstance(userId) {
   if (!userId || typeof userId !== 'string' || userId.trim().length < 5) {
@@ -362,7 +383,9 @@ async function getOrCreateInstance(userId) {
     connectionStatus: 'connecting',
     syncStatus: 'pending',
     messagesProcessedCount: 0,
-    contactsCache: {}
+    contactsCache: {},
+    lastSyncActivity: Date.now(),
+    syncTimer: null
   };
 
   instances[cleanUserId] = instanceState;
