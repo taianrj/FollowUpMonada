@@ -867,6 +867,26 @@ function addGroupMetadataToCache(userId, instance, metadata, source = 'groupMeta
   }
 }
 
+async function persistContactsCacheNow(userId, instance) {
+  if (!instance) return;
+  await flushContactPersist(userId);
+  saveContactsToFile(userId, instance.contactsCache || {});
+}
+
+async function processContactRecords(userId, instance, contacts, source = 'contacts.update') {
+  if (!instance || !Array.isArray(contacts) || contacts.length === 0) return 0;
+  let changed = 0;
+  for (const contact of contacts) {
+    if (addContactRecordToCache(userId, instance, contact, source)) {
+      changed++;
+    }
+  }
+  if (changed > 0) {
+    await persistContactsCacheNow(userId, instance);
+  }
+  return changed;
+}
+
 async function refreshGroupMetadataAliases(userId, instance, groupJids = []) {
   if (!instance || !instance.sock) return 0;
   let refreshed = 0;
@@ -881,8 +901,7 @@ async function refreshGroupMetadataAliases(userId, instance, groupJids = []) {
         refreshed++;
       }
       if (refreshed > 0) {
-        await flushContactPersist(userId);
-        saveContactsToFile(userId, instance.contactsCache || {});
+        await persistContactsCacheNow(userId, instance);
       }
       return refreshed;
     } catch (err) {
@@ -903,8 +922,7 @@ async function refreshGroupMetadataAliases(userId, instance, groupJids = []) {
   }
 
   if (refreshed > 0) {
-    await flushContactPersist(userId);
-    saveContactsToFile(userId, instance.contactsCache || {});
+    await persistContactsCacheNow(userId, instance);
   }
   return refreshed;
 }
@@ -984,8 +1002,7 @@ async function hydrateContactsFromStoredMessages(userId, instance, seedMessages 
   }
 
   if (changed > 0) {
-    await flushContactPersist(userId);
-    saveContactsToFile(userId, instance.contactsCache || {});
+    await persistContactsCacheNow(userId, instance);
   }
 
   return changed;
@@ -1310,6 +1327,22 @@ async function connectUserWhatsApp(userId) {
     await processUserMessages(m.messages);
   });
 
+  sock.ev.on('contacts.upsert', async (contacts) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
+    const changed = await processContactRecords(userId, instance, contacts, 'contacts.upsert');
+    if (changed > 0) {
+      console.log(`[${userId}] Atualizados ${changed} contatos via contacts.upsert.`);
+    }
+  });
+
+  sock.ev.on('contacts.update', async (contacts) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
+    const changed = await processContactRecords(userId, instance, contacts, 'contacts.update');
+    if (changed > 0) {
+      console.log(`[${userId}] Atualizados ${changed} contatos via contacts.update.`);
+    }
+  });
+
   // Escuta o histórico de mensagens inicial enviado pelo WhatsApp na sincronização
   sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, syncType, progress }) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
@@ -1337,23 +1370,26 @@ async function connectUserWhatsApp(userId) {
     
     // 0. Sincroniza a lista de contatos da agenda inicial do celular
     if (historyContacts.length > 0) {
-      for (const contact of historyContacts) {
-        addContactRecordToCache(userId, instance, contact, contact.notify ? 'history.pushName' : 'history.contacts');
-      }
-      console.log(`[${userId}] Sincronizados ${historyContacts.length} contatos do histÃ³rico, incluindo ${profileNameContacts} nomes de perfil.`);
+      const changedContacts = await processContactRecords(userId, instance, historyContacts, 'history.contacts');
+      console.log(`[${userId}] Sincronizados ${historyContacts.length} contatos do histórico, incluindo ${profileNameContacts} nomes de perfil (${changedContacts} atualizados).`);
     }
 
     // 0.1. Sincroniza os nomes das conversas e grupos do histórico recente
     if (historyChats.length > 0) {
       let syncGroupNamesCount = 0;
+      let changedChats = 0;
       for (const chat of historyChats) {
         if (addContactRecordToCache(userId, instance, chat, 'history.chats')) {
+          changedChats++;
           if (chat.id.endsWith('@g.us')) {
             syncGroupNamesCount++;
           }
         }
       }
-      console.log(`[${userId}] Sincronizados ${historyChats.length} chats recentes, incluindo ${syncGroupNamesCount} nomes de grupos.`);
+      if (changedChats > 0) {
+        await persistContactsCacheNow(userId, instance);
+      }
+      console.log(`[${userId}] Sincronizados ${historyChats.length} chats recentes, incluindo ${syncGroupNamesCount} nomes de grupos (${changedChats} atualizados).`);
     }
     
     // 1. Processa mensagens do array global (se houver)
@@ -1382,8 +1418,7 @@ async function connectUserWhatsApp(userId) {
       totalMessages += chatMsgsCount;
     }
     
-    await flushContactPersist(userId);
-    saveContactsToFile(userId, instance.contactsCache || {});
+    await persistContactsCacheNow(userId, instance);
     console.log(`[${userId}] Carga de histórico finalizada. Total de mensagens processadas: ${totalMessages}`);
   });
 }
