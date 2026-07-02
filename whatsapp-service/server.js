@@ -176,7 +176,8 @@ const contactsCache = {};
 
 // Helper para atualizar retroativamente os nomes das mensagens em arquivos físicos diários
 function updateMessageNamesInFiles(userId, contactId, contactName) {
-  const senderNumber = contactId.split('@')[0];
+  const cleanedContactId = cleanJid(contactId);
+  const senderNumber = cleanedContactId.split('@')[0];
   const userMsgDir = path.join(dataDir, 'messages', userId);
   try {
     if (!fs.existsSync(userMsgDir)) return;
@@ -191,7 +192,8 @@ function updateMessageNamesInFiles(userId, contactId, contactName) {
         let modified = false;
         
         for (const m of messages) {
-          const msgSender = m.participant || m.sender;
+          const rawMsgSender = m.participant || m.sender;
+          const msgSender = cleanJid(rawMsgSender + (rawMsgSender.includes('@') ? '' : '@s.whatsapp.net')).split('@')[0];
           if (msgSender === senderNumber && !m.fromMe && m.name !== contactName) {
             m.name = contactName;
             modified = true;
@@ -211,8 +213,9 @@ function updateMessageNamesInFiles(userId, contactId, contactName) {
 // Helper para adicionar contato ao cache e disparar atualização nos logs diários
 function addContactToCache(userId, instance, id, name) {
   if (!id || !name) return;
-  instance.contactsCache[id] = name;
-  updateMessageNamesInFiles(userId, id, name);
+  const cleanedId = cleanJid(id);
+  instance.contactsCache[cleanedId] = name;
+  updateMessageNamesInFiles(userId, cleanedId, name);
 }
 
 // Inicia a conexão com o WhatsApp para um usuário específico de forma isolada
@@ -271,7 +274,7 @@ async function connectUserWhatsApp(userId) {
   const sock = makeWASocket({
     auth: state,
     version,
-    syncFullHistory: true, // Força o envio do histórico recente completo do celular ao parear
+    syncFullHistory: false, // Evita estouro de memória RAM de 512MB no Render gratuito (baixa apenas o histórico essencial recente)
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
     browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
@@ -435,7 +438,7 @@ async function connectUserWhatsApp(userId) {
         const fromMe = msg.key.fromMe;
         
         // Determina o nome do remetente individual
-        const participantJid = msg.key.participant || msg.participant || msg.key.remoteJid;
+        const participantJid = cleanJid(msg.key.participant || msg.participant || msg.key.remoteJid);
         
         let pushName = 'Eu';
         if (!fromMe) {
@@ -459,8 +462,8 @@ async function connectUserWhatsApp(userId) {
         
         const messageObject = {
           id: msg.key.id,
-          sender: sender.split('@')[0],
-          participant: participantJid.split('@')[0], // Identifica quem de fato enviou (essencial para grupos e atualizações retroativas)
+          sender: cleanJid(sender).split('@')[0],
+          participant: cleanJid(participantJid).split('@')[0], // Identifica quem de fato enviou sem sufixo de dispositivo para compatibilidade retroativa
           name: pushName,
           text: text,
           fromMe: fromMe,
@@ -494,6 +497,21 @@ async function connectUserWhatsApp(userId) {
         }
       }
       console.log(`[${userId}] Sincronizados ${contacts.length} contatos da agenda.`);
+    }
+
+    // 0.1. Sincroniza os nomes das conversas e grupos do histórico recente
+    if (chats && chats.length > 0) {
+      let syncGroupNamesCount = 0;
+      for (const chat of chats) {
+        const name = chat.name;
+        if (chat.id && name) {
+          addContactToCache(userId, instance, chat.id, name);
+          if (chat.id.endsWith('@g.us')) {
+            syncGroupNamesCount++;
+          }
+        }
+      }
+      console.log(`[${userId}] Sincronizados ${chats.length} chats recentes, incluindo ${syncGroupNamesCount} nomes de grupos.`);
     }
     
     // 1. Processa mensagens do array global (se houver)
@@ -572,6 +590,20 @@ function saveUserMessageToFile(userId, dateStr, messageObject) {
       console.error(`Erro ao gravar mensagens de ${dateStr} do usuário ${userId}:`, e);
     }
   }
+}
+
+// Higieniza o JID removendo IDs de dispositivos pareados para garantir compatibilidade no cache de contatos
+function cleanJid(jid) {
+  if (!jid || typeof jid !== 'string') return '';
+  // Exemplo: 5521979710824:89@s.whatsapp.net -> 5521979710824@s.whatsapp.net
+  if (jid.includes(':')) {
+    const parts = jid.split('@');
+    if (parts.length === 2) {
+      const numberPart = parts[0].split(':')[0];
+      return `${numberPart}@${parts[1]}`;
+    }
+  }
+  return jid;
 }
 
 // Dicionário de instâncias ativas em memória
@@ -1137,7 +1169,7 @@ app.get('/messages', checkAuth, async (req, res) => {
         
         // 3. Se ainda assim não achar, ou se for o JID puro, ou se for "Eu", define fallbacks
         if (!displayName || displayName === 'Eu' || displayName.includes('@')) {
-          displayName = isGroup ? 'Grupo' : 'Contato';
+          displayName = chatKey;
         }
 
         const chatMessagesText = chat.messages.map(m => {
