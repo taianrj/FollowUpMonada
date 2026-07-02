@@ -1756,6 +1756,7 @@ function analyzeMessagesIntegrity(messages, contactsCache) {
   let outOfOrder = 0;
   let missingChatNames = 0;
   let missingSenderNames = 0;
+  let missingHumanSenderNames = 0;
   let previousTime = 0;
 
   for (const raw of messages) {
@@ -1772,8 +1773,12 @@ function analyzeMessagesIntegrity(messages, contactsCache) {
     if (!chatName || looksLikeTechnicalName(chatName)) missingChatNames++;
 
     if (!message.fromMe) {
-      const participantName = bestNameFromAliases([message.participantJid, ...(message.participantAliases || [])], contactsCache) || message.name;
-      if (!participantName || looksLikeTechnicalName(participantName)) missingSenderNames++;
+      const aliases = [message.participantJid, ...(message.participantAliases || [])];
+      const participantName = bestNameFromAliases(aliases, contactsCache) || message.name;
+      const hasHumanName = participantName && !looksLikeTechnicalName(participantName);
+      const phoneFallback = phoneFallbackFromAliases(aliases, contactsCache);
+      if (!hasHumanName) missingHumanSenderNames++;
+      if (!hasHumanName && !phoneFallback) missingSenderNames++;
     }
   }
 
@@ -1784,6 +1789,7 @@ function analyzeMessagesIntegrity(messages, contactsCache) {
     outOfOrder,
     missingChatNames,
     missingSenderNames,
+    missingHumanSenderNames,
     firstTimestamp: messages[0]?.timestamp || null,
     lastTimestamp: messages[messages.length - 1]?.timestamp || null,
     ok: duplicateKeys === 0 && outOfOrder === 0
