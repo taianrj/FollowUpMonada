@@ -463,13 +463,7 @@ async function connectUserWhatsApp(userId) {
 
         const timestamp = (msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000) : new Date());
         
-        const formatter = new Intl.DateTimeFormat('fr-CA', {
-          timeZone: 'America/Sao_Paulo',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit'
-        });
-        const dateStr = formatter.format(timestamp); // YYYY-MM-DD
+        const dateStr = yyyymmddFormatter.format(timestamp); // YYYY-MM-DD usando o formatador global ultra-rápido
         
         const messageObject = {
           id: msg.key.id,
@@ -622,6 +616,14 @@ function cleanJid(jid) {
   }
   return jid;
 }
+
+// Formatador global de datas no formato YYYY-MM-DD para evitar instanciações repetidas lentas na CPU
+const yyyymmddFormatter = new Intl.DateTimeFormat('fr-CA', {
+  timeZone: 'America/Sao_Paulo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
 
 // Dicionário de instâncias ativas em memória
 const instances = {};
@@ -1232,6 +1234,16 @@ app.get('/messages', checkAuth, async (req, res) => {
       const contactsCache = instance ? (instance.contactsCache || {}) : {};
 
       const formattedChats = [];
+      const dateTimeFormatter = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+
       for (const chatKey in grouped) {
         const chat = grouped[chatKey];
         const isGroup = chatKey.includes('-');
@@ -1254,14 +1266,7 @@ app.get('/messages', checkAuth, async (req, res) => {
         }
 
         const chatMessagesText = chat.messages.map(m => {
-          const dateTimeStr = new Date(m.timestamp).toLocaleString('pt-BR', {
-            timeZone: 'America/Sao_Paulo',
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-          });
+          const dateTimeStr = dateTimeFormatter.format(new Date(m.timestamp)).replace(',', '');
           const senderName = m.fromMe ? 'Eu' : (m.name || m.sender);
           return `  [${dateTimeStr}] ${senderName}: ${m.text}`;
         }).join('\n');
