@@ -25,6 +25,94 @@ const authDir = path.join(dataDir, 'auth');
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(authDir, { recursive: true });
 
+// Tenta carregar variáveis do .env.local do projeto pai se rodando localmente
+if (!process.env.SUPABASE_URL) {
+  try {
+    const dotenvPath = path.join(__dirname, '..', '.env.local');
+    if (fs.existsSync(dotenvPath)) {
+      const dotenvContent = fs.readFileSync(dotenvPath, 'utf8');
+      dotenvContent.split('\n').forEach(line => {
+        const parts = line.split('=');
+        if (parts.length >= 2) {
+          const key = parts[0].trim();
+          const val = parts.slice(1).join('=').trim().replace(/^['"]|['"]$/g, '');
+          if (key === 'NEXT_PUBLIC_SUPABASE_URL') process.env.SUPABASE_URL = val;
+          if (key === 'NEXT_PUBLIC_SUPABASE_ANON_KEY') process.env.SUPABASE_KEY = val;
+          if (key === 'SUPABASE_SERVICE_ROLE_KEY') process.env.SUPABASE_SERVICE_ROLE_KEY = val;
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('Aviso: Não foi possível carregar o arquivo .env.local localmente.', err);
+  }
+}
+
+// Funções de Persistência de Credenciais do WhatsApp no Supabase
+async function saveCredsToSupabase(userId, creds) {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  
+  if (!supabaseUrl || !supabaseKey) {
+    return;
+  }
+
+  const cleanUrl = supabaseUrl.replace(/\/$/, '');
+  try {
+    const credsString = JSON.stringify(creds);
+    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions`, {
+      method: 'POST',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-dupes'
+      },
+      body: JSON.stringify({
+        id: userId,
+        creds: credsString,
+        updated_at: new Date().toISOString()
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`[${userId}] Erro ao salvar credenciais no Supabase:`, response.status, errText);
+    }
+  } catch (err) {
+    console.error(`[${userId}] Erro de rede ao conectar com o Supabase para backup:`, err);
+  }
+}
+
+async function loadCredsFromSupabase(userId) {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  
+  if (!supabaseUrl || !supabaseKey) {
+    return null;
+  }
+
+  const cleanUrl = supabaseUrl.replace(/\/$/, '');
+  try {
+    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${userId}&select=creds`, {
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`
+      }
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.length > 0 && data[0].creds) {
+        console.log(`[${userId}] Credenciais do WhatsApp encontradas no Supabase.`);
+        return JSON.parse(data[0].creds);
+      }
+    }
+  } catch (err) {
+    console.error(`[${userId}] Erro de rede ao buscar credenciais no Supabase:`, err);
+  }
+  return null;
+}
+
 // Logger silencioso para o Baileys para não sujar o console do Fly.io
 const logger = pino({ level: 'warn' });
 
@@ -88,6 +176,23 @@ async function connectUserWhatsApp(userId) {
   const userAuthDir = path.join(dataDir, 'auth', userId);
   fs.mkdirSync(userAuthDir, { recursive: true });
 
+  // Restaura creds.json do Supabase se não existir localmente no container
+  const credsFilePath = path.join(userAuthDir, 'creds.json');
+  if (!fs.existsSync(credsFilePath)) {
+    console.log(`[${userId}] creds.json não encontrado localmente. Tentando restaurar do Supabase...`);
+    try {
+      const savedCreds = await loadCredsFromSupabase(userId);
+      if (savedCreds) {
+        fs.writeFileSync(credsFilePath, JSON.stringify(savedCreds, null, 2), 'utf8');
+        console.log(`[${userId}] creds.json restaurado com sucesso do Supabase.`);
+      } else {
+        console.log(`[${userId}] Nenhuma credencial anterior encontrada no Supabase.`);
+      }
+    } catch (e) {
+      console.error(`[${userId}] Falha ao restaurar credenciais do Supabase:`, e);
+    }
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState(userAuthDir);
 
   // Busca a versão mais recente do WhatsApp Web para evitar o erro 405 (Method Not Allowed)
@@ -111,8 +216,18 @@ async function connectUserWhatsApp(userId) {
 
   instance.sock = sock;
 
-  // Salva as credenciais a cada alteração de autenticação
-  sock.ev.on('creds.update', saveCreds);
+  // Salva as credenciais a cada alteração de autenticação e faz backup no Supabase
+  sock.ev.on('creds.update', async () => {
+    await saveCreds();
+    try {
+      if (fs.existsSync(credsFilePath)) {
+        const credsData = JSON.parse(fs.readFileSync(credsFilePath, 'utf8'));
+        await saveCredsToSupabase(userId, credsData);
+      }
+    } catch (err) {
+      console.error(`[${userId}] Erro ao fazer backup do creds.json para o Supabase:`, err);
+    }
+  });
 
   // Monitora alterações na conexão
   sock.ev.on('connection.update', (update) => {
