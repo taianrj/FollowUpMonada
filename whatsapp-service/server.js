@@ -53,7 +53,8 @@ function updateMessageNamesInFiles(userId, contactId, contactName) {
         let modified = false;
         
         for (const m of messages) {
-          if (m.sender === senderNumber && !m.fromMe && m.name !== contactName) {
+          const msgSender = m.participant || m.sender;
+          if (msgSender === senderNumber && !m.fromMe && m.name !== contactName) {
             m.name = contactName;
             modified = true;
           }
@@ -202,9 +203,10 @@ async function connectUserWhatsApp(userId) {
         const fromMe = msg.key.fromMe;
         
         // Determina o nome do remetente individual
+        const participantJid = msg.key.participant || msg.participant || msg.key.remoteJid;
+        
         let pushName = 'Eu';
         if (!fromMe) {
-          const participantJid = msg.key.participant || msg.key.remoteJid;
           const savedName = instance.contactsCache[participantJid];
           pushName = savedName || msg.pushName || 'Contato';
         }
@@ -226,6 +228,7 @@ async function connectUserWhatsApp(userId) {
         const messageObject = {
           id: msg.key.id,
           sender: sender.split('@')[0],
+          participant: participantJid.split('@')[0], // Identifica quem de fato enviou (essencial para grupos e atualizações retroativas)
           name: pushName,
           text: text,
           fromMe: fromMe,
