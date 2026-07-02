@@ -333,6 +333,14 @@ function jidNumber(jid) {
   return cleanJid(jid).split('@')[0] || '';
 }
 
+function ensureUserJid(value, preferredServer = 's.whatsapp.net') {
+  if (!value || typeof value !== 'string') return '';
+  const cleaned = cleanJid(value.trim());
+  if (!cleaned) return '';
+  if (cleaned.includes('@')) return cleaned;
+  return `${cleaned}@${preferredServer}`;
+}
+
 function isGroupJid(jid) {
   return cleanJid(jid).endsWith('@g.us');
 }
@@ -344,6 +352,71 @@ function isSupportedChatJid(jid) {
 
 function contactTypeFromJid(jid) {
   return isGroupJid(jid) ? 'group' : 'contact';
+}
+
+function uniqueJids(values) {
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    const jid = cleanJid(value);
+    if (!jid || seen.has(jid)) continue;
+    seen.add(jid);
+    result.push(jid);
+  }
+  return result;
+}
+
+function contactAliasJids(contact) {
+  if (!contact || typeof contact !== 'object') return [];
+  const candidates = [
+    contact.id,
+    contact.jid,
+    contact.lid,
+    contact.phoneNumber,
+    contact.phone_number,
+    contact.participantPn,
+    contact.participantLid,
+    contact.senderPn,
+    contact.senderLid
+  ];
+
+  return uniqueJids(candidates.map(value => {
+    if (!value || typeof value !== 'string') return '';
+    if (value.includes('@')) return value;
+    if (/^\d{14,}$/.test(value)) return `${value}@lid`;
+    return `${value}@s.whatsapp.net`;
+  }));
+}
+
+function messageParticipantAliases(msg, fallbackJid) {
+  const key = msg?.key || {};
+  return uniqueJids([
+    fallbackJid,
+    key.participant,
+    msg?.participant,
+    key.participantPn,
+    key.participantLid,
+    key.senderPn,
+    key.senderLid
+  ].map(value => {
+    if (!value || typeof value !== 'string') return '';
+    if (value.includes('@')) return value;
+    if (/^\d{14,}$/.test(value)) return `${value}@lid`;
+    return `${value}@s.whatsapp.net`;
+  }));
+}
+
+function bestNameFromAliases(aliasJids, contactsCache) {
+  if (!contactsCache) return '';
+  for (const alias of aliasJids || []) {
+    const name = contactsCache[cleanJid(alias)];
+    if (name && !looksLikeTechnicalName(name)) return name;
+  }
+  for (const alias of aliasJids || []) {
+    const name = contactsCache[cleanJid(alias)];
+    if (name) return name;
+  }
+  return '';
 }
 
 function contactsFilePath(userId) {
@@ -540,12 +613,18 @@ function inferParticipantJidFromMessage(message) {
   if (message.participantJid) return cleanJid(message.participantJid);
   if (!message.participant) return inferChatJidFromMessage(message);
   if (message.participant.includes('@')) return cleanJid(message.participant);
+  if (/^\d{14,}$/.test(String(message.participant))) return `${message.participant}@lid`;
   return `${message.participant}@s.whatsapp.net`;
 }
 
 function normalizeStoredMessage(message) {
   const chatJid = inferChatJidFromMessage(message);
   const participantJid = inferParticipantJidFromMessage(message);
+  const participantAliases = uniqueJids([
+    participantJid,
+    ...(Array.isArray(message.participantAliases) ? message.participantAliases : []),
+    ...(Array.isArray(message.participant_aliases) ? message.participant_aliases : [])
+  ]);
   const normalized = {
     id: message.id || message.message_id || '',
     dedupeKey: message.dedupeKey || message.dedupe_key || '',
@@ -554,6 +633,7 @@ function normalizeStoredMessage(message) {
     chatName: normalizeDisplayName(message.chatName || message.chat_name || ''),
     participant: message.participant || message.participant_number || jidNumber(participantJid),
     participantJid,
+    participantAliases,
     name: normalizeDisplayName(message.name || message.display_name || ''),
     text: typeof message.text === 'string' ? message.text : '',
     fromMe: Boolean(message.fromMe ?? message.from_me),
@@ -580,6 +660,7 @@ function mergeMessages(localMessages, remoteMessages) {
       ...existing,
       ...message,
       chatName: isBetterContactName(message.chatName, existing.chatName) ? message.chatName : existing.chatName,
+      participantAliases: uniqueJids([...(existing.participantAliases || []), ...(message.participantAliases || [])]),
       name: isBetterContactName(message.name, existing.name) ? message.name : existing.name,
       text: message.text || existing.text
     });
@@ -598,7 +679,8 @@ function compareMessagesChronologically(a, b) {
 function resolveMessageSenderName(message, contactsCache, isGroup) {
   if (message.fromMe) return 'Eu';
   const participantJid = message.participantJid || inferParticipantJidFromMessage(message);
-  const cachedName = contactsCache && contactsCache[participantJid];
+  const aliases = uniqueJids([participantJid, ...(message.participantAliases || [])]);
+  const cachedName = bestNameFromAliases(aliases, contactsCache);
   if (cachedName && !looksLikeTechnicalName(cachedName)) return cachedName;
   if (message.name && !looksLikeTechnicalName(message.name)) return message.name;
   if (!isGroup && message.chatName && !looksLikeTechnicalName(message.chatName)) return message.chatName;
@@ -659,6 +741,71 @@ function addContactToCache(userId, instance, id, name, source = 'sync') {
   scheduleContactsFileSave(userId, instance);
   queueContactPersist(userId, cleanedId, cleanedName, source);
   return true;
+}
+
+function addContactRecordToCache(userId, instance, contact, source = 'sync') {
+  if (!contact || !instance) return false;
+  const aliases = contactAliasJids(contact);
+  if (aliases.length === 0) return false;
+
+  const name = bestNameFromContact(contact) || bestNameFromAliases(aliases, instance.contactsCache);
+  if (!name) return false;
+
+  let changed = false;
+  for (const alias of aliases) {
+    changed = addContactToCache(userId, instance, alias, name, source) || changed;
+  }
+  return changed;
+}
+
+function addGroupMetadataToCache(userId, instance, metadata, source = 'groupMetadata') {
+  if (!metadata || !instance) return;
+  addContactToCache(userId, instance, metadata.id, metadata.subject, source);
+  for (const participant of metadata.participants || []) {
+    addContactRecordToCache(userId, instance, participant, `${source}.participant`);
+  }
+}
+
+async function refreshGroupMetadataAliases(userId, instance, groupJids = []) {
+  if (!instance || !instance.sock) return 0;
+  let refreshed = 0;
+
+  if (groupJids.length === 0 && typeof instance.sock.groupFetchAllParticipating === 'function') {
+    try {
+      const groups = await instance.sock.groupFetchAllParticipating();
+      for (const metadata of Object.values(groups || {})) {
+        if (!metadata || !metadata.id) continue;
+        instance.groupMetadataCache[metadata.id] = metadata;
+        addGroupMetadataToCache(userId, instance, metadata, 'groupFetchAllParticipating');
+        refreshed++;
+      }
+      if (refreshed > 0) {
+        await flushContactPersist(userId);
+        saveContactsToFile(userId, instance.contactsCache || {});
+      }
+      return refreshed;
+    } catch (err) {
+      console.warn(`[${userId}] Falha ao buscar grupos participantes:`, err.message || err);
+    }
+  }
+
+  for (const groupJid of uniqueJids(groupJids).filter(isGroupJid)) {
+    try {
+      const metadata = instance.groupMetadataCache[groupJid] || await instance.sock.groupMetadata(groupJid);
+      if (!metadata) continue;
+      instance.groupMetadataCache[groupJid] = metadata;
+      addGroupMetadataToCache(userId, instance, metadata, 'groupMetadata.lookup');
+      refreshed++;
+    } catch (err) {
+      console.warn(`[${userId}] Falha ao atualizar aliases do grupo ${groupJid}:`, err.message || err);
+    }
+  }
+
+  if (refreshed > 0) {
+    await flushContactPersist(userId);
+    saveContactsToFile(userId, instance.contactsCache || {});
+  }
+  return refreshed;
 }
 
 // Inicia a conexão com o WhatsApp para um usuário específico de forma isolada
@@ -834,6 +981,9 @@ async function connectUserWhatsApp(userId) {
       }
       console.log(`[${userId}] WhatsApp conectado com sucesso!`);
       resetUserSyncTimer(userId);
+      refreshGroupMetadataAliases(userId, instance).catch(err => {
+        console.warn(`[${userId}] Falha ao hidratar aliases de grupos apos conexao:`, err.message || err);
+      });
     }
   });
 
@@ -841,10 +991,7 @@ async function connectUserWhatsApp(userId) {
   sock.ev.on('contacts.upsert', (contacts) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     for (const contact of contacts) {
-      const name = bestNameFromContact(contact);
-      if (contact.id && name) {
-        addContactToCache(userId, instance, contact.id, name, 'contacts.upsert');
-      }
+      addContactRecordToCache(userId, instance, contact, 'contacts.upsert');
     }
     resetUserSyncTimer(userId);
   });
@@ -853,10 +1000,7 @@ async function connectUserWhatsApp(userId) {
   sock.ev.on('contacts.update', (contacts) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     for (const contact of contacts) {
-      const name = bestNameFromContact(contact);
-      if (contact.id && name) {
-        addContactToCache(userId, instance, contact.id, name, 'contacts.update');
-      }
+      addContactRecordToCache(userId, instance, contact, 'contacts.update');
     }
     resetUserSyncTimer(userId);
   });
@@ -868,7 +1012,7 @@ async function connectUserWhatsApp(userId) {
       if (sock && event.id && instance.groupMetadataCache) {
         const metadata = await sock.groupMetadata(event.id);
         instance.groupMetadataCache[event.id] = metadata;
-        addContactToCache(userId, instance, event.id, metadata.subject || event.subject, 'groups.update');
+        addGroupMetadataToCache(userId, instance, metadata, 'groups.update');
       }
     } catch (err) {
       console.warn(`[${userId}] Falha ao atualizar cache de grupo no groups.update:`, err.message);
@@ -881,7 +1025,7 @@ async function connectUserWhatsApp(userId) {
       if (sock && event.id && instance.groupMetadataCache) {
         const metadata = await sock.groupMetadata(event.id);
         instance.groupMetadataCache[event.id] = metadata;
-        addContactToCache(userId, instance, event.id, metadata.subject, 'group-participants.update');
+        addGroupMetadataToCache(userId, instance, metadata, 'group-participants.update');
       }
     } catch (err) {
       console.warn(`[${userId}] Falha ao atualizar cache de grupo no group-participants.update:`, err.message);
@@ -918,15 +1062,20 @@ async function connectUserWhatsApp(userId) {
         const fromMe = msg.key.fromMe;
         const isGroup = isGroupJid(chatJid);
         
-        // Determina o nome do remetente individual
-        const participantJid = cleanJid(msg.key.participant || msg.participant || (isGroup && fromMe && instance.sock?.user?.id) || chatJid);
+        // Determina o remetente individual e todos os aliases conhecidos (LID + telefone).
+        const rawParticipant = msg.key.participant || msg.participant || (isGroup && fromMe && instance.sock?.user?.id) || chatJid;
+        const participantJid = ensureUserJid(rawParticipant, /^\d{14,}$/.test(String(rawParticipant || '')) ? 'lid' : 's.whatsapp.net');
+        const participantAliases = messageParticipantAliases(msg, participantJid);
         
         let pushName = 'Eu';
         if (!fromMe) {
-          const savedName = instance.contactsCache[participantJid];
-          pushName = savedName || normalizeDisplayName(msg.pushName) || jidNumber(participantJid);
+          const savedName = bestNameFromAliases(participantAliases, instance.contactsCache);
+          const messagePushName = normalizeDisplayName(msg.pushName);
+          pushName = savedName || messagePushName || jidNumber(participantJid);
           if (msg.pushName) {
-            addContactToCache(userId, instance, participantJid, msg.pushName, 'message.pushName');
+            for (const alias of participantAliases) {
+              addContactToCache(userId, instance, alias, msg.pushName, 'message.pushName');
+            }
           }
         }
 
@@ -949,6 +1098,7 @@ async function connectUserWhatsApp(userId) {
           chatName,
           participant: jidNumber(participantJid), // Identifica quem de fato enviou sem sufixo de dispositivo para compatibilidade retroativa
           participantJid,
+          participantAliases,
           name: pushName,
           text: text,
           fromMe: fromMe,
@@ -984,10 +1134,7 @@ async function connectUserWhatsApp(userId) {
     // 0. Sincroniza a lista de contatos da agenda inicial do celular
     if (contacts && contacts.length > 0) {
       for (const contact of contacts) {
-        const name = bestNameFromContact(contact);
-        if (contact.id && name) {
-          addContactToCache(userId, instance, contact.id, name, 'history.contacts');
-        }
+        addContactRecordToCache(userId, instance, contact, 'history.contacts');
       }
       console.log(`[${userId}] Sincronizados ${contacts.length} contatos da agenda.`);
     }
@@ -996,9 +1143,7 @@ async function connectUserWhatsApp(userId) {
     if (chats && chats.length > 0) {
       let syncGroupNamesCount = 0;
       for (const chat of chats) {
-        const name = bestNameFromContact(chat);
-        if (chat.id && name) {
-          addContactToCache(userId, instance, chat.id, name, 'history.chats');
+        if (addContactRecordToCache(userId, instance, chat, 'history.chats')) {
           if (chat.id.endsWith('@g.us')) {
             syncGroupNamesCount++;
           }
@@ -1200,6 +1345,7 @@ async function persistMessagesToSupabase(userId, messages) {
       chat_name: normalized.chatName || null,
       participant_jid: normalized.participantJid,
       participant_number: normalized.participant,
+      participant_aliases: normalized.participantAliases || [],
       display_name: normalized.name || null,
       text: normalized.text,
       from_me: normalized.fromMe,
@@ -1247,7 +1393,7 @@ async function persistMessagesToSupabase(userId, messages) {
 async function loadMessagesFromSupabase(userId, dateStr) {
   const response = await supabaseRest(
     'whatsapp_messages',
-    `?user_id=eq.${supabaseEq(userId)}&message_date=eq.${supabaseEq(dateStr)}&select=dedupe_key,message_id,chat_jid,chat_number,chat_name,participant_jid,participant_number,display_name,text,from_me,message_timestamp&order=message_timestamp.asc&limit=20000`
+    `?user_id=eq.${supabaseEq(userId)}&message_date=eq.${supabaseEq(dateStr)}&select=dedupe_key,message_id,chat_jid,chat_number,chat_name,participant_jid,participant_number,participant_aliases,display_name,text,from_me,message_timestamp&order=message_timestamp.asc&limit=20000`
   );
   if (!response) {
     const fallbackMessages = await loadStateBlobFromSupabase(userId, 'messages', dateStr);
@@ -1264,6 +1410,7 @@ async function loadMessagesFromSupabase(userId, dateStr) {
       chat_name: row.chat_name,
       participant_jid: row.participant_jid,
       participant_number: row.participant_number,
+      participant_aliases: row.participant_aliases,
       display_name: row.display_name,
       text: row.text,
       from_me: row.from_me,
@@ -2134,6 +2281,13 @@ app.get('/messages', checkAuth, async (req, res) => {
     }
     const remoteMessages = await loadMessagesFromSupabase(cleanUserId, dateStr);
     const messages = mergeMessages(localMessages, remoteMessages);
+    const activeInstance = instances[cleanUserId];
+    if (activeInstance && activeInstance.connectionStatus === 'connected') {
+      const groupJids = uniqueJids(messages.map(m => m.chatJid)).filter(isGroupJid);
+      if (groupJids.length > 0) {
+        await refreshGroupMetadataAliases(cleanUserId, activeInstance, groupJids);
+      }
+    }
 
     if (messages.length > 0 && (!fs.existsSync(filePath) || remoteMessages.length > localMessages.length)) {
       fs.mkdirSync(userMsgDir, { recursive: true });
@@ -2161,11 +2315,10 @@ app.get('/messages', checkAuth, async (req, res) => {
       });
 
       // Obtém contatos da instância ativa na memória para extrair nomes reais de conversas
-      const instance = instances[cleanUserId];
       const contactsCache = mergeContactCaches(
         loadContactsFromFile(cleanUserId),
         await loadContactsFromSupabase(cleanUserId),
-        instance ? (instance.contactsCache || {}) : {}
+        activeInstance ? (activeInstance.contactsCache || {}) : {}
       );
 
       const formattedChats = [];
