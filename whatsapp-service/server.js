@@ -1000,13 +1000,13 @@ app.get('/', checkAuth, async (req, res) => {
                 return;
               }
 
-              let text = `Total de Contatos/Chats Sincronizados: \${data.count}\n\n`;
+              let text = 'Total de Contatos/Chats Sincronizados: ' + data.count + '\n\n';
               const sorted = Object.entries(data.contacts).sort((a, b) => a[1].localeCompare(b[1]));
               
               sorted.forEach(([jid, name]) => {
                 const number = jid.split('@')[0];
                 const type = jid.endsWith('@g.us') ? 'GRUPO' : 'CONTATO';
-                text += `• [\${type}] \${name} (\${number})\n`;
+                text += '• [' + type + '] ' + name + ' (' + number + ')\n';
               });
 
               output.textContent = text;
