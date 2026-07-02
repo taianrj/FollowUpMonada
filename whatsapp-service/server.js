@@ -274,7 +274,7 @@ async function connectUserWhatsApp(userId) {
   const sock = makeWASocket({
     auth: state,
     version,
-    syncFullHistory: false, // Evita estouro de memória RAM de 512MB no Render gratuito (baixa apenas o histórico essencial recente)
+    syncFullHistory: true, // Força a sincronização do histórico inicial recente
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
     browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
@@ -423,10 +423,21 @@ async function connectUserWhatsApp(userId) {
   // Função auxiliar para processar e salvar um lote de mensagens
   function processUserMessages(messagesList) {
     if (!messagesList || messagesList.length === 0) return;
-    instance.messagesProcessedCount += messagesList.length;
+
+    // Retém apenas mensagens das últimas 72 horas (3 dias) para economizar RAM/Disco no Render gratuito
+    const threeDaysAgo = Date.now() - (3 * 24 * 60 * 60 * 1000);
+    const filteredList = messagesList.filter(msg => {
+      if (!msg) return false;
+      const msgTimestampMs = (msg.messageTimestamp ? msg.messageTimestamp * 1000 : Date.now());
+      return msgTimestampMs >= threeDaysAgo;
+    });
+
+    if (filteredList.length === 0) return;
+
+    instance.messagesProcessedCount += filteredList.length;
     resetUserSyncTimer(userId);
     
-    for (const msg of messagesList) {
+    for (const msg of filteredList) {
       try {
         if (!msg.key || !msg.key.remoteJid) continue;
         
@@ -523,9 +534,15 @@ async function connectUserWhatsApp(userId) {
     // 2. Extrai e processa mensagens do histórico de cada chat (onde o Baileys agrupa o histórico real)
     if (chats && chats.length > 0) {
       let chatMsgsCount = 0;
+      const threeDaysAgo = Date.now() - (3 * 24 * 60 * 60 * 1000);
       for (const chat of chats) {
         if (chat.messages && chat.messages.length > 0) {
-          const chatMsgs = chat.messages.filter(Boolean);
+          // Filtra na origem do chat as mensagens com menos de 3 dias para poupar RAM e CPU
+          const chatMsgs = chat.messages.filter(m => {
+            if (!m) return false;
+            const msgTimestampMs = (m.messageTimestamp ? m.messageTimestamp * 1000 : Date.now());
+            return msgTimestampMs >= threeDaysAgo;
+          });
           if (chatMsgs.length > 0) {
             processUserMessages(chatMsgs);
             chatMsgsCount += chatMsgs.length;
