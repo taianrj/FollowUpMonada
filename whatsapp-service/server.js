@@ -8,6 +8,14 @@ if (!global.crypto) {
   }
 }
 
+// Tratadores de erros globais para evitar queda do microsserviço por problemas internos do Baileys
+process.on('uncaughtException', (err) => {
+  console.error('[CRITICAL] Exceção Não Capturada no Servidor:', err.message || err, err.stack);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[CRITICAL] Rejeição de Promise Não Capturada no Servidor:', reason);
+});
+
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const QRCode = require('qrcode');
