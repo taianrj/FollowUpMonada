@@ -8,7 +8,7 @@ if (!global.crypto) {
   }
 }
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const QRCode = require('qrcode');
 const fs = require('fs');
@@ -336,6 +336,11 @@ function bestNameFromContact(contact) {
     contact.subject ||
     ''
   );
+}
+
+function hasUsableProfileName(contact) {
+  const name = bestNameFromContact(contact);
+  return !!name && !looksLikeTechnicalName(name);
 }
 
 function looksLikeTechnicalName(name) {
@@ -1006,7 +1011,7 @@ async function connectUserWhatsApp(userId) {
     syncFullHistory: true, // Força a sincronização do histórico inicial recente
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
-    browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
+    browser: Browsers.windows('Chrome'), // Perfil desktop real libera melhor o histórico completo e push names
     markOnlineOnConnect: false, // Mantém as notificações push funcionando no celular do usuário
     keepAliveIntervalMs: 15000, // Envia pings de keep-alive a cada 15 segundos para evitar que o proxy do Render encerre a conexão por ociosidade
     connectTimeoutMs: 60000, // Tolera até 60 segundos para conexão inicial
@@ -1262,42 +1267,62 @@ async function connectUserWhatsApp(userId) {
   });
 
   // Escuta o histórico de mensagens inicial enviado pelo WhatsApp na sincronização
-  sock.ev.on('messaging-history.set', async ({ chats, contacts, messages }) => {
+  sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, syncType, progress }) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     let totalMessages = 0;
+    const historyContacts = Array.isArray(contacts) ? contacts : [];
+    const historyChats = Array.isArray(chats) ? chats : [];
+    const historyMessages = Array.isArray(messages) ? messages : [];
+    const profileNameContacts = historyContacts.filter(hasUsableProfileName).length;
+
+    instance.historySyncStats = {
+      ...(instance.historySyncStats || {}),
+      batches: (instance.historySyncStats?.batches || 0) + 1,
+      contacts: (instance.historySyncStats?.contacts || 0) + historyContacts.length,
+      pushNameContacts: (instance.historySyncStats?.pushNameContacts || 0) + profileNameContacts,
+      messages: (instance.historySyncStats?.messages || 0) + historyMessages.length,
+      lastSyncType: syncType ?? null,
+      lastProgress: progress ?? null,
+      lastAt: new Date().toISOString()
+    };
+
+    console.log(
+      `[${userId}] History sync: type=${syncType ?? 'unknown'} progress=${progress ?? 'unknown'} ` +
+      `contacts=${historyContacts.length} profileNames=${profileNameContacts} chats=${historyChats.length} messages=${historyMessages.length}`
+    );
     
     // 0. Sincroniza a lista de contatos da agenda inicial do celular
-    if (contacts && contacts.length > 0) {
-      for (const contact of contacts) {
-        addContactRecordToCache(userId, instance, contact, 'history.contacts');
+    if (historyContacts.length > 0) {
+      for (const contact of historyContacts) {
+        addContactRecordToCache(userId, instance, contact, contact.notify ? 'history.pushName' : 'history.contacts');
       }
-      console.log(`[${userId}] Sincronizados ${contacts.length} contatos da agenda.`);
+      console.log(`[${userId}] Sincronizados ${historyContacts.length} contatos do histÃ³rico, incluindo ${profileNameContacts} nomes de perfil.`);
     }
 
     // 0.1. Sincroniza os nomes das conversas e grupos do histórico recente
-    if (chats && chats.length > 0) {
+    if (historyChats.length > 0) {
       let syncGroupNamesCount = 0;
-      for (const chat of chats) {
+      for (const chat of historyChats) {
         if (addContactRecordToCache(userId, instance, chat, 'history.chats')) {
           if (chat.id.endsWith('@g.us')) {
             syncGroupNamesCount++;
           }
         }
       }
-      console.log(`[${userId}] Sincronizados ${chats.length} chats recentes, incluindo ${syncGroupNamesCount} nomes de grupos.`);
+      console.log(`[${userId}] Sincronizados ${historyChats.length} chats recentes, incluindo ${syncGroupNamesCount} nomes de grupos.`);
     }
     
     // 1. Processa mensagens do array global (se houver)
-    if (messages && messages.length > 0) {
-      await processUserMessages(messages);
-      totalMessages += messages.length;
+    if (historyMessages.length > 0) {
+      await processUserMessages(historyMessages);
+      totalMessages += historyMessages.length;
     }
     
     // 2. Extrai e processa mensagens do histórico de cada chat (onde o Baileys agrupa o histórico real)
-    if (chats && chats.length > 0) {
+    if (historyChats.length > 0) {
       let chatMsgsCount = 0;
       const retentionThreshold = Date.now() - (MESSAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-      for (const chat of chats) {
+      for (const chat of historyChats) {
         if (chat.messages && chat.messages.length > 0) {
           // Filtra na origem do chat as mensagens recentes para poupar RAM e CPU
           const chatMsgs = chat.messages.filter(m => {
@@ -1635,7 +1660,16 @@ async function getOrCreateInstance(userId) {
     contactsSaveTimer: null,
     reconnectTimer: null,
     connectionGeneration: 0,
-    lastStoredMessageContactHydration: 0
+    lastStoredMessageContactHydration: 0,
+    historySyncStats: {
+      batches: 0,
+      contacts: 0,
+      pushNameContacts: 0,
+      messages: 0,
+      lastSyncType: null,
+      lastProgress: null,
+      lastAt: null
+    }
   };
 
   instances[cleanUserId] = instanceState;
@@ -1834,6 +1868,7 @@ async function buildDiagnostics(userId, dateStr) {
     syncStatus: instance ? instance.syncStatus : 'not_initialized',
     messagesProcessedInSession: instance ? instance.messagesProcessedCount : 0,
     contactsCount: Object.keys(contacts).length,
+    historySyncStats: instance ? (instance.historySyncStats || null) : null,
     retentionDays: MESSAGE_RETENTION_DAYS,
     persistence: {
       supabaseConfigured: !!getSupabaseConfig(),
@@ -2243,6 +2278,7 @@ app.get('/status', checkAuth, async (req, res) => {
     syncStatus: instance.syncStatus,
     messagesCount: instance.messagesProcessedCount,
     contactsCount: Object.keys(instance.contactsCache || {}).length,
+    historySyncStats: instance.historySyncStats || null,
     lastSyncActivity: instance.lastSyncActivity ? new Date(instance.lastSyncActivity).toISOString() : null,
     retentionDays: MESSAGE_RETENTION_DAYS,
     persistence: {
