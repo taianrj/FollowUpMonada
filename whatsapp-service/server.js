@@ -208,7 +208,7 @@ async function connectUserWhatsApp(userId) {
         let pushName = 'Eu';
         if (!fromMe) {
           const savedName = instance.contactsCache[participantJid];
-          pushName = savedName || msg.pushName || 'Contato';
+          pushName = savedName || msg.pushName || participantJid.split('@')[0];
         }
         const text = getMessageText(msg);
 
@@ -888,22 +888,23 @@ app.get('/messages', checkAuth, async (req, res) => {
       const formattedChats = [];
       for (const chatKey in grouped) {
         const chat = grouped[chatKey];
+        const isGroup = chatKey.includes('-');
 
         // 1. Tenta pegar o nome da conversa pelo cache de contatos
-        const jid = chatKey.includes('-') ? `${chatKey}@g.us` : `${chatKey}@s.whatsapp.net`;
+        const jid = isGroup ? `${chatKey}@g.us` : `${chatKey}@s.whatsapp.net`;
         let displayName = contactsCache[jid];
         
-        // 2. Se não estiver no cache, procura nas mensagens desse chat a primeira que não seja do próprio usuário ("Eu")
-        if (!displayName) {
+        // 2. Para chats individuais, se não estiver no cache, procura nas mensagens desse chat o nome do contato
+        if (!displayName && !isGroup) {
           const nonMeMessage = chat.messages.find(m => !m.fromMe);
           if (nonMeMessage) {
-            displayName = nonMeMessage.name; // Pega o nome de perfil da outra pessoa ou participante do grupo
+            displayName = nonMeMessage.name;
           }
         }
         
-        // 3. Se ainda assim não achar ou for "Eu", define fallbacks seguros de Grupo ou Contato
-        if (!displayName || displayName === 'Eu') {
-          displayName = chatKey.includes('-') ? 'Grupo' : 'Contato';
+        // 3. Se ainda assim não achar, ou se for o JID puro, ou se for "Eu", define fallbacks
+        if (!displayName || displayName === 'Eu' || displayName.includes('@')) {
+          displayName = isGroup ? 'Grupo' : 'Contato';
         }
 
         const chatMessagesText = chat.messages.map(m => {
