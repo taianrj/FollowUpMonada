@@ -1056,6 +1056,24 @@ async function connectUserWhatsApp(userId) {
 
   const { state, saveCreds } = await useMultiFileAuthState(userAuthDir);
 
+  if (instance.forceHistorySync) {
+    const previousProcessedCount = Array.isArray(state.creds.processedHistoryMessages)
+      ? state.creds.processedHistoryMessages.length
+      : 0;
+    state.creds.processedHistoryMessages = [];
+    instance.forceHistorySync = false;
+    await saveCreds();
+    try {
+      if (fs.existsSync(credsFilePath)) {
+        const credsData = JSON.parse(fs.readFileSync(credsFilePath, 'utf8'));
+        await saveCredsToSupabase(userId, credsData);
+      }
+    } catch (err) {
+      console.error(`[${userId}] Erro ao salvar credenciais apos force-history:`, err);
+    }
+    console.log(`[${userId}] force-history ativo: ${previousProcessedCount} marcadores de histórico processado foram limpos.`);
+  }
+
   // Busca a versão mais recente do WhatsApp Web para evitar o erro 405 (Method Not Allowed)
   let version = [2, 3000, 1015901307]; // Fallback de versão recente
   try {
@@ -1739,6 +1757,7 @@ async function getOrCreateInstance(userId) {
     contactsSaveTimer: null,
     reconnectTimer: null,
     connectionGeneration: 0,
+    forceHistorySync: false,
     lastStoredMessageContactHydration: 0,
     historySyncStats: {
       batches: 0,
@@ -1984,6 +2003,7 @@ async function handleMaintenanceResync(req, res) {
   const dateStr = req.query.date && /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date)) ? String(req.query.date) : null;
   let clearedMessageFiles = 0;
   let clearedContacts = false;
+  const forcedHistory = mode === 'force-history';
 
   let instance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
 
@@ -2011,6 +2031,18 @@ async function handleMaintenanceResync(req, res) {
     instance.contactsCache = contacts;
     instance.syncStatus = 'syncing';
     instance.messagesProcessedCount = 0;
+    instance.historySyncStats = {
+      batches: 0,
+      contacts: 0,
+      pushNameContacts: 0,
+      messages: 0,
+      lastSyncType: null,
+      lastProgress: null,
+      lastAt: null
+    };
+    if (forcedHistory) {
+      instance.forceHistorySync = true;
+    }
     resetUserSyncTimer(cleanUserId);
     saveContactsToFile(cleanUserId, contacts);
     connectUserWhatsApp(cleanUserId);
@@ -2020,6 +2052,7 @@ async function handleMaintenanceResync(req, res) {
   return res.json({
     ok: true,
     mode,
+    forcedHistory,
     clearedMessageFiles,
     clearedContacts,
     restarted: !!instance,
