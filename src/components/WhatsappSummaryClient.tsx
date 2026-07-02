@@ -798,6 +798,38 @@ export default function WhatsappSummaryClient({
                 Verificando conexão com o WhatsApp na nuvem...
               </span>
             </div>
+          ) : integrationConnected && connectedUser ? (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              backgroundColor: 'rgba(16, 185, 129, 0.08)',
+              border: '1px solid rgba(16, 185, 129, 0.2)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '0.85rem 1.25rem',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#34d399' }}>
+                <span className={whatsappStatus === 'connecting' ? 'pulse' : 'pulseGreen'} style={{ 
+                  display: 'inline-block', 
+                  width: '8px', 
+                  height: '8px', 
+                  backgroundColor: whatsappStatus === 'connecting' ? '#3b82f6' : '#10b981', 
+                  borderRadius: '50%' 
+                }}></span>
+                <span>
+                  WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser.name || connectedUser.id.split('@')[0].split(':')[0]}</strong>
+                  {whatsappStatus === 'connecting' && <span style={{ color: '#60a5fa', fontSize: '0.8rem', marginLeft: '0.5rem', fontWeight: 500 }}>(Reconectando...)</span>}
+                </span>
+              </div>
+              <button 
+                type="button" 
+                onClick={handleDisconnect}
+                style={{ background: 'none', border: 'none', color: '#f87171', fontSize: '0.82rem', cursor: 'pointer', fontWeight: 600 }}
+              >
+                🔴 Desconectar Conta
+              </button>
+            </div>
           ) : integrationConnected && whatsappStatus === 'connecting' ? (
             <div style={{
               display: 'flex',
@@ -878,35 +910,6 @@ export default function WhatsappSummaryClient({
                   📱 Conectar Celular (Escanear QR Code)
                 </button>
               </div>
-            </div>
-          ) : integrationConnected && whatsappStatus === 'connected' ? (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              backgroundColor: 'rgba(16, 185, 129, 0.08)',
-              border: '1px solid rgba(16, 185, 129, 0.2)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '0.85rem 1.25rem',
-              boxShadow: 'var(--shadow-sm)'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#34d399' }}>
-                <span className="pulseGreen" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#10b981', borderRadius: '50%' }}></span>
-                {connectedUser ? (
-                  <span>
-                    WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser.name || connectedUser.id.split('@')[0].split(':')[0]}</strong>
-                  </span>
-                ) : (
-                  'WhatsApp Conectado e Ativo'
-                )}
-              </div>
-              <button 
-                type="button" 
-                onClick={handleDisconnect}
-                style={{ background: 'none', border: 'none', color: '#f87171', fontSize: '0.82rem', cursor: 'pointer', fontWeight: 600 }}
-              >
-                🔴 Desconectar Conta
-              </button>
             </div>
           ) : (
             <div style={{
