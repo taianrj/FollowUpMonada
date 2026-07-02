@@ -127,6 +127,42 @@ async function loadCredsFromSupabase(userId) {
   return null;
 }
 
+async function deleteCredsFromSupabase(userId) {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  
+  if (!supabaseUrl || !supabaseKey) {
+    return;
+  }
+
+  const cleanUrl = supabaseUrl.replace(/\/$/, '');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout
+
+  try {
+    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${userId}`, {
+      method: 'DELETE',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`[${userId}] Erro ao excluir credenciais no Supabase:`, response.status, errText);
+    } else {
+      console.log(`[${userId}] Credenciais excluídas do Supabase com sucesso.`);
+    }
+  } catch (err) {
+    clearTimeout(timeoutId);
+    console.error(`[${userId}] Erro de rede ao conectar com o Supabase para exclusão:`, err.message || err);
+  }
+}
+
 // Logger silencioso para o Baileys para não sujar o console do Fly.io
 const logger = pino({ level: 'warn' });
 
@@ -314,6 +350,10 @@ async function connectUserWhatsApp(userId) {
       } else {
         console.log(`[${userId}] Desconectado permanentemente (Sessão encerrada pelo celular). Excluindo credenciais...`);
         instance.connectionStatus = 'disconnected';
+        
+        // Exclui as credenciais permanentemente do banco de dados do Supabase
+        deleteCredsFromSupabase(userId);
+        
         try {
           fs.rmSync(userAuthDir, { recursive: true, force: true });
           fs.mkdirSync(userAuthDir, { recursive: true });
@@ -1177,6 +1217,9 @@ app.get('/logout', checkAuth, async (req, res) => {
         instance.sock.end();
       } catch (e) {}
     }
+
+    // Apaga credenciais do Supabase de forma assíncrona
+    await deleteCredsFromSupabase(cleanUserId);
 
     // Apaga fisicamente a pasta de chaves de autenticação do usuário
     const userAuthDir = path.join(dataDir, 'auth', cleanUserId);
