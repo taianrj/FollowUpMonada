@@ -57,6 +57,9 @@ async function saveCredsToSupabase(userId, creds) {
   }
 
   const cleanUrl = supabaseUrl.replace(/\/$/, '');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout para evitar travamento em flutuações de rede
+
   try {
     const credsString = JSON.stringify(creds);
     const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions`, {
@@ -71,15 +74,19 @@ async function saveCredsToSupabase(userId, creds) {
         id: userId,
         creds: credsString,
         updated_at: new Date().toISOString()
-      })
+      }),
+      signal: controller.signal
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errText = await response.text();
       console.error(`[${userId}] Erro ao salvar credenciais no Supabase:`, response.status, errText);
     }
   } catch (err) {
-    console.error(`[${userId}] Erro de rede ao conectar com o Supabase para backup:`, err);
+    clearTimeout(timeoutId);
+    console.error(`[${userId}] Erro de rede ao conectar com o Supabase para backup:`, err.message || err);
   }
 }
 
@@ -92,13 +99,19 @@ async function loadCredsFromSupabase(userId) {
   }
 
   const cleanUrl = supabaseUrl.replace(/\/$/, '');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout para evitar travamento em flutuações de rede
+
   try {
     const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${userId}&select=creds`, {
       headers: {
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`
-      }
+      },
+      signal: controller.signal
     });
+
+    clearTimeout(timeoutId);
 
     if (response.ok) {
       const data = await response.json();
@@ -108,7 +121,8 @@ async function loadCredsFromSupabase(userId) {
       }
     }
   } catch (err) {
-    console.error(`[${userId}] Erro de rede ao buscar credenciais no Supabase:`, err);
+    clearTimeout(timeoutId);
+    console.error(`[${userId}] Erro de rede ao buscar credenciais no Supabase:`, err.message || err);
   }
   return null;
 }
