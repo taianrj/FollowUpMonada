@@ -478,6 +478,31 @@ function messageParticipantAliases(msg, fallbackJid) {
   }));
 }
 
+function importAliasJids(record) {
+  if (!record || typeof record !== 'object') return [];
+  const candidates = [
+    record.id,
+    record.jid,
+    record.lid,
+    record.phone,
+    record.number,
+    record.phoneNumber,
+    record.phone_number,
+    ...(Array.isArray(record.aliases) ? record.aliases : [])
+  ];
+
+  return uniqueJids(candidates.map(value => {
+    if (!value || typeof value !== 'string') return '';
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    if (trimmed.includes('@')) return trimmed;
+    const digits = trimmed.replace(/\D/g, '');
+    if (!digits) return '';
+    if (/^\d{14,}$/.test(digits)) return `${digits}@lid`;
+    return `${digits}@s.whatsapp.net`;
+  }));
+}
+
 function bestNameFromAliases(aliasJids, contactsCache) {
   if (!contactsCache) return '';
   for (const alias of aliasJids || []) {
@@ -2466,6 +2491,55 @@ app.get('/diagnostics/contact-lookup', checkAuth, async (req, res) => {
     count: matches.length,
     truncated: matches.length === 200,
     matches
+  });
+});
+
+// Importa aliases nome <-> telefone/LID coletados de uma fonte confiavel do usuario (ex: WhatsApp Web oficial)
+app.post('/contacts/import-aliases', checkAuth, async (req, res) => {
+  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  if (!userId) {
+    return res.status(400).json({ error: 'Identificacao de usuario necessaria.' });
+  }
+
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const aliases = Array.isArray(req.body?.aliases) ? req.body.aliases : [];
+  if (aliases.length === 0) {
+    return res.status(400).json({ error: 'Informe aliases: [{ name, phone|jid|lid|aliases }].' });
+  }
+
+  const instance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
+  if (!instance) {
+    return res.status(400).json({ error: 'Instancia do usuario indisponivel.' });
+  }
+
+  let imported = 0;
+  const details = [];
+  for (const record of aliases.slice(0, 500)) {
+    const name = normalizeDisplayName(record?.name);
+    const jids = importAliasJids(record);
+    if (!name || jids.length === 0 || looksLikeTechnicalName(name)) {
+      details.push({ name, aliases: jids, imported: false });
+      continue;
+    }
+
+    let changed = false;
+    for (const jid of jids) {
+      changed = addContactToCache(cleanUserId, instance, jid, name, 'manual.import') || changed;
+    }
+    if (changed) imported++;
+    details.push({ name, aliases: jids, imported: changed });
+  }
+
+  if (imported > 0) {
+    await persistContactsCacheNow(cleanUserId, instance);
+  }
+
+  res.json({
+    ok: true,
+    imported,
+    received: aliases.length,
+    processed: Math.min(aliases.length, 500),
+    details
   });
 });
 
