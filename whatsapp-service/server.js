@@ -835,6 +835,7 @@ app.get('/', checkAuth, async (req, res) => {
               </select>
             </div>
             <button id="btnFetch">🔍 Buscar Mensagens</button>
+            <button id="btnContacts" style="background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); font-weight: bold; cursor: pointer; transition: opacity 0.2s; padding: 0.5rem 1.25rem; border: none; border-radius: 6px; color: white;">📋 Ver Contatos</button>
           </div>
 
           <div class="viewer">
@@ -969,6 +970,50 @@ app.get('/', checkAuth, async (req, res) => {
               output.textContent = 'Erro ao buscar mensagens: ' + err.message;
             }
           });
+
+          // Função para buscar e renderizar contatos sincronizados
+          document.getElementById('btnContacts').addEventListener('click', async () => {
+            const output = document.getElementById('output');
+            const label = document.getElementById('viewerLabel');
+            
+            output.textContent = 'Buscando contatos sincronizados...';
+            label.textContent = 'Contatos e Grupos Sincronizados:';
+
+            try {
+              // Obtém a API Key da URL para autenticação
+              const urlParams = new URLSearchParams(window.location.search);
+              const key = urlParams.get('key') || '';
+              const keyParam = key ? '?key=' + key : '';
+
+              const response = await fetch('/contacts' + keyParam);
+              if (!response.ok) {
+                if (response.status === 401) {
+                  output.textContent = 'Erro 401: Acesso Não Autorizado.';
+                  return;
+                }
+                throw new Error('Erro do servidor: ' + response.status);
+              }
+
+              const data = await response.json();
+              if (data.count === 0) {
+                output.textContent = 'Nenhum contato ou grupo sincronizado na memória deste servidor ainda.';
+                return;
+              }
+
+              let text = `Total de Contatos/Chats Sincronizados: \${data.count}\n\n`;
+              const sorted = Object.entries(data.contacts).sort((a, b) => a[1].localeCompare(b[1]));
+              
+              sorted.forEach(([jid, name]) => {
+                const number = jid.split('@')[0];
+                const type = jid.endsWith('@g.us') ? 'GRUPO' : 'CONTATO';
+                text += `• [\${type}] \${name} (\${number})\n`;
+              });
+
+              output.textContent = text;
+            } catch (err) {
+              output.textContent = 'Erro ao buscar contatos: ' + err.message;
+            }
+          });
         </script>
       </body>
     </html>
@@ -994,6 +1039,25 @@ app.get('/status', checkAuth, async (req, res) => {
       id: instance.sock.user.id,
       name: instance.sock.user.name
     } : null
+  });
+});
+
+// Retorna a lista de contatos sincronizados em JSON
+app.get('/contacts', checkAuth, async (req, res) => {
+  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  if (!userId) {
+    return res.status(400).json({ error: 'Identificação de usuário necessária.' });
+  }
+
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const instance = instances[cleanUserId];
+  if (!instance) {
+    return res.json({ count: 0, contacts: {} });
+  }
+
+  res.json({
+    count: Object.keys(instance.contactsCache || {}).length,
+    contacts: instance.contactsCache || {}
   });
 });
 
