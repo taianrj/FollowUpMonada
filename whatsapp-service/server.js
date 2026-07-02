@@ -1011,7 +1011,7 @@ async function connectUserWhatsApp(userId) {
     syncFullHistory: true, // Força a sincronização do histórico inicial recente
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
-    browser: Browsers.windows('Chrome'), // Perfil desktop real para tentar receber histórico completo e push names
+    browser: Browsers.macOS('Chrome'), // Perfil desktop real para tentar receber histórico completo e push names
     markOnlineOnConnect: false, // Mantém as notificações push funcionando no celular do usuário
     keepAliveIntervalMs: 15000, // Envia pings de keep-alive a cada 15 segundos para evitar que o proxy do Render encerre a conexão por ociosidade
     connectTimeoutMs: 60000, // Tolera até 60 segundos para conexão inicial
