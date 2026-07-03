@@ -873,8 +873,12 @@ function compareMessagesChronologically(a, b) {
   return String(a.id || '').localeCompare(String(b.id || ''));
 }
 
-function resolveMessageSenderName(message, contactsCache, isGroup) {
-  if (message.fromMe) return message.name || 'Eu';
+function resolveMessageSenderName(message, contactsCache, isGroup, myPushName) {
+  if (message.fromMe) {
+    if (message.name && message.name !== 'Eu') return message.name;
+    if (myPushName && myPushName !== 'Eu') return myPushName;
+    return 'Eu';
+  }
   const participantJid = message.participantJid || inferParticipantJidFromMessage(message);
   const aliases = uniqueJids([participantJid, ...(message.participantAliases || [])]);
   const cachedName = bestNameFromAliases(aliases, contactsCache);
@@ -2951,7 +2955,7 @@ app.get('/messages', checkAuth, async (req, res) => {
 
         const chatMessagesText = chat.messages.map(m => {
           const dateTimeStr = dateTimeFormatter.format(new Date(m.timestamp)).replace(',', '');
-          const senderName = resolveMessageSenderName(m, contactsCache, chat.isGroup);
+          const senderName = resolveMessageSenderName(m, contactsCache, chat.isGroup, instance?.myPushName);
           return `  [${dateTimeStr}] ${senderName}: ${m.text}`;
         }).join('\n');
         
