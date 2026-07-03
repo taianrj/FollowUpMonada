@@ -62,6 +62,8 @@ export default function WhatsappSummaryClient({
   
   // Modais de pareamento e visualização de logs
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [autoSummaryEnabled, setAutoSummaryEnabled] = useState(false);
+  const [autoSummaryDate, setAutoSummaryDate] = useState('');
   const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
   const [qrStatus, setQrStatus] = useState<string>('waiting'); // 'waiting' | 'qrcode' | 'connected'
   const [isMessagesModalOpen, setIsMessagesModalOpen] = useState(false);
@@ -230,6 +232,22 @@ export default function WhatsappSummaryClient({
     return () => clearInterval(interval);
   }, [apiToken, isCheckingStatus, whatsappSyncStatus, apiUrl]);
 
+  // Efeito de gatilho de autogeração de resumo pós-sincronização
+  useEffect(() => {
+    if (autoSummaryEnabled && autoSummaryDate && whatsappStatus === 'connected' && whatsappSyncStatus === 'completed') {
+      setAutoSummaryEnabled(false);
+      setSummaryDate(autoSummaryDate);
+      
+      const dateToGenerate = autoSummaryDate;
+      setAutoSummaryDate('');
+      
+      // Pequeno timeout para aguardar a renderização e o fechamento do modal antes de rodar
+      setTimeout(() => {
+        handleSyncAndGenerateSummary(dateToGenerate);
+      }, 250);
+    }
+  }, [autoSummaryEnabled, autoSummaryDate, whatsappStatus, whatsappSyncStatus]);
+
   // Função auxiliar para testar conexão com o WhatsApp
   const checkConnectionStatus = async (url: string, token: string) => {
     const normalizedUrl = url.replace(/\/$/, '');
@@ -384,7 +402,7 @@ export default function WhatsappSummaryClient({
   };
 
   // Busca mensagens e gera o resumo com IA em um único clique
-  const handleSyncAndGenerateSummary = async () => {
+  const handleSyncAndGenerateSummary = async (customDate?: string) => {
     if (!apiToken) {
       showToast('Informe a sua Chave de Segurança nas configurações abaixo para continuar.', 'warning');
       return;
@@ -393,10 +411,11 @@ export default function WhatsappSummaryClient({
     setIsLoading(true);
     setLoadingStep(0);
     const normalizedUrl = apiUrl.replace(/\/$/, '');
+    const targetDate = customDate || summaryDate;
     
     try {
       // Passo 1: Busca mensagens do microsserviço
-      const response = await fetch(`${normalizedUrl}/messages?date=${summaryDate}&format=text&key=${apiToken}`);
+      const response = await fetch(`${normalizedUrl}/messages?date=${targetDate}&format=text&key=${apiToken}`);
       
       if (!response.ok) {
         if (response.status === 401) {
@@ -409,7 +428,7 @@ export default function WhatsappSummaryClient({
       
       if (textMessages.trim().length === 0) {
         setIsLoading(false);
-        showToast(`Nenhuma mensagem de clientes registrada para o dia ${summaryDate.split('-').reverse().join('/')}.`, 'warning');
+        showToast(`Nenhuma mensagem de clientes registrada para o dia ${targetDate.split('-').reverse().join('/')}.`, 'warning');
         return;
       }
 
@@ -417,7 +436,7 @@ export default function WhatsappSummaryClient({
       setLoadingStep(1); // Passa para o passo de análise da IA
       
       // Passo 2: Executa a geração chamando diretamente a função de processamento estruturada
-      await handleGenerateSummary(textMessages);
+      await handleGenerateSummary(textMessages, targetDate);
       
     } catch (error: any) {
       setIsLoading(false);
@@ -425,8 +444,58 @@ export default function WhatsappSummaryClient({
     }
   };
 
+  // Função para tocar um alerta sonoro harmônico e piscar o título da aba caso o usuário esteja em outra aba
+  const triggerCompletionAlert = () => {
+    // 1. Toca o som de notificação harmônico sutil usando Web Audio API nativa
+    try {
+      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioContext) {
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // Ré 5 (som suave)
+        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // Lá 5
+        
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5); // Fade-out em 0.5s
+        
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        osc.start();
+        osc.stop(ctx.currentTime + 0.5);
+      }
+    } catch (e) {
+      console.error('Falha ao reproduzir áudio de notificação:', e);
+    }
+
+    // 2. Se a página estiver em segundo plano (outra aba ou minimizada), pisca o título da aba
+    if (document.hidden) {
+      const originalTitle = document.title;
+      let isAlternate = true;
+      
+      const interval = setInterval(() => {
+        document.title = isAlternate ? '✨ Resumo Pronto! ✨' : originalTitle;
+        isAlternate = !isAlternate;
+      }, 1000);
+
+      // Para de piscar o título assim que o usuário focar ou mudar a visibilidade de volta para a aba
+      const stopBlinking = () => {
+        clearInterval(interval);
+        document.title = originalTitle;
+        window.removeEventListener('focus', stopBlinking);
+        document.removeEventListener('visibilitychange', stopBlinking);
+      };
+
+      window.addEventListener('focus', stopBlinking);
+      document.addEventListener('visibilitychange', stopBlinking);
+    }
+  };
+
   // Envia as mensagens para processamento na API do Next.js
-  const handleGenerateSummary = async (textOverride?: string) => {
+  const handleGenerateSummary = async (textOverride?: string, dateOverride?: string) => {
     const textToProcess = textOverride || rawText;
     if (!textToProcess.trim()) {
       showToast('Por favor, forneça o texto das mensagens do WhatsApp para processamento.', 'warning');
@@ -435,6 +504,7 @@ export default function WhatsappSummaryClient({
 
     setIsLoading(true);
     setLoadingStep(textOverride ? 1 : 0); // Se for override, já começa no passo de análise da IA
+    const targetDate = dateOverride || summaryDate;
 
     try {
       const response = await fetch('/api/whatsapp-summary', {
@@ -442,7 +512,7 @@ export default function WhatsappSummaryClient({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: textToProcess,
-          date: summaryDate,
+          date: targetDate,
           saveToDb,
           userId: profile?.id
         })
@@ -464,7 +534,7 @@ export default function WhatsappSummaryClient({
       // Estrutura um objeto de resumo para a UI
       const newSummary: WhatsappSummary = {
         id: result.summaryId || Math.random().toString(),
-        summary_date: summaryDate,
+        summary_date: targetDate,
         raw_text: textToProcess,
         summary_data: result.data,
         created_by: profile?.id || null,
@@ -485,6 +555,9 @@ export default function WhatsappSummaryClient({
         const updatedClients = await clientsResponse.json();
         setClients(updatedClients);
       }
+
+      // Dispara o som e o alerta visual na aba do navegador
+      triggerCompletionAlert();
     } catch (error: any) {
       console.error(error);
       showToast('Erro ao processar resumo: ' + error.message, 'error');
@@ -987,7 +1060,7 @@ export default function WhatsappSummaryClient({
                   <button
                     type="button"
                     className="btn btnPrimary"
-                    onClick={handleSyncAndGenerateSummary}
+                    onClick={() => handleSyncAndGenerateSummary()}
                     disabled={isLoading || !apiToken}
                     style={{
                       padding: '0.55rem 1.35rem',
@@ -1400,6 +1473,62 @@ export default function WhatsappSummaryClient({
                     animation: 'fadeIn 0.3s ease'
                   }}
                 />
+              )}
+            </div>
+
+            <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', margin: '0.25rem 0' }}></div>
+
+            <div style={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              gap: '0.75rem', 
+              width: '100%', 
+              backgroundColor: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid var(--border-color)',
+              borderRadius: 'var(--radius-md)',
+              padding: '0.85rem',
+              alignItems: 'flex-start',
+              textAlign: 'left'
+            }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)', userSelect: 'none' }}>
+                <input 
+                  type="checkbox"
+                  checked={autoSummaryEnabled}
+                  onChange={(e) => {
+                    setAutoSummaryEnabled(e.target.checked);
+                    if (e.target.checked && !autoSummaryDate) {
+                      const d = new Date();
+                      const year = d.getFullYear();
+                      const month = String(d.getMonth() + 1).padStart(2, '0');
+                      const day = String(d.getDate()).padStart(2, '0');
+                      setAutoSummaryDate(`${year}-${month}-${day}`);
+                    }
+                  }}
+                  style={{ accentColor: 'var(--accent-purple)', cursor: 'pointer' }}
+                />
+                ⚡ Gerar resumo automaticamente após conectar
+              </label>
+
+              {autoSummaryEnabled && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%', paddingLeft: '1.35rem', animation: 'fadeIn 0.2s ease' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Selecionar data desejada:</span>
+                  <input
+                    type="date"
+                    value={autoSummaryDate}
+                    onChange={(e) => setAutoSummaryDate(e.target.value)}
+                    style={{
+                      backgroundColor: 'var(--bg-primary)',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-primary)',
+                      padding: '0.35rem 0.5rem',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: '0.8rem',
+                      outline: 'none',
+                      width: '100%',
+                      maxWidth: '180px'
+                    }}
+                  />
+                </div>
               )}
             </div>
 
