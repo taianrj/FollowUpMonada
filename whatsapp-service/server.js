@@ -16,7 +16,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[CRITICAL] Rejeição de Promise Não Capturada no Servidor:', reason);
 });
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const QRCode = require('qrcode');
 const fs = require('fs');
@@ -55,25 +55,36 @@ try {
 }
 
 // Tenta carregar variáveis do .env.local do projeto pai se rodando localmente
-if (!process.env.SUPABASE_URL) {
-  try {
-    const dotenvPath = path.join(__dirname, '..', '.env.local');
-    if (fs.existsSync(dotenvPath)) {
-      const dotenvContent = fs.readFileSync(dotenvPath, 'utf8');
-      dotenvContent.split('\n').forEach(line => {
-        const parts = line.split('=');
-        if (parts.length >= 2) {
-          const key = parts[0].trim();
-          const val = parts.slice(1).join('=').trim().replace(/^['"]|['"]$/g, '');
-          if (key === 'NEXT_PUBLIC_SUPABASE_URL') process.env.SUPABASE_URL = val;
-          if (key === 'NEXT_PUBLIC_SUPABASE_ANON_KEY') process.env.SUPABASE_KEY = val;
-          if (key === 'SUPABASE_SERVICE_ROLE_KEY') process.env.SUPABASE_SERVICE_ROLE_KEY = val;
-        }
-      });
-    }
-  } catch (err) {
-    console.warn('Aviso: Não foi possível carregar o arquivo .env.local localmente.', err);
+try {
+  const dotenvPath = path.join(__dirname, '..', '.env.local');
+  if (fs.existsSync(dotenvPath)) {
+    const dotenvContent = fs.readFileSync(dotenvPath, 'utf8');
+    const serviceEnvKeys = new Set([
+      'GROQ_API_KEY',
+      'OPENAI_API_KEY',
+      'AUDIO_TRANSCRIPTION_ENABLED',
+      'AUDIO_TRANSCRIPTION_URL',
+      'AUDIO_TRANSCRIPTION_API_KEY',
+      'AUDIO_TRANSCRIPTION_MODEL',
+      'AUDIO_TRANSCRIPTION_MAX_BYTES',
+      'AUDIO_TRANSCRIPTION_QUEUE_MAX',
+      'AUDIO_TRANSCRIPTION_LANGUAGE',
+      'AUDIO_TRANSCRIPTION_PROMPT'
+    ]);
+    dotenvContent.split('\n').forEach(line => {
+      const parts = line.split('=');
+      if (parts.length >= 2) {
+        const key = parts[0].trim();
+        const val = parts.slice(1).join('=').trim().replace(/^['"]|['"]$/g, '');
+        if (key === 'NEXT_PUBLIC_SUPABASE_URL' && !process.env.SUPABASE_URL) process.env.SUPABASE_URL = val;
+        if (key === 'NEXT_PUBLIC_SUPABASE_ANON_KEY' && !process.env.SUPABASE_KEY) process.env.SUPABASE_KEY = val;
+        if (key === 'SUPABASE_SERVICE_ROLE_KEY' && !process.env.SUPABASE_SERVICE_ROLE_KEY) process.env.SUPABASE_SERVICE_ROLE_KEY = val;
+        if (serviceEnvKeys.has(key) && !process.env[key]) process.env[key] = val;
+      }
+    });
   }
+} catch (err) {
+  console.warn('Aviso: Não foi possível carregar o arquivo .env.local localmente.', err);
 }
 
 function getDbSessionId(userId) {
@@ -401,6 +412,14 @@ const CONTACT_FLUSH_DELAY_MS = Math.max(250, parseInt(process.env.CONTACT_FLUSH_
 const CONTACT_MESSAGE_HYDRATION_INTERVAL_MS = Math.max(60000, parseInt(process.env.CONTACT_MESSAGE_HYDRATION_INTERVAL_MS || '300000', 10));
 const SYNC_IDLE_COMPLETE_MS = Math.max(5000, parseInt(process.env.SYNC_IDLE_COMPLETE_MS || '90000', 10));
 const JSON_INDENT = process.env.NODE_ENV === 'production' ? 0 : 2;
+const AUDIO_TRANSCRIPTION_ENABLED = process.env.AUDIO_TRANSCRIPTION_ENABLED !== 'false';
+const AUDIO_TRANSCRIPTION_MAX_BYTES = Math.max(1024 * 1024, parseInt(process.env.AUDIO_TRANSCRIPTION_MAX_BYTES || String(24 * 1024 * 1024), 10));
+const AUDIO_TRANSCRIPTION_QUEUE_MAX = Math.max(1, parseInt(process.env.AUDIO_TRANSCRIPTION_QUEUE_MAX || '200', 10));
+const AUDIO_TRANSCRIPTION_LANGUAGE = process.env.AUDIO_TRANSCRIPTION_LANGUAGE || 'pt';
+const AUDIO_TRANSCRIPTION_PROMPT = process.env.AUDIO_TRANSCRIPTION_PROMPT || 'Transcreva mensagens de voz de WhatsApp em portugues do Brasil, preservando nomes proprios quando possivel.';
+const audioTranscriptionQueue = [];
+const queuedAudioTranscriptionKeys = new Set();
+let audioTranscriptionRunning = false;
 
 function getSupabaseConfig() {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -531,6 +550,251 @@ function chunkArray(items, size) {
     chunks.push(items.slice(i, i + size));
   }
   return chunks;
+}
+
+function getAudioTranscriptionConfig() {
+  if (!AUDIO_TRANSCRIPTION_ENABLED) return null;
+
+  const explicitUrl = process.env.AUDIO_TRANSCRIPTION_URL;
+  const explicitKey = process.env.AUDIO_TRANSCRIPTION_API_KEY;
+  if (explicitUrl && explicitKey) {
+    return {
+      url: explicitUrl,
+      key: explicitKey,
+      model: process.env.AUDIO_TRANSCRIPTION_MODEL || 'whisper-large-v3-turbo'
+    };
+  }
+
+  if (process.env.GROQ_API_KEY) {
+    return {
+      url: 'https://api.groq.com/openai/v1/audio/transcriptions',
+      key: process.env.GROQ_API_KEY,
+      model: process.env.AUDIO_TRANSCRIPTION_MODEL || 'whisper-large-v3-turbo'
+    };
+  }
+
+  if (process.env.OPENAI_API_KEY) {
+    return {
+      url: 'https://api.openai.com/v1/audio/transcriptions',
+      key: process.env.OPENAI_API_KEY,
+      model: process.env.AUDIO_TRANSCRIPTION_MODEL || 'whisper-1'
+    };
+  }
+
+  return null;
+}
+
+function extensionFromMimeType(mimetype = '') {
+  const cleanMime = String(mimetype).split(';')[0].trim().toLowerCase();
+  if (cleanMime.includes('ogg')) return 'ogg';
+  if (cleanMime.includes('mpeg') || cleanMime.includes('mp3')) return 'mp3';
+  if (cleanMime.includes('mp4')) return 'mp4';
+  if (cleanMime.includes('m4a')) return 'm4a';
+  if (cleanMime.includes('wav')) return 'wav';
+  if (cleanMime.includes('webm')) return 'webm';
+  if (cleanMime.includes('flac')) return 'flac';
+  return 'ogg';
+}
+
+function blobTypeFromMimeType(mimetype = '') {
+  return String(mimetype).split(';')[0].trim() || 'audio/ogg';
+}
+
+function extractTranscriptionText(data) {
+  if (!data) return '';
+  if (typeof data === 'string') return normalizeDisplayName(data);
+  if (typeof data.text === 'string') return normalizeDisplayName(data.text);
+  if (Array.isArray(data.segments)) {
+    return normalizeDisplayName(data.segments.map(segment => segment.text || '').join(' '));
+  }
+  return '';
+}
+
+async function transcribeAudioBuffer(buffer, mimetype) {
+  const config = getAudioTranscriptionConfig();
+  if (!config) return '';
+  if (!buffer || buffer.length === 0) return '';
+  if (buffer.length > AUDIO_TRANSCRIPTION_MAX_BYTES) {
+    console.warn(`[audio] Audio ignorado para transcricao: ${buffer.length} bytes excedem o limite de ${AUDIO_TRANSCRIPTION_MAX_BYTES}.`);
+    return '';
+  }
+
+  const form = new FormData();
+  const extension = extensionFromMimeType(mimetype);
+  const blob = new Blob([buffer], { type: blobTypeFromMimeType(mimetype) });
+  form.append('file', blob, `whatsapp-audio.${extension}`);
+  form.append('model', config.model);
+  form.append('response_format', 'json');
+  form.append('temperature', '0');
+  if (AUDIO_TRANSCRIPTION_LANGUAGE) form.append('language', AUDIO_TRANSCRIPTION_LANGUAGE);
+  if (AUDIO_TRANSCRIPTION_PROMPT) form.append('prompt', AUDIO_TRANSCRIPTION_PROMPT);
+
+  const response = await fetch(config.url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.key}`
+    },
+    body: form
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw new Error(`transcription ${response.status}: ${errText.slice(0, 300)}`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return extractTranscriptionText(await response.json());
+  }
+  return extractTranscriptionText(await response.text());
+}
+
+function isAudioTranscriptionText(text) {
+  const normalized = normalizeDisplayName(text)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  return normalized.startsWith('[audio transcrito]');
+}
+
+function findStoredMessageByDedupeKey(userId, messageObject) {
+  if (!messageObject) return null;
+  const dedupeKey = messageObject.dedupeKey || createDedupeKey(messageObject);
+  const timestampMs = new Date(messageObject.timestamp || Date.now()).getTime();
+  const dateStr = messageDateStr(Number.isFinite(timestampMs) ? timestampMs : Date.now());
+  const filePath = path.join(dataDir, 'messages', userId, `messages-${dateStr}.json`);
+
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const messages = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!Array.isArray(messages)) return null;
+    return messages.map(normalizeStoredMessage).find(message => {
+      const key = message.dedupeKey || createDedupeKey(message);
+      return key === dedupeKey;
+    }) || null;
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao verificar audio salvo para transcricao:`, err.message || err);
+    return null;
+  }
+}
+
+function shouldQueueAudioTranscription(userId, messageObject, savedKeys) {
+  if (!getAudioTranscriptionConfig()) return false;
+
+  const dedupeKey = messageObject?.dedupeKey || createDedupeKey(messageObject || {});
+  if (!dedupeKey) return false;
+  if (savedKeys?.has(dedupeKey)) return true;
+
+  const storedMessage = findStoredMessageByDedupeKey(userId, messageObject);
+  return !storedMessage || !isAudioTranscriptionText(storedMessage.text);
+}
+
+function queueAudioTranscription(item) {
+  if (!getAudioTranscriptionConfig()) return;
+
+  const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
+  if (!dedupeKey || queuedAudioTranscriptionKeys.has(dedupeKey)) return;
+
+  if (audioTranscriptionQueue.length >= AUDIO_TRANSCRIPTION_QUEUE_MAX) {
+    console.warn(`[${item.userId}] Fila de transcricao de audio cheia; audio ${dedupeKey} sera mantido como tag.`);
+    return;
+  }
+
+  queuedAudioTranscriptionKeys.add(dedupeKey);
+  audioTranscriptionQueue.push({
+    ...item,
+    dedupeKey
+  });
+  runAudioTranscriptionQueue();
+}
+
+async function runAudioTranscriptionQueue() {
+  if (audioTranscriptionRunning) return;
+  audioTranscriptionRunning = true;
+
+  while (audioTranscriptionQueue.length > 0) {
+    const item = audioTranscriptionQueue.shift();
+    try {
+      await transcribeQueuedAudio(item);
+    } catch (err) {
+      console.warn(`[${item.userId}] Falha ao transcrever audio ${item.dedupeKey}:`, err.message || err);
+    } finally {
+      queuedAudioTranscriptionKeys.delete(item.dedupeKey);
+    }
+  }
+
+  audioTranscriptionRunning = false;
+}
+
+async function transcribeQueuedAudio(item) {
+  if (!item?.rawMessage || !item?.messageObject) return;
+
+  const updateMediaMessage = item.instance?.sock?.updateMediaMessage;
+  const downloadContext = typeof updateMediaMessage === 'function'
+    ? { logger, reuploadRequest: updateMediaMessage.bind(item.instance.sock) }
+    : { logger };
+  const buffer = await downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext);
+  const transcript = await transcribeAudioBuffer(buffer, item.mimetype);
+  if (!transcript) return;
+
+  await updateStoredMessageText(item.userId, item.messageObject, `[Áudio transcrito] ${transcript}`);
+}
+
+async function updateStoredMessageText(userId, rawMessage, nextText) {
+  if (!rawMessage || !nextText) return false;
+
+  const normalized = normalizeStoredMessage({
+    ...rawMessage,
+    text: nextText
+  });
+  normalized.dedupeKey = normalized.dedupeKey || createDedupeKey(normalized);
+
+  const timestampMs = new Date(normalized.timestamp).getTime();
+  const dateStr = messageDateStr(Number.isFinite(timestampMs) ? timestampMs : Date.now());
+  const userMsgDir = path.join(dataDir, 'messages', userId);
+  const filePath = path.join(userMsgDir, `messages-${dateStr}.json`);
+  let messages = [];
+
+  try {
+    fs.mkdirSync(userMsgDir, { recursive: true });
+    if (fs.existsSync(filePath)) {
+      const rawData = fs.readFileSync(filePath, 'utf8');
+      messages = JSON.parse(rawData).map(normalizeStoredMessage);
+    }
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao carregar mensagens para atualizar audio:`, err.message || err);
+    messages = [];
+  }
+
+  let changed = false;
+  let found = false;
+
+  for (const message of messages) {
+    const key = message.dedupeKey || createDedupeKey(message);
+    if (key !== normalized.dedupeKey) continue;
+    found = true;
+    if (message.text !== nextText) {
+      message.text = nextText;
+      changed = true;
+    }
+  }
+
+  if (!found) {
+    messages.push(normalized);
+    changed = true;
+  }
+
+  if (!changed) return false;
+
+  try {
+    messages.sort(compareMessagesChronologically);
+    fs.writeFileSync(filePath, JSON.stringify(messages, null, JSON_INDENT), 'utf8');
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao gravar transcricao de audio localmente:`, err.message || err);
+  }
+
+  await persistMessagesToSupabase(userId, [normalized]);
+  return true;
 }
 
 function normalizeDisplayName(name) {
@@ -1024,6 +1288,12 @@ function normalizeStoredMessage(message) {
     fromMe: Boolean(message.fromMe ?? message.from_me),
     timestamp: message.timestamp || message.message_timestamp || new Date().toISOString()
   };
+  const mediaKind = normalizeDisplayName(message.mediaKind || message.media_kind || '');
+  const mediaMimetype = normalizeDisplayName(message.mediaMimetype || message.media_mimetype || '');
+  const mediaSeconds = Number(message.mediaSeconds ?? message.media_seconds);
+  if (mediaKind) normalized.mediaKind = mediaKind;
+  if (mediaMimetype) normalized.mediaMimetype = mediaMimetype;
+  if (Number.isFinite(mediaSeconds) && mediaSeconds > 0) normalized.mediaSeconds = mediaSeconds;
   normalized.dedupeKey = normalized.dedupeKey || createDedupeKey(normalized);
   return normalized;
 }
@@ -1656,6 +1926,7 @@ async function connectUserWhatsApp(userId) {
     resetUserSyncTimer(userId);
 
     const messageObjects = [];
+    const audioTranscriptionCandidates = [];
     const ownerDisplayName = filteredList.some(msg => msg?.key?.fromMe)
       ? await ensureOwnerDisplayName(userId, instance)
       : '';
@@ -1701,6 +1972,7 @@ async function connectUserWhatsApp(userId) {
           addContactToCache(userId, instance, chatJid, pushName, 'message.chat');
         }
 
+        const mediaInfo = getMessageMediaInfo(msg);
         const text = getMessageText(msg);
 
         // Ignora se não houver texto legível (ex: figurinhas, reações, chamadas de áudio)
@@ -1721,9 +1993,24 @@ async function connectUserWhatsApp(userId) {
           fromMe: fromMe,
           timestamp: timestamp.toISOString()
         };
+        if (mediaInfo) {
+          messageObject.mediaKind = mediaInfo.kind;
+          if (mediaInfo.mimetype) messageObject.mediaMimetype = mediaInfo.mimetype;
+          if (mediaInfo.seconds) messageObject.mediaSeconds = mediaInfo.seconds;
+        }
         messageObject.dedupeKey = createDedupeKey(messageObject);
 
         messageObjects.push(messageObject);
+
+        if (mediaInfo?.kind === 'audio') {
+          audioTranscriptionCandidates.push({
+            userId,
+            instance,
+            rawMessage: msg,
+            messageObject,
+            mimetype: mediaInfo.mimetype
+          });
+        }
 
       } catch (err) {
         console.error(`[${userId}] Erro ao processar mensagem do lote:`, err);
@@ -1733,6 +2020,15 @@ async function connectUserWhatsApp(userId) {
     const savedMessages = saveUserMessagesBatch(userId, messageObjects);
     if (savedMessages.length > 0) {
       await persistMessagesToSupabase(userId, savedMessages);
+    }
+
+    if (audioTranscriptionCandidates.length > 0) {
+      const savedKeys = new Set(savedMessages.map(message => message.dedupeKey || createDedupeKey(message)));
+      for (const candidate of audioTranscriptionCandidates) {
+        if (shouldQueueAudioTranscription(userId, candidate.messageObject, savedKeys)) {
+          queueAudioTranscription(candidate);
+        }
+      }
     }
   }
 
@@ -1851,6 +2147,41 @@ async function connectUserWhatsApp(userId) {
 }
 
 // Extrai texto de diferentes tipos de mensagens do Baileys
+function mediaText(tag, caption = '') {
+  const cleanCaption = normalizeDisplayName(caption);
+  return cleanCaption ? `[${tag}] ${cleanCaption}` : `[${tag}]`;
+}
+
+function getMessageMediaInfo(msg) {
+  if (!msg.message) return null;
+  const content = unwrapMessageContent(msg.message);
+
+  if (content.imageMessage) {
+    return {
+      kind: 'image',
+      text: mediaText('Imagem', content.imageMessage.caption)
+    };
+  }
+
+  if (content.videoMessage) {
+    return {
+      kind: 'video',
+      text: mediaText('Vídeo', content.videoMessage.caption)
+    };
+  }
+
+  if (content.audioMessage) {
+    return {
+      kind: 'audio',
+      text: '[Áudio]',
+      mimetype: content.audioMessage.mimetype || 'audio/ogg',
+      seconds: content.audioMessage.seconds || null
+    };
+  }
+
+  return null;
+}
+
 function getMessageText(msg) {
   if (!msg.message) return '';
   
@@ -1861,12 +2192,9 @@ function getMessageText(msg) {
   
   // Trata mensagem de texto formatada / respostas / links
   if (content.extendedTextMessage) return content.extendedTextMessage.text || '';
-  
-  // Trata mensagem de imagem com legenda
-  if (content.imageMessage) return content.imageMessage.caption || '';
-  
-  // Trata mensagem de vídeo com legenda
-  if (content.videoMessage) return content.videoMessage.caption || '';
+
+  const mediaInfo = getMessageMediaInfo(msg);
+  if (mediaInfo) return mediaInfo.text;
 
   // Trata documentos e locais com legenda/descricao
   if (content.documentMessage) return content.documentMessage.caption || content.documentMessage.fileName || '';
@@ -2823,6 +3151,11 @@ app.get('/status', checkAuth, async (req, res) => {
       supabaseConfigured: !!getSupabaseConfig(),
       disabledTables: Array.from(supabaseDisabledTables),
       fallbackSnapshots: true
+    },
+    audioTranscription: {
+      configured: !!getAudioTranscriptionConfig(),
+      queueLength: audioTranscriptionQueue.length,
+      running: audioTranscriptionRunning
     },
     user: instance.sock && instance.sock.user ? {
       id: instance.sock.user.id,
