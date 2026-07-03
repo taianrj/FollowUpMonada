@@ -36,6 +36,24 @@ fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(authDir, { recursive: true });
 fs.mkdirSync(contactsDir, { recursive: true });
 
+// Tenta carregar variáveis do .env do próprio microsserviço se rodando localmente
+try {
+  const localEnvPath = path.join(__dirname, '.env');
+  if (fs.existsSync(localEnvPath)) {
+    const envContent = fs.readFileSync(localEnvPath, 'utf8');
+    envContent.split('\n').forEach(line => {
+      const parts = line.split('=');
+      if (parts.length >= 2) {
+        const key = parts[0].trim();
+        const val = parts.slice(1).join('=').trim().replace(/^['"]|['"]$/g, '');
+        if (key) process.env[key] = val;
+      }
+    });
+  }
+} catch (err) {
+  // Ignora
+}
+
 // Tenta carregar variáveis do .env.local do projeto pai se rodando localmente
 if (!process.env.SUPABASE_URL) {
   try {
@@ -60,6 +78,9 @@ if (!process.env.SUPABASE_URL) {
 
 // Funções de Persistência de Credenciais do WhatsApp no Supabase
 async function saveCredsToSupabase(userId, creds) {
+  if (process.env.DISABLE_SUPABASE_AUTH === 'true') {
+    return;
+  }
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   
@@ -102,6 +123,9 @@ async function saveCredsToSupabase(userId, creds) {
 }
 
 async function loadCredsFromSupabase(userId) {
+  if (process.env.DISABLE_SUPABASE_AUTH === 'true') {
+    return null;
+  }
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   
@@ -139,6 +163,9 @@ async function loadCredsFromSupabase(userId) {
 }
 
 async function deleteCredsFromSupabase(userId) {
+  if (process.env.DISABLE_SUPABASE_AUTH === 'true') {
+    return;
+  }
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   
