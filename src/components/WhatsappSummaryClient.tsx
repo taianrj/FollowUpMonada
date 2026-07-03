@@ -213,6 +213,9 @@ export default function WhatsappSummaryClient({
   const [qrStatus, setQrStatus] = useState<string>('waiting'); // 'waiting' | 'qrcode' | 'connected'
   const [isMessagesModalOpen, setIsMessagesModalOpen] = useState(false);
   const [modalMessagesText, setModalMessagesText] = useState<string>('');
+  const [chatConversations, setChatConversations] = useState<any[]>([]);
+  const [selectedChatKey, setSelectedChatKey] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [isLoadingModalMessages, setIsLoadingModalMessages] = useState(false);
   const [isCheckingStatus, setIsCheckingStatus] = useState(true);
   const [checkAttempts, setCheckAttempts] = useState(0);
@@ -520,16 +523,60 @@ export default function WhatsappSummaryClient({
   const handleOpenMessagesModal = async () => {
     setIsMessagesModalOpen(true);
     setIsLoadingModalMessages(true);
-    setModalMessagesText('Carregando conversas brutas do servidor do Fly.io...');
+    setModalMessagesText('Carregando conversas brutas do servidor...');
+    setChatConversations([]);
+    setSelectedChatKey(null);
+    setSearchQuery('');
 
     const normalizedUrl = apiUrl.replace(/\/$/, '');
     try {
-      const response = await fetch(`${normalizedUrl}/messages?date=${summaryDate}&format=markdown&key=${apiToken}${ownerNameQuery}`, {
+      const response = await fetch(`${normalizedUrl}/messages?date=${summaryDate}&format=json_grouped&key=${apiToken}${ownerNameQuery}`, {
         headers: whatsappHeaders
       });
+      
       if (response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await response.json();
+          if (data && Array.isArray(data.conversations)) {
+            setChatConversations(data.conversations);
+            if (data.conversations.length > 0) {
+              setSelectedChatKey(data.conversations[0].chatKey);
+            }
+            setModalMessagesText('');
+            return;
+          }
+        }
+        
+        // Fallback: Se o backend antigo retornou markdown
         const text = await response.text();
-        setModalMessagesText(text.trim() ? text : 'Nenhuma mensagem de clientes registrada para a data selecionada.');
+        const trimmedText = text.trim();
+        setModalMessagesText(trimmedText ? trimmedText : 'Nenhuma mensagem de clientes registrada para a data selecionada.');
+        
+        if (trimmedText) {
+          const parsed = parseConversationDisplay(trimmedText);
+          const conversations = parsed.sections.map((section, idx) => {
+            const chatKey = section.meta || section.title;
+            return {
+              chatKey: chatKey,
+              chatJid: section.meta ? `${section.meta}@s.whatsapp.net` : '',
+              isGroup: section.notes.length > 0 || section.title.includes('Grupo') || section.title.includes('+'),
+              displayName: section.title,
+              messages: section.messages.map((m, mIdx) => ({
+                id: `${chatKey}-${idx}-${mIdx}`,
+                sender: m.sender,
+                senderName: m.sender,
+                text: m.text,
+                fromMe: m.sender.toLowerCase() === 'você' || m.sender.toLowerCase() === 'voce',
+                timestamp: m.time
+              }))
+            };
+          });
+          setChatConversations(conversations);
+          if (conversations.length > 0) {
+            setSelectedChatKey(conversations[0].chatKey);
+          }
+        }
       } else {
         if (response.status === 401) {
           setModalMessagesText('Erro: Chave de segurança inválida ou sessão expirada.');
@@ -1853,10 +1900,10 @@ export default function WhatsappSummaryClient({
             borderRadius: 'var(--radius-lg)',
             border: '1px solid var(--border-color)',
             padding: '2rem',
-            width: '750px',
-            maxWidth: '92%',
-            height: '620px',
-            maxHeight: '85vh',
+            width: '900px',
+            maxWidth: '96%',
+            height: '650px',
+            maxHeight: '90vh',
             display: 'flex',
             flexDirection: 'column',
             gap: '1.25rem',
@@ -1875,7 +1922,8 @@ export default function WhatsappSummaryClient({
                 color: 'var(--text-muted)',
                 fontSize: '1.35rem',
                 cursor: 'pointer',
-                transition: 'color 0.2s'
+                transition: 'color 0.2s',
+                zIndex: 10
               }}
               onMouseOver={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
               onMouseOut={(e) => e.currentTarget.style.color = 'var(--text-muted)'}
@@ -1898,18 +1946,150 @@ export default function WhatsappSummaryClient({
               backgroundColor: 'var(--bg-primary)',
               borderRadius: 'var(--radius-md)',
               border: '1px solid var(--border-color)',
-              padding: '1.25rem',
-              overflowY: 'auto',
               display: 'flex',
-              flexDirection: 'column'
-            }} className="custom-scroll">
+              overflow: 'hidden',
+              height: '100%',
+              minHeight: 0
+            }}>
               {isLoadingModalMessages ? (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '0.75rem', color: 'var(--text-muted)' }}>
                   <div className="spinner" style={{ width: '32px', height: '32px', border: '3px solid rgba(168, 85, 247, 0.1)', borderTop: '3px solid var(--accent-purple)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
                   <span style={{ fontSize: '0.85rem' }}>Buscando logs de mensagens...</span>
                 </div>
+              ) : chatConversations.length === 0 ? (
+                <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '2rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+                  {modalMessagesText || 'Nenhuma mensagem de clientes registrada para a data selecionada.'}
+                </div>
               ) : (
-                <ConversationTextViewer text={modalMessagesText} />
+                (() => {
+                  const filteredChats = chatConversations.filter(chat => 
+                    chat.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                    chat.chatKey.includes(searchQuery)
+                  );
+                  const activeChat = chatConversations.find(chat => chat.chatKey === selectedChatKey);
+
+                  return (
+                    <>
+                      {/* Coluna Esquerda: Lista de Conversas */}
+                      <div className="chatSidebar" style={{ display: (selectedChatKey && window.innerWidth <= 768) ? 'none' : 'flex' }}>
+                        <div className="chatSearchContainer">
+                          <input
+                            type="text"
+                            placeholder="Buscar conversa..."
+                            className="chatSearchInput"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                          />
+                        </div>
+                        <div className="chatList custom-scroll">
+                          {filteredChats.map((chat) => {
+                            const isActive = chat.chatKey === selectedChatKey;
+                            const initials = chat.displayName
+                              .split(' ')
+                              .slice(0, 2)
+                              .map((n: string) => n[0])
+                              .join('')
+                              .toUpperCase() || '?';
+                            
+                            return (
+                              <div
+                                key={chat.chatKey}
+                                className={`chatListItem ${isActive ? 'active' : ''}`}
+                                onClick={() => setSelectedChatKey(chat.chatKey)}
+                              >
+                                <div className="chatAvatar">
+                                  {initials}
+                                </div>
+                                <div className="chatListItemContent">
+                                  <div className="chatListItemHeader">
+                                    <span className="chatListName" title={chat.displayName}>{chat.displayName}</span>
+                                    <span className="chatBadge">{chat.messages.length}</span>
+                                  </div>
+                                  <span className="chatListMeta">{chat.chatKey}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {filteredChats.length === 0 && (
+                            <div className="chatListEmpty">Nenhuma conversa encontrada.</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Coluna Direita: Conteúdo do Chat */}
+                      <div className="chatArea" style={{ display: (!selectedChatKey && window.innerWidth <= 768) ? 'none' : 'flex' }}>
+                        {activeChat ? (
+                          <>
+                            <div className="chatAreaHeader">
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <button 
+                                  className="chatBackButton" 
+                                  onClick={() => setSelectedChatKey(null)}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '1.25rem',
+                                    cursor: 'pointer',
+                                    padding: '0 0.5rem 0 0',
+                                    lineHeight: 1
+                                  }}
+                                >
+                                  ←
+                                </button>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', flex: 1 }}>
+                                  <h4 className="chatAreaTitle">{activeChat.displayName}</h4>
+                                  <span className="chatAreaSubtitle">{activeChat.chatKey}</span>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="chatMessageList custom-scroll">
+                              {activeChat.messages.map((message: any) => {
+                                const formattedTime = (() => {
+                                  if (!message.timestamp) return '';
+                                  if (message.timestamp.includes('T')) {
+                                    try {
+                                      const date = new Date(message.timestamp);
+                                      return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+                                    } catch (e) {
+                                      return '';
+                                    }
+                                  }
+                                  const match = message.timestamp.match(/\d{2}:\d{2}/);
+                                  return match ? match[0] : message.timestamp;
+                                })();
+
+                                return (
+                                  <div
+                                    key={message.id}
+                                    className={`chatMessageRow ${message.fromMe ? 'outgoing' : 'incoming'}`}
+                                  >
+                                    <div className="chatMessageBubble">
+                                      {activeChat.isGroup && !message.fromMe && (
+                                        <span className="chatMessageSenderName">
+                                          {message.senderName || message.sender}
+                                        </span>
+                                      )}
+                                      <p className="chatMessageText">
+                                        <MessageBody text={message.text} />
+                                      </p>
+                                      <span className="chatMessageTime">{formattedTime}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="chatAreaPlaceholder">
+                            <span style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>💬</span>
+                            <p>Selecione uma conversa para visualizar as mensagens deste dia.</p>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()
               )}
             </div>
 
@@ -2080,6 +2260,222 @@ export default function WhatsappSummaryClient({
 
       {/* Estilos e Animações locais adicionais para Toasts e Spinners */}
       <style jsx global>{`
+        /* Estilos do Chat Premium (Duas Colunas) */
+        .chatSidebar {
+          width: 280px;
+          border-right: 1px solid var(--border-color);
+          display: flex;
+          flex-direction: column;
+          background: rgba(15, 23, 42, 0.4);
+          height: 100%;
+        }
+        .chatSearchContainer {
+          padding: 0.75rem;
+          border-bottom: 1px solid var(--border-color);
+        }
+        .chatSearchInput {
+          width: 100%;
+          padding: 0.5rem 0.75rem;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-color);
+          border-radius: var(--radius-sm);
+          color: var(--text-primary);
+          font-size: 0.8rem;
+          outline: none;
+          transition: border-color 0.2s;
+        }
+        .chatSearchInput:focus {
+          border-color: var(--accent-purple);
+        }
+        .chatList {
+          flex: 1;
+          overflow-y: auto;
+        }
+        .chatListItem {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 0.85rem 0.75rem;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+          cursor: pointer;
+          transition: background-color 0.2s;
+        }
+        .chatListItem:hover {
+          background-color: rgba(255, 255, 255, 0.03);
+        }
+        .chatListItem.active {
+          background-color: rgba(168, 85, 247, 0.15);
+          border-left: 3px solid var(--accent-purple);
+        }
+        .chatAvatar {
+          width: 38px;
+          height: 38px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, #a855f7 0%, #6366f1 100%);
+          color: white;
+          font-weight: 700;
+          font-size: 0.85rem;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        .chatListItemContent {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 0.15rem;
+        }
+        .chatListItemHeader {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 0.5rem;
+        }
+        .chatListName {
+          font-size: 0.85rem;
+          font-weight: 600;
+          color: var(--text-primary);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .chatBadge {
+          background: var(--accent-purple);
+          color: white;
+          font-size: 0.7rem;
+          font-weight: 700;
+          padding: 0.15rem 0.4rem;
+          border-radius: 999px;
+          min-width: 18px;
+          text-align: center;
+        }
+        .chatListMeta {
+          font-size: 0.7rem;
+          color: var(--text-muted);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .chatListEmpty {
+          padding: 2rem;
+          text-align: center;
+          color: var(--text-muted);
+          font-size: 0.8rem;
+        }
+        .chatArea {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          background: rgba(15, 23, 42, 0.15);
+          height: 100%;
+          min-width: 0;
+        }
+        .chatAreaHeader {
+          padding: 0.85rem 1.25rem;
+          border-bottom: 1px solid var(--border-color);
+          background: rgba(255, 255, 255, 0.02);
+          display: flex;
+          flex-direction: column;
+          gap: 0.15rem;
+        }
+        .chatAreaTitle {
+          margin: 0;
+          font-size: 0.95rem;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+        .chatAreaSubtitle {
+          font-size: 0.72rem;
+          color: var(--text-muted);
+        }
+        .chatMessageList {
+          flex: 1;
+          overflow-y: auto;
+          padding: 1.25rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.85rem;
+          background-image: radial-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 0);
+          background-size: 16px 16px;
+        }
+        .chatMessageRow {
+          display: flex;
+          width: 100%;
+        }
+        .chatMessageRow.incoming {
+          justify-content: flex-start;
+        }
+        .chatMessageRow.outgoing {
+          justify-content: flex-end;
+        }
+        .chatMessageBubble {
+          max-width: 75%;
+          padding: 0.65rem 0.85rem;
+          border-radius: 12px;
+          position: relative;
+          box-shadow: 0 2px 5px rgba(0,0,0,0.15);
+          display: flex;
+          flex-direction: column;
+          gap: 0.2rem;
+        }
+        .incoming .chatMessageBubble {
+          background: #1e293b;
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          color: var(--text-primary);
+          border-bottom-left-radius: 2px;
+        }
+        .outgoing .chatMessageBubble {
+          background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+          color: white;
+          border-bottom-right-radius: 2px;
+        }
+        .chatMessageSenderName {
+          font-size: 0.72rem;
+          font-weight: 700;
+          color: #fbbf24;
+          margin-bottom: 0.1rem;
+        }
+        .chatMessageText {
+          margin: 0;
+          font-size: 0.82rem;
+          line-height: 1.4;
+          word-break: break-word;
+          white-space: pre-wrap;
+        }
+        .outgoing .chatMessageText {
+          color: #ffffff;
+        }
+        .chatMessageTime {
+          font-size: 0.65rem;
+          align-self: flex-end;
+          color: rgba(255, 255, 255, 0.45);
+          margin-top: 0.15rem;
+        }
+        .incoming .chatMessageTime {
+          color: var(--text-muted);
+        }
+        .chatAreaPlaceholder {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          color: var(--text-muted);
+          font-size: 0.82rem;
+          text-align: center;
+          padding: 2rem;
+        }
+        .chatBackButton {
+          display: none;
+        }
+        @media (max-width: 768px) {
+          .chatBackButton {
+            display: block !important;
+          }
+        }
         .conversationMarkdownViewer {
           display: flex;
           flex-direction: column;

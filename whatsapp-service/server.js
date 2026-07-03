@@ -3057,7 +3057,7 @@ app.get('/', checkAuth, async (req, res) => {
             <div class="form-group">
               <label for="msgFormat">Formato:</label>
               <select id="msgFormat">
-                <option value="markdown">Visual Markdown (Bonito)</option>
+                <option value="markdown">Visual Markdown</option>
                 <option value="text">Texto Corrido (Leitura)</option>
                 <option value="json">JSON Estruturado</option>
               </select>
@@ -3742,6 +3742,41 @@ app.get('/messages', checkAuth, async (req, res) => {
     messages.sort(compareMessagesChronologically);
 
     const requestedFormat = String(req.query.format || '').toLowerCase();
+    if (requestedFormat === 'json_grouped') {
+      const contactsCache = mergeContactCaches(
+        loadContactsFromFile(cleanUserId),
+        await loadContactsFromSupabase(cleanUserId),
+        activeInstance ? (activeInstance.contactsCache || {}) : {}
+      );
+      const conversations = buildMessageConversations(messages, contactsCache);
+      const formattedConversations = conversations.map(chat => {
+        return {
+          chatKey: chat.chatKey,
+          chatJid: chat.chatJid,
+          isGroup: chat.isGroup,
+          displayName: chat.displayName,
+          messages: chat.messages.map(m => {
+            const senderName = resolveMessageSenderName(
+              m,
+              contactsCache,
+              chat.isGroup,
+              activeInstance?.myPushName,
+              activeInstance?.myPushNameSource
+            );
+            return {
+              id: m.id,
+              sender: m.sender,
+              senderName: senderName,
+              text: m.text || '',
+              fromMe: !!m.fromMe,
+              timestamp: m.timestamp
+            };
+          })
+        };
+      });
+      return res.json({ date: dateStr, count: messages.length, conversations: formattedConversations });
+    }
+
     if (requestedFormat === 'text' || requestedFormat === 'markdown' || requestedFormat === 'md') {
       const contactsCache = mergeContactCaches(
         loadContactsFromFile(cleanUserId),
