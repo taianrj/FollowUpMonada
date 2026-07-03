@@ -200,6 +200,87 @@ async function deleteCredsFromSupabase(userId) {
   }
 }
 
+// Exclui todas as mensagens e contatos locais e do Supabase associados ao usuário de forma permanente na desconexão
+async function clearAllUserData(userId) {
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  console.log(`[${cleanUserId}] Iniciando limpeza completa de dados pós-desconexão...`);
+
+  // 1. Limpa cache de mensagens locais em disco
+  try {
+    const userMsgDir = path.join(dataDir, 'messages', cleanUserId);
+    if (fs.existsSync(userMsgDir)) {
+      fs.rmSync(userMsgDir, { recursive: true, force: true });
+      console.log(`[${cleanUserId}] Cache de mensagens locais excluído com sucesso.`);
+    }
+  } catch (err) {
+    console.error(`[${cleanUserId}] Falha ao limpar mensagens locais:`, err.message || err);
+  }
+
+  // 2. Limpa cache de contatos local em disco
+  try {
+    const contactsPath = contactsFilePath(cleanUserId);
+    if (fs.existsSync(contactsPath)) {
+      fs.unlinkSync(contactsPath);
+      console.log(`[${cleanUserId}] Cache de contatos local excluído com sucesso.`);
+    }
+  } catch (err) {
+    console.error(`[${cleanUserId}] Falha ao limpar contatos locais:`, err.message || err);
+  }
+
+  // Limpa o cache de contatos na memória se a instância existir
+  const instance = instances[cleanUserId];
+  if (instance) {
+    instance.contactsCache = {};
+  }
+
+  // 3. Limpa mensagens do Supabase
+  const config = getSupabaseConfig();
+  if (config) {
+    const headers = {
+      'apikey': config.key,
+      'Authorization': `Bearer ${config.key}`,
+      'Content-Type': 'application/json'
+    };
+
+    try {
+      const resMsg = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_messages?user_id=eq.${cleanUserId}`, {
+        method: 'DELETE',
+        headers
+      });
+      console.log(`[${cleanUserId}] Limpeza de mensagens no Supabase: status ${resMsg.status}`);
+    } catch (err) {
+      console.error(`[${cleanUserId}] Erro de rede ao limpar mensagens no Supabase:`, err.message || err);
+    }
+
+    // 4. Limpa contatos do Supabase
+    try {
+      const resContacts = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_contacts?user_id=eq.${cleanUserId}`, {
+        method: 'DELETE',
+        headers
+      });
+      console.log(`[${cleanUserId}] Limpeza de contatos no Supabase: status ${resContacts.status}`);
+    } catch (err) {
+      console.error(`[${cleanUserId}] Erro de rede ao limpar contatos no Supabase:`, err.message || err);
+    }
+
+    // 5. Limpa blobs de estado do usuário (contacts:default, etc.) na tabela whatsapp_sessions
+    const targets = [
+      `${cleanUserId}:contacts:default`,
+      `${cleanUserId}:local:contacts:default`
+    ];
+    for (const targetId of targets) {
+      try {
+        await fetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${targetId}`, {
+          method: 'DELETE',
+          headers
+        });
+      } catch (e) {
+        // Ignora
+      }
+    }
+  }
+}
+
 async function loadProfileNameFromSupabase(userId) {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -1294,6 +1375,9 @@ async function connectUserWhatsApp(userId) {
         
         // Exclui as credenciais permanentemente do banco de dados do Supabase
         deleteCredsFromSupabase(userId);
+
+        // Exclui todas as mensagens e contatos locais e do Supabase de forma permanente na desconexão
+        clearAllUserData(userId);
         
         try {
           fs.rmSync(userAuthDir, { recursive: true, force: true });
