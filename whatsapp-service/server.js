@@ -1429,6 +1429,8 @@ function buildMessageConversations(messages, contactsCache) {
   messages.forEach(rawMessage => {
     const normalized = normalizeStoredMessage(rawMessage);
     const chatKey = normalized.sender;
+    if (!chatKey || chatKey === 'undefined' || chatKey.trim() === '') return;
+
     if (!grouped[chatKey]) {
       grouped[chatKey] = {
         name: normalized.chatName || normalized.name || normalized.sender,

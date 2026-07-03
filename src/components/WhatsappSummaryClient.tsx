@@ -93,7 +93,13 @@ function parseConversationDisplay(text: string) {
     }
   });
 
-  return { title, sections };
+  const validSections = sections.filter((section) => {
+    const hasContent = section.messages.length > 0 || section.notes.length > 0;
+    const hasValidTitle = section.title && section.title.trim() !== '' && section.title !== 'undefined';
+    return hasContent && hasValidTitle;
+  });
+
+  return { title, sections: validSections };
 }
 
 function MessageBody({ text }: { text: string }) {
