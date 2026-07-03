@@ -8,6 +8,149 @@ import { createClient } from '@/lib/supabase/client';
 import { Client, Status, Profile, WhatsappSummary, WhatsappClientSummary } from '@/types';
 import './Dashboard.css'; // Reutiliza estilos globais de layout e botões
 
+type ConversationMessage = {
+  time: string;
+  sender: string;
+  text: string;
+};
+
+type ConversationSection = {
+  title: string;
+  meta?: string;
+  messages: ConversationMessage[];
+  notes: string[];
+};
+
+function unescapeConversationMarkdown(value: string) {
+  return value
+    .replace(/\\([\\`*_[\]{}()#+\-.!>])/g, '$1')
+    .replace(/`/g, '');
+}
+
+function parseConversationDisplay(text: string) {
+  const sections: ConversationSection[] = [];
+  let title = '';
+  let current: ConversationSection | null = null;
+
+  text.split(/\r?\n/).forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line) return;
+
+    if (line.startsWith('# ')) {
+      title = unescapeConversationMarkdown(line.slice(2));
+      return;
+    }
+
+    if (line.startsWith('## ')) {
+      current = {
+        title: unescapeConversationMarkdown(line.slice(3)),
+        messages: [],
+        notes: []
+      };
+      sections.push(current);
+      return;
+    }
+
+    const legacyHeader = line.match(/^--- Conversa com: (.+?)(?: \((.*?)\))? ---$/);
+    if (legacyHeader) {
+      current = {
+        title: legacyHeader[1],
+        meta: legacyHeader[2],
+        messages: [],
+        notes: []
+      };
+      sections.push(current);
+      return;
+    }
+
+    if (line.startsWith('_Identificador:') && current) {
+      current.meta = unescapeConversationMarkdown(line.replace(/^_Identificador:\s*/, '').replace(/_$/, ''));
+      return;
+    }
+
+    const markdownMessage = line.match(/^- \*\*(.*?)\*\* · \*\*(.*?):\*\* (.*)$/);
+    if (markdownMessage && current) {
+      current.messages.push({
+        time: unescapeConversationMarkdown(markdownMessage[1]),
+        sender: unescapeConversationMarkdown(markdownMessage[2]),
+        text: unescapeConversationMarkdown(markdownMessage[3])
+      });
+      return;
+    }
+
+    const legacyMessage = rawLine.match(/^\s*\[(.*?)\]\s+([^:]+):\s*(.*)$/);
+    if (legacyMessage && current) {
+      current.messages.push({
+        time: legacyMessage[1],
+        sender: legacyMessage[2],
+        text: legacyMessage[3]
+      });
+      return;
+    }
+
+    if (current) {
+      current.notes.push(unescapeConversationMarkdown(line));
+    }
+  });
+
+  return { title, sections };
+}
+
+function MessageBody({ text }: { text: string }) {
+  if (!text.startsWith('[')) return <>{text}</>;
+
+  const closeIndex = text.indexOf(']');
+  if (closeIndex <= 0) return <>{text}</>;
+
+  return (
+    <>
+      <span className="conversationMediaTag">{text.slice(0, closeIndex + 1)}</span>
+      {text.slice(closeIndex + 1)}
+    </>
+  );
+}
+
+function ConversationTextViewer({ text }: { text: string }) {
+  const cleanText = text.trim();
+  const { title, sections } = parseConversationDisplay(cleanText);
+
+  if (!cleanText) {
+    return <p className="conversationEmpty">Nenhuma mensagem registrada para esta data.</p>;
+  }
+
+  if (sections.length === 0) {
+    return <pre className="conversationRawFallback">{text}</pre>;
+  }
+
+  return (
+    <div className="conversationMarkdownViewer">
+      {title && <h4 className="conversationMarkdownTitle">{title}</h4>}
+      {sections.map((section, sectionIndex) => (
+        <section className="conversationSection" key={`${section.title}-${sectionIndex}`}>
+          <div className="conversationSectionHeader">
+            <h5>{section.title}</h5>
+            {section.meta && <span>{section.meta}</span>}
+          </div>
+          <div className="conversationMessageList">
+            {section.messages.map((message, messageIndex) => (
+              <div className="conversationMessageRow" key={`${message.time}-${message.sender}-${messageIndex}`}>
+                <span className="conversationMessageTime">{message.time}</span>
+                <span className="conversationMessageSender">{message.sender}</span>
+                <span className="conversationMessageText">
+                  <MessageBody text={message.text} />
+                </span>
+              </div>
+            ))}
+            {section.notes.map((note, noteIndex) => (
+              <p className="conversationNote" key={`${note}-${noteIndex}`}>{note}</p>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 interface WhatsappSummaryClientProps {
   profile: Profile | null;
   initialClients: Client[];
@@ -381,7 +524,7 @@ export default function WhatsappSummaryClient({
 
     const normalizedUrl = apiUrl.replace(/\/$/, '');
     try {
-      const response = await fetch(`${normalizedUrl}/messages?date=${summaryDate}&format=text&key=${apiToken}${ownerNameQuery}`, {
+      const response = await fetch(`${normalizedUrl}/messages?date=${summaryDate}&format=markdown&key=${apiToken}${ownerNameQuery}`, {
         headers: whatsappHeaders
       });
       if (response.ok) {
@@ -1766,17 +1909,7 @@ export default function WhatsappSummaryClient({
                   <span style={{ fontSize: '0.85rem' }}>Buscando logs de mensagens...</span>
                 </div>
               ) : (
-                <pre style={{
-                  margin: 0,
-                  fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace',
-                  fontSize: '0.82rem',
-                  color: 'var(--text-secondary)',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-all',
-                  lineHeight: 1.6
-                }}>
-                  {modalMessagesText}
-                </pre>
+                <ConversationTextViewer text={modalMessagesText} />
               )}
             </div>
 
@@ -1947,6 +2080,110 @@ export default function WhatsappSummaryClient({
 
       {/* Estilos e Animações locais adicionais para Toasts e Spinners */}
       <style jsx global>{`
+        .conversationMarkdownViewer {
+          display: flex;
+          flex-direction: column;
+          gap: 0.85rem;
+          width: 100%;
+        }
+        .conversationMarkdownTitle {
+          margin: 0 0 0.25rem 0;
+          color: var(--text-primary);
+          font-size: 1rem;
+          font-weight: 700;
+        }
+        .conversationSection {
+          border: 1px solid var(--border-color);
+          border-radius: var(--radius-md);
+          background: rgba(15, 23, 42, 0.38);
+          overflow: hidden;
+        }
+        .conversationSectionHeader {
+          display: flex;
+          flex-direction: column;
+          gap: 0.25rem;
+          padding: 0.85rem 1rem;
+          background: rgba(255, 255, 255, 0.03);
+          border-bottom: 1px solid var(--border-color);
+        }
+        .conversationSectionHeader h5 {
+          margin: 0;
+          color: var(--text-primary);
+          font-size: 0.95rem;
+          font-weight: 700;
+        }
+        .conversationSectionHeader span {
+          color: var(--text-muted);
+          font-size: 0.74rem;
+        }
+        .conversationMessageList {
+          display: flex;
+          flex-direction: column;
+        }
+        .conversationMessageRow {
+          display: grid;
+          grid-template-columns: 126px 170px minmax(0, 1fr);
+          gap: 0.75rem;
+          padding: 0.7rem 1rem;
+          border-bottom: 1px solid rgba(148, 163, 184, 0.13);
+          align-items: start;
+        }
+        .conversationMessageRow:last-child {
+          border-bottom: 0;
+        }
+        .conversationMessageTime {
+          color: #93c5fd;
+          font-size: 0.76rem;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+        .conversationMessageSender {
+          color: #fbbf24;
+          font-size: 0.8rem;
+          font-weight: 700;
+          word-break: break-word;
+        }
+        .conversationMessageText {
+          color: var(--text-secondary);
+          font-size: 0.84rem;
+          line-height: 1.45;
+          word-break: break-word;
+        }
+        .conversationMediaTag {
+          display: inline-flex;
+          align-items: center;
+          padding: 0.1rem 0.45rem;
+          margin-right: 0.25rem;
+          border-radius: 999px;
+          background: rgba(16, 185, 129, 0.14);
+          color: #34d399;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+        .conversationNote,
+        .conversationEmpty {
+          margin: 0;
+          color: var(--text-muted);
+          font-size: 0.85rem;
+        }
+        .conversationRawFallback {
+          margin: 0;
+          font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+          font-size: 0.82rem;
+          color: var(--text-secondary);
+          white-space: pre-wrap;
+          word-break: break-word;
+          line-height: 1.6;
+          background: transparent;
+          border: 0;
+          padding: 0;
+        }
+        @media (max-width: 720px) {
+          .conversationMessageRow {
+            grid-template-columns: 1fr;
+            gap: 0.25rem;
+          }
+        }
         .historyItem:hover {
           background-color: rgba(255, 255, 255, 0.05) !important;
         }

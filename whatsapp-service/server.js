@@ -1415,6 +1415,152 @@ function resolveMessageSenderName(message, contactsCache, isGroup, myPushName, m
   return message.participant || message.sender || jidNumber(participantJid);
 }
 
+function isValidConversationDisplayName(name) {
+  if (!name) return false;
+  if (isSelfNamePlaceholder(name)) return false;
+  if (name.includes('@')) return false;
+  if (/^[0-9+\s\-()]+$/.test(name)) return false;
+  return true;
+}
+
+function buildMessageConversations(messages, contactsCache) {
+  const grouped = {};
+
+  messages.forEach(rawMessage => {
+    const normalized = normalizeStoredMessage(rawMessage);
+    const chatKey = normalized.sender;
+    if (!grouped[chatKey]) {
+      grouped[chatKey] = {
+        name: normalized.chatName || normalized.name || normalized.sender,
+        chatJid: normalized.chatJid,
+        messages: []
+      };
+    }
+    grouped[chatKey].messages.push(normalized);
+  });
+
+  const resolvedChats = [];
+  for (const chatKey in grouped) {
+    const chat = grouped[chatKey];
+    const isGroup = isGroupJid(chat.chatJid) || chat.messages.some(m => m.participant && m.participant !== m.sender);
+    const jid = chat.chatJid || (isGroup ? `${chatKey}@g.us` : `${chatKey}@s.whatsapp.net`);
+    let displayName = contactsCache[jid] || chat.messages.find(m => m.chatName)?.chatName;
+
+    if (!displayName && !isGroup) {
+      const nonMeMessage = chat.messages.find(m => !m.fromMe);
+      if (nonMeMessage) displayName = nonMeMessage.name;
+    }
+
+    if (!displayName || isSelfNamePlaceholder(displayName) || displayName.includes('@')) {
+      displayName = chatKey;
+    }
+
+    resolvedChats.push({
+      chatKey,
+      chatJid: chat.chatJid,
+      isGroup,
+      displayName,
+      messages: chat.messages
+    });
+  }
+
+  const unifiedGrouped = {};
+  resolvedChats.forEach(chat => {
+    const isNameValid = isValidConversationDisplayName(chat.displayName);
+    const unifiedKey = isNameValid ? chat.displayName.trim().toLowerCase() : chat.chatKey;
+
+    if (!unifiedGrouped[unifiedKey]) {
+      unifiedGrouped[unifiedKey] = {
+        displayName: chat.displayName,
+        chatKey: chat.chatKey,
+        chatJid: chat.chatJid,
+        isGroup: chat.isGroup,
+        messages: [...chat.messages]
+      };
+      return;
+    }
+
+    const currentIsLid = chat.chatKey.length > 15;
+    const existingIsLid = unifiedGrouped[unifiedKey].chatKey.length > 15;
+    if (existingIsLid && !currentIsLid) {
+      unifiedGrouped[unifiedKey].chatKey = chat.chatKey;
+      unifiedGrouped[unifiedKey].chatJid = chat.chatJid;
+    }
+    unifiedGrouped[unifiedKey].messages.push(...chat.messages);
+  });
+
+  return Object.values(unifiedGrouped).map(chat => {
+    chat.messages.sort(compareMessagesChronologically);
+    return chat;
+  });
+}
+
+function createMessageDateTimeFormatter() {
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+}
+
+function formatMessagesAsText(conversations, contactsCache, activeInstance) {
+  const dateTimeFormatter = createMessageDateTimeFormatter();
+  return conversations.map(chat => {
+    const chatMessagesText = chat.messages.map(message => {
+      const dateTimeStr = dateTimeFormatter.format(new Date(message.timestamp)).replace(',', '');
+      const senderName = resolveMessageSenderName(
+        message,
+        contactsCache,
+        chat.isGroup,
+        activeInstance?.myPushName,
+        activeInstance?.myPushNameSource
+      );
+      return `  [${dateTimeStr}] ${senderName}: ${message.text}`;
+    }).join('\n');
+
+    return `--- Conversa com: ${chat.displayName} (${chat.chatKey}) ---\n${chatMessagesText}`;
+  }).join('\n\n');
+}
+
+function escapeMarkdown(value) {
+  return normalizeDisplayName(String(value ?? ''))
+    .replace(/([\\`*_[\]{}()#+\-.!>])/g, '\\$1');
+}
+
+function formatDateLabel(dateStr) {
+  const [year, month, day] = String(dateStr || '').split('-');
+  return year && month && day ? `${day}/${month}/${year}` : dateStr;
+}
+
+function formatMessagesAsMarkdown(conversations, contactsCache, activeInstance, dateStr) {
+  if (!conversations || conversations.length === 0) return '';
+
+  const dateTimeFormatter = createMessageDateTimeFormatter();
+  const lines = [`# Conversas de ${formatDateLabel(dateStr)}`];
+
+  for (const chat of conversations) {
+    lines.push('', `## ${escapeMarkdown(chat.displayName)}`, `_Identificador: \`${escapeMarkdown(chat.chatKey)}\`_`, '');
+
+    for (const message of chat.messages) {
+      const dateTimeStr = dateTimeFormatter.format(new Date(message.timestamp)).replace(',', '');
+      const senderName = resolveMessageSenderName(
+        message,
+        contactsCache,
+        chat.isGroup,
+        activeInstance?.myPushName,
+        activeInstance?.myPushNameSource
+      );
+      lines.push(`- **${escapeMarkdown(dateTimeStr)}** · **${escapeMarkdown(senderName)}:** ${escapeMarkdown(message.text)}`);
+    }
+  }
+
+  return lines.join('\n').trim();
+}
+
 // Helper para atualizar retroativamente os nomes das mensagens em arquivos físicos diários
 function updateMessageNamesInFiles(userId, contactId, contactName) {
   const cleanedContactId = cleanJid(contactId);
@@ -2846,6 +2992,20 @@ app.get('/', checkAuth, async (req, res) => {
           button:hover { opacity: 0.9; }
           .viewer { display: flex; flex-direction: column; gap: 0.5rem; }
           pre { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; overflow: auto; max-height: 400px; font-family: monospace; font-size: 0.85rem; color: #38bdf8; white-space: pre-wrap; word-break: break-all; }
+          .markdown-output { display: none; flex-direction: column; gap: 0.85rem; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; overflow: auto; max-height: 520px; }
+          .md-title { margin: 0 0 0.25rem 0; font-size: 1.05rem; color: #f8fafc; }
+          .md-chat { border: 1px solid #334155; border-radius: 8px; background: #111827; overflow: hidden; }
+          .md-chat-header { padding: 0.85rem 1rem; border-bottom: 1px solid #334155; background: #1e293b; }
+          .md-chat-name { margin: 0; color: #e5e7eb; font-size: 0.98rem; }
+          .md-chat-meta { margin: 0.3rem 0 0 0; color: #94a3b8; font-size: 0.75rem; }
+          .md-message { display: grid; grid-template-columns: 120px 170px minmax(0, 1fr); gap: 0.75rem; padding: 0.7rem 1rem; border-bottom: 1px solid rgba(51, 65, 85, 0.65); align-items: start; }
+          .md-message:last-child { border-bottom: 0; }
+          .md-time { color: #93c5fd; font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+          .md-sender { color: #fbbf24; font-weight: 700; font-size: 0.82rem; }
+          .md-text { color: #dbeafe; font-size: 0.86rem; line-height: 1.45; word-break: break-word; }
+          .md-note { color: #94a3b8; font-size: 0.85rem; }
+          .md-media { display: inline-flex; align-items: center; padding: 0.12rem 0.45rem; border-radius: 999px; background: rgba(16, 185, 129, 0.15); color: #34d399; font-weight: 700; }
+          @media (max-width: 720px) { .md-message { grid-template-columns: 1fr; gap: 0.25rem; } }
           .nav-links { display: flex; gap: 0.75rem; align-items: center; }
           .nav-links a { 
             text-decoration: none; 
@@ -2897,6 +3057,7 @@ app.get('/', checkAuth, async (req, res) => {
             <div class="form-group">
               <label for="msgFormat">Formato:</label>
               <select id="msgFormat">
+                <option value="markdown">Visual Markdown (Bonito)</option>
                 <option value="text">Texto Corrido (Leitura)</option>
                 <option value="json">JSON Estruturado</option>
               </select>
@@ -2910,6 +3071,7 @@ app.get('/', checkAuth, async (req, res) => {
           <div class="viewer">
             <label id="viewerLabel">Mensagens Registradas:</label>
             <pre id="output">Clique em "Buscar Mensagens" para carregar os logs do dia selecionado.</pre>
+            <div id="outputMarkdown" class="markdown-output"></div>
           </div>
         </div>
 
@@ -2927,6 +3089,119 @@ app.get('/', checkAuth, async (req, res) => {
           const syncProgressPercent = document.getElementById('syncProgressPercent');
           const syncProgressBarFill = document.getElementById('syncProgressBarFill');
           const logoutLink = document.getElementById('logoutLink');
+          const rawOutput = document.getElementById('output');
+          const markdownOutput = document.getElementById('outputMarkdown');
+
+          function unescapeMarkdownText(value) {
+            return String(value || '')
+              .replace(/\\\\([\\\\*_[\\]{}()#+\\-.!>])/g, '$1')
+              .replace(new RegExp(String.fromCharCode(96), 'g'), '');
+          }
+
+          function showRawOutput(text) {
+            markdownOutput.style.display = 'none';
+            markdownOutput.replaceChildren();
+            rawOutput.style.display = 'block';
+            rawOutput.textContent = text;
+          }
+
+          function appendTextWithMediaTag(parent, text) {
+            const cleanText = unescapeMarkdownText(text);
+            if (!cleanText.startsWith('[')) {
+              parent.textContent = cleanText;
+              return;
+            }
+
+            const closeIndex = cleanText.indexOf(']');
+            if (closeIndex <= 0) {
+              parent.textContent = cleanText;
+              return;
+            }
+
+            const tag = document.createElement('span');
+            tag.className = 'md-media';
+            tag.textContent = cleanText.slice(0, closeIndex + 1);
+            parent.appendChild(tag);
+            parent.appendChild(document.createTextNode(cleanText.slice(closeIndex + 1)));
+          }
+
+          function showMarkdownOutput(markdown) {
+            rawOutput.style.display = 'none';
+            rawOutput.textContent = '';
+            markdownOutput.style.display = 'flex';
+            markdownOutput.replaceChildren();
+
+            const lines = String(markdown || '').split(/\\r?\\n/);
+            let currentChat = null;
+            let currentBody = null;
+
+            for (const rawLine of lines) {
+              const line = rawLine.trim();
+              if (!line) continue;
+
+              if (line.startsWith('# ')) {
+                const title = document.createElement('h2');
+                title.className = 'md-title';
+                title.textContent = unescapeMarkdownText(line.slice(2));
+                markdownOutput.appendChild(title);
+                continue;
+              }
+
+              if (line.startsWith('## ')) {
+                currentChat = document.createElement('section');
+                currentChat.className = 'md-chat';
+                const header = document.createElement('div');
+                header.className = 'md-chat-header';
+                const name = document.createElement('h3');
+                name.className = 'md-chat-name';
+                name.textContent = unescapeMarkdownText(line.slice(3));
+                header.appendChild(name);
+                currentBody = document.createElement('div');
+                currentChat.appendChild(header);
+                currentChat.appendChild(currentBody);
+                markdownOutput.appendChild(currentChat);
+                continue;
+              }
+
+              if (line.startsWith('_Identificador:') && currentChat) {
+                const header = currentChat.querySelector('.md-chat-header');
+                const meta = document.createElement('p');
+                meta.className = 'md-chat-meta';
+                meta.textContent = unescapeMarkdownText(line.replace(/^_Identificador:\\s*/, '').replace(/_$/, ''));
+                header.appendChild(meta);
+                continue;
+              }
+
+              const messageMatch = line.match(/^- \\*\\*(.*?)\\*\\* · \\*\\*(.*?):\\*\\* (.*)$/);
+              if (messageMatch && currentBody) {
+                const row = document.createElement('div');
+                row.className = 'md-message';
+                const time = document.createElement('span');
+                time.className = 'md-time';
+                time.textContent = unescapeMarkdownText(messageMatch[1]);
+                const sender = document.createElement('span');
+                sender.className = 'md-sender';
+                sender.textContent = unescapeMarkdownText(messageMatch[2]);
+                const text = document.createElement('span');
+                text.className = 'md-text';
+                appendTextWithMediaTag(text, messageMatch[3]);
+                row.appendChild(time);
+                row.appendChild(sender);
+                row.appendChild(text);
+                currentBody.appendChild(row);
+                continue;
+              }
+
+              const note = document.createElement('p');
+              note.className = 'md-note';
+              note.textContent = unescapeMarkdownText(line);
+              (currentBody || markdownOutput).appendChild(note);
+            }
+
+            if (!markdownOutput.childElementCount) {
+              showRawOutput('Nenhuma mensagem registrada para esta data.');
+            }
+          }
 
           // Função para desconectar a sessão do WhatsApp
           async function handleLogout(e) {
@@ -3014,7 +3289,7 @@ app.get('/', checkAuth, async (req, res) => {
               return;
             }
 
-            output.textContent = 'Buscando mensagens no servidor...';
+            showRawOutput('Buscando mensagens no servidor...');
             label.textContent = 'Mensagens do dia: ' + date.split('-').reverse().join('/');
 
             try {
@@ -3022,7 +3297,7 @@ app.get('/', checkAuth, async (req, res) => {
               
               if (!response.ok) {
                 if (response.status === 401) {
-                  output.textContent = 'Erro 401: Acesso Não Autorizado.';
+                  showRawOutput('Erro 401: Acesso Não Autorizado.');
                   return;
                 }
                 throw new Error('Erro do servidor: ' + response.status);
@@ -3030,13 +3305,21 @@ app.get('/', checkAuth, async (req, res) => {
 
               if (format === 'json') {
                 const data = await response.json();
-                output.textContent = JSON.stringify(data, null, 2);
+                showRawOutput(JSON.stringify(data, null, 2));
               } else {
                 const text = await response.text();
-                output.textContent = text.trim() ? text : 'Nenhuma mensagem registrada para esta data.';
+                if (format === 'markdown') {
+                  if (text.trim()) {
+                    showMarkdownOutput(text);
+                  } else {
+                    showRawOutput('Nenhuma mensagem registrada para esta data.');
+                  }
+                } else {
+                  showRawOutput(text.trim() ? text : 'Nenhuma mensagem registrada para esta data.');
+                }
               }
             } catch (err) {
-              output.textContent = 'Erro ao buscar mensagens: ' + err.message;
+              showRawOutput('Erro ao buscar mensagens: ' + err.message);
             }
           });
 
@@ -3045,7 +3328,7 @@ app.get('/', checkAuth, async (req, res) => {
             const output = document.getElementById('output');
             const label = document.getElementById('viewerLabel');
             
-            output.textContent = 'Buscando contatos sincronizados...';
+            showRawOutput('Buscando contatos sincronizados...');
             label.textContent = 'Contatos e Grupos Sincronizados:';
 
             try {
@@ -3057,7 +3340,7 @@ app.get('/', checkAuth, async (req, res) => {
               const response = await fetch('/contacts' + keyParam);
               if (!response.ok) {
                 if (response.status === 401) {
-                  output.textContent = 'Erro 401: Acesso Não Autorizado.';
+                  showRawOutput('Erro 401: Acesso Não Autorizado.');
                   return;
                 }
                 throw new Error('Erro do servidor: ' + response.status);
@@ -3065,7 +3348,7 @@ app.get('/', checkAuth, async (req, res) => {
 
               const data = await response.json();
               if (data.count === 0) {
-                output.textContent = 'Nenhum contato ou grupo sincronizado na memória deste servidor ainda.';
+                showRawOutput('Nenhum contato ou grupo sincronizado na memória deste servidor ainda.');
                 return;
               }
 
@@ -3078,9 +3361,9 @@ app.get('/', checkAuth, async (req, res) => {
                 text += '• [' + type + '] ' + name + ' (' + number + ')\\n';
               });
 
-              output.textContent = text;
+              showRawOutput(text);
             } catch (err) {
-              output.textContent = 'Erro ao buscar contatos: ' + err.message;
+              showRawOutput('Erro ao buscar contatos: ' + err.message);
             }
           });
 
@@ -3089,16 +3372,16 @@ app.get('/', checkAuth, async (req, res) => {
             const date = dateInput.value;
             const output = document.getElementById('output');
             const label = document.getElementById('viewerLabel');
-            output.textContent = 'Verificando integridade dos dados...';
+            showRawOutput('Verificando integridade dos dados...');
             label.textContent = 'Diagnóstico de Integridade:';
 
             try {
               const response = await fetch('/diagnostics?date=' + date);
               if (!response.ok) throw new Error('Erro do servidor: ' + response.status);
               const data = await response.json();
-              output.textContent = JSON.stringify(data, null, 2);
+              showRawOutput(JSON.stringify(data, null, 2));
             } catch (err) {
-              output.textContent = 'Erro ao verificar integridade: ' + err.message;
+              showRawOutput('Erro ao verificar integridade: ' + err.message);
             }
           });
 
@@ -3108,17 +3391,17 @@ app.get('/', checkAuth, async (req, res) => {
             const output = document.getElementById('output');
             const label = document.getElementById('viewerLabel');
             if (!confirm('Ressincronizar o cache local sem apagar credenciais nem desconectar o celular?')) return;
-            output.textContent = 'Ressincronizando cache local e reiniciando o socket...';
+            showRawOutput('Ressincronizando cache local e reiniciando o socket...');
             label.textContent = 'Ressincronização:';
 
             try {
               const response = await fetch('/maintenance/resync?mode=soft&date=' + date);
               if (!response.ok) throw new Error('Erro do servidor: ' + response.status);
               const data = await response.json();
-              output.textContent = JSON.stringify(data, null, 2);
+              showRawOutput(JSON.stringify(data, null, 2));
               updateSyncStatus();
             } catch (err) {
-              output.textContent = 'Erro ao ressincronizar: ' + err.message;
+              showRawOutput('Erro ao ressincronizar: ' + err.message);
             }
           });
         </script>
@@ -3457,6 +3740,23 @@ app.get('/messages', checkAuth, async (req, res) => {
     
     // Sempre ordena cronologicamente por timestamp (crescente: do mais antigo ao mais recente)
     messages.sort(compareMessagesChronologically);
+
+    const requestedFormat = String(req.query.format || '').toLowerCase();
+    if (requestedFormat === 'text' || requestedFormat === 'markdown' || requestedFormat === 'md') {
+      const contactsCache = mergeContactCaches(
+        loadContactsFromFile(cleanUserId),
+        await loadContactsFromSupabase(cleanUserId),
+        activeInstance ? (activeInstance.contactsCache || {}) : {}
+      );
+      const conversations = buildMessageConversations(messages, contactsCache);
+
+      if (requestedFormat === 'markdown' || requestedFormat === 'md') {
+        res.type('text/markdown');
+        return res.send(formatMessagesAsMarkdown(conversations, contactsCache, activeInstance, dateStr));
+      }
+
+      return res.send(formatMessagesAsText(conversations, contactsCache, activeInstance));
+    }
 
     const formatText = req.query.format === 'text';
     if (formatText) {
