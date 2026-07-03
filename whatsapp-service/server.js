@@ -2955,7 +2955,7 @@ app.get('/messages', checkAuth, async (req, res) => {
 
         const chatMessagesText = chat.messages.map(m => {
           const dateTimeStr = dateTimeFormatter.format(new Date(m.timestamp)).replace(',', '');
-          const senderName = resolveMessageSenderName(m, contactsCache, chat.isGroup, instance?.myPushName);
+          const senderName = resolveMessageSenderName(m, contactsCache, chat.isGroup, activeInstance?.myPushName);
           return `  [${dateTimeStr}] ${senderName}: ${m.text}`;
         }).join('\n');
         
@@ -2968,7 +2968,8 @@ app.get('/messages', checkAuth, async (req, res) => {
 
     res.json({ date: dateStr, count: messages.length, messages });
   } catch (e) {
-    res.status(500).json({ error: 'Erro ao ler banco de mensagens local.' });
+    console.error('Erro detalhado na rota /messages:', e);
+    res.status(500).json({ error: 'Erro ao ler banco de mensagens local.', details: e.message || String(e) });
   }
 });
 
