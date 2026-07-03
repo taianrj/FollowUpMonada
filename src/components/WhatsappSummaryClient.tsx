@@ -97,6 +97,13 @@ export default function WhatsappSummaryClient({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const hasShownSuccessToastRef = useRef(false);
 
+  const whatsappOwnerName = (profile?.name || profile?.email?.split('@')[0] || '').trim();
+  const ownerNameQuery = whatsappOwnerName ? `&ownerName=${encodeURIComponent(whatsappOwnerName)}` : '';
+  const whatsappHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(whatsappOwnerName ? { 'x-owner-name': whatsappOwnerName } : {})
+  };
+
   // Efeito para fechar o dropdown customizado de responsáveis ao clicar fora
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -260,10 +267,10 @@ export default function WhatsappSummaryClient({
   const checkConnectionStatus = async (url: string, token: string) => {
     const normalizedUrl = url.replace(/\/$/, '');
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const headers: Record<string, string> = { ...whatsappHeaders };
       headers['x-api-key'] = token;
       
-      const response = await fetch(`${normalizedUrl}/status?key=${token}`, {
+      const response = await fetch(`${normalizedUrl}/status?key=${token}${ownerNameQuery}`, {
         headers: headers
       });
       
@@ -326,7 +333,9 @@ export default function WhatsappSummaryClient({
       
       try {
         const normalizedUrl = apiUrl.replace(/\/$/, '');
-        const response = await fetch(`${normalizedUrl}/qr-code?key=${apiToken}`);
+        const response = await fetch(`${normalizedUrl}/qr-code?key=${apiToken}${ownerNameQuery}`, {
+          headers: whatsappHeaders
+        });
         if (response.ok) {
           const data = await response.json();
           setQrStatus(data.status);
@@ -372,7 +381,9 @@ export default function WhatsappSummaryClient({
 
     const normalizedUrl = apiUrl.replace(/\/$/, '');
     try {
-      const response = await fetch(`${normalizedUrl}/messages?date=${summaryDate}&format=text&key=${apiToken}`);
+      const response = await fetch(`${normalizedUrl}/messages?date=${summaryDate}&format=text&key=${apiToken}${ownerNameQuery}`, {
+        headers: whatsappHeaders
+      });
       if (response.ok) {
         const text = await response.text();
         setModalMessagesText(text.trim() ? text : 'Nenhuma mensagem de clientes registrada para a data selecionada.');
@@ -396,7 +407,9 @@ export default function WhatsappSummaryClient({
     
     const normalizedUrl = apiUrl.replace(/\/$/, '');
     try {
-      const response = await fetch(`${normalizedUrl}/logout?key=${apiToken}`);
+      const response = await fetch(`${normalizedUrl}/logout?key=${apiToken}${ownerNameQuery}`, {
+        headers: whatsappHeaders
+      });
       if (response.ok) {
         setIntegrationConnected(false);
         setWhatsappStatus('disconnected');
@@ -423,7 +436,9 @@ export default function WhatsappSummaryClient({
     
     try {
       // Passo 1: Busca mensagens do microsserviço
-      const response = await fetch(`${normalizedUrl}/messages?date=${targetDate}&format=text&key=${apiToken}`);
+      const response = await fetch(`${normalizedUrl}/messages?date=${targetDate}&format=text&key=${apiToken}${ownerNameQuery}`, {
+        headers: whatsappHeaders
+      });
       
       if (!response.ok) {
         if (response.status === 401) {

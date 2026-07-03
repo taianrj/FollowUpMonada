@@ -541,6 +541,53 @@ function normalizeDisplayName(name) {
     .trim();
 }
 
+const ownerNamesFilePath = path.join(dataDir, 'owner-names.json');
+
+function loadOwnerNamesFromFile() {
+  try {
+    if (!fs.existsSync(ownerNamesFilePath)) return {};
+    const raw = JSON.parse(fs.readFileSync(ownerNamesFilePath, 'utf8'));
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch (err) {
+    console.warn('[owner-name] Falha ao carregar nomes do dono do WhatsApp:', err.message || err);
+    return {};
+  }
+}
+
+function loadOwnerNameFromFile(userId) {
+  return normalizeDisplayName(loadOwnerNamesFromFile()[userId]);
+}
+
+function saveOwnerNameToFile(userId, name) {
+  const cleanName = normalizeDisplayName(name);
+  if (!userId || !cleanName) return;
+
+  try {
+    const names = loadOwnerNamesFromFile();
+    names[userId] = cleanName;
+    fs.writeFileSync(ownerNamesFilePath, JSON.stringify(names, null, JSON_INDENT), 'utf8');
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao salvar nome do dono do WhatsApp:`, err.message || err);
+  }
+}
+
+function readOwnerNameHint(req) {
+  const rawHint = req.headers['x-owner-name'] || req.query.ownerName || req.query.owner_name || '';
+  return normalizeDisplayName(Array.isArray(rawHint) ? rawHint[0] : rawHint);
+}
+
+function applyOwnerNameHint(userId, instance, ownerNameHint) {
+  const cleanName = normalizeDisplayName(ownerNameHint);
+  if (!cleanName || isSelfNamePlaceholder(cleanName) || looksLikeTechnicalName(cleanName)) return false;
+
+  if (instance) {
+    instance.myPushName = cleanName;
+    instance.myPushNameSource = 'profile-hint';
+  }
+  saveOwnerNameToFile(userId, cleanName);
+  return true;
+}
+
 function bestNameFromContact(contact) {
   if (!contact || typeof contact !== 'object') return '';
   return normalizeDisplayName(
@@ -1056,6 +1103,15 @@ async function ensureOwnerDisplayName(userId, instance) {
     return currentName;
   }
 
+  const savedOwnerName = loadOwnerNameFromFile(userId);
+  if (savedOwnerName && !isSelfNamePlaceholder(savedOwnerName) && !looksLikeTechnicalName(savedOwnerName)) {
+    if (instance) {
+      instance.myPushName = savedOwnerName;
+      instance.myPushNameSource = 'profile-hint';
+    }
+    return savedOwnerName;
+  }
+
   const profileName = await loadProfileNameFromSupabase(userId);
   if (profileName) {
     const cleanProfileName = normalizeDisplayName(profileName);
@@ -1063,6 +1119,7 @@ async function ensureOwnerDisplayName(userId, instance) {
       instance.myPushName = cleanProfileName;
       instance.myPushNameSource = 'profile';
     }
+    saveOwnerNameToFile(userId, cleanProfileName);
     return cleanProfileName;
   }
 
@@ -2095,6 +2152,7 @@ async function getOrCreateInstance(userId) {
   const localContactsCache = loadContactsFromFile(cleanUserId);
   const remoteContactsCache = await loadContactsFromSupabase(cleanUserId);
   const hydratedContactsCache = mergeContactCaches(localContactsCache, remoteContactsCache);
+  const storedOwnerName = loadOwnerNameFromFile(cleanUserId);
   
   const instanceState = {
     sock: null,
@@ -2104,8 +2162,8 @@ async function getOrCreateInstance(userId) {
     messagesProcessedCount: 0,
     contactsCache: hydratedContactsCache,
     groupMetadataCache: {}, // Cache de metadados dos grupos para otimização e evitar rate-limit do WhatsApp
-    myPushName: '', // Nome de perfil do próprio usuário dono do WhatsApp
-    myPushNameSource: 'fallback',
+    myPushName: storedOwnerName, // Nome de perfil do próprio usuário dono do WhatsApp
+    myPushNameSource: storedOwnerName ? 'profile-hint' : 'fallback',
     lastSyncActivity: Date.now(),
     syncTimer: null,
     contactsSaveTimer: null,
@@ -2153,7 +2211,7 @@ async function getOrCreateInstance(userId) {
 // Habilita o CORS para permitir requisições do frontend local (localhost)
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-api-key');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-api-key, x-owner-name');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
@@ -2748,6 +2806,8 @@ app.get('/status', checkAuth, async (req, res) => {
   if (!instance) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
+  applyOwnerNameHint(userId.replace(/[^a-zA-Z0-9-_]/g, ''), instance, readOwnerNameHint(req));
+  const ownerDisplayName = await ensureOwnerDisplayName(userId.replace(/[^a-zA-Z0-9-_]/g, ''), instance);
 
   res.json({
     status: instance.connectionStatus,
@@ -2767,7 +2827,9 @@ app.get('/status', checkAuth, async (req, res) => {
     user: instance.sock && instance.sock.user ? {
       id: instance.sock.user.id,
       name: instance.sock.user.name || instance.sock.user.id.split('@')[0].split(':')[0]
-    } : null
+    } : null,
+    ownerDisplayName,
+    ownerDisplayNameSource: instance.myPushNameSource || 'fallback'
   });
 });
 
@@ -2911,6 +2973,7 @@ app.get('/qr-code', checkAuth, async (req, res) => {
   if (!instance) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
+  applyOwnerNameHint(userId.replace(/[^a-zA-Z0-9-_]/g, ''), instance, readOwnerNameHint(req));
 
   if (instance.connectionStatus === 'connected') {
     return res.json({ status: 'connected' });
@@ -2935,6 +2998,7 @@ app.get('/qr', checkAuth, async (req, res) => {
   if (!instance) {
     return res.status(400).send('Erro: Identificação do usuário inválida.');
   }
+  applyOwnerNameHint(userId.replace(/[^a-zA-Z0-9-_]/g, ''), instance, readOwnerNameHint(req));
 
   const keyParam = userId ? `?key=${userId}` : '';
 
@@ -3037,6 +3101,7 @@ app.get('/messages', checkAuth, async (req, res) => {
     const messages = mergeMessages(localMessages, remoteMessages);
     let activeInstance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
     if (activeInstance) {
+      applyOwnerNameHint(cleanUserId, activeInstance, readOwnerNameHint(req));
       activeInstance.contactsCache = mergeContactCaches(
         loadContactsFromFile(cleanUserId),
         await loadContactsFromSupabase(cleanUserId),
