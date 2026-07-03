@@ -1112,6 +1112,9 @@ export default function WhatsappSummaryClient({
                 <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0, maxWidth: '500px' }}>
                   Por favor, aguarde alguns instantes enquanto importamos o histórico recente de conversas para podermos gerar os resumos com total precisão.
                 </p>
+                <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)', marginTop: '0.5rem' }}>
+                  Mensagens importadas: {whatsappMessagesCount}
+                </div>
               </div>
             </div>
           )}

@@ -76,11 +76,14 @@ if (!process.env.SUPABASE_URL) {
   }
 }
 
+function getDbSessionId(userId) {
+  const suffix = process.env.WHATSAPP_SESSION_SUFFIX || '';
+  return `${userId}${suffix}`;
+}
+
 // Funções de Persistência de Credenciais do WhatsApp no Supabase
 async function saveCredsToSupabase(userId, creds) {
-  if (process.env.DISABLE_SUPABASE_AUTH === 'true') {
-    return;
-  }
+  const dbSessionId = getDbSessionId(userId);
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   
@@ -103,7 +106,7 @@ async function saveCredsToSupabase(userId, creds) {
         'Prefer': 'resolution=merge-dupes'
       },
       body: JSON.stringify({
-        id: userId,
+        id: dbSessionId,
         creds: credsString,
         updated_at: new Date().toISOString()
       }),
@@ -123,9 +126,7 @@ async function saveCredsToSupabase(userId, creds) {
 }
 
 async function loadCredsFromSupabase(userId) {
-  if (process.env.DISABLE_SUPABASE_AUTH === 'true') {
-    return null;
-  }
+  const dbSessionId = getDbSessionId(userId);
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   
@@ -138,7 +139,7 @@ async function loadCredsFromSupabase(userId) {
   const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout para evitar travamento em flutuações de rede
 
   try {
-    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${userId}&select=creds`, {
+    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${dbSessionId}&select=creds`, {
       headers: {
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`
@@ -163,9 +164,7 @@ async function loadCredsFromSupabase(userId) {
 }
 
 async function deleteCredsFromSupabase(userId) {
-  if (process.env.DISABLE_SUPABASE_AUTH === 'true') {
-    return;
-  }
+  const dbSessionId = getDbSessionId(userId);
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   
@@ -178,7 +177,7 @@ async function deleteCredsFromSupabase(userId) {
   const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout
 
   try {
-    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${userId}`, {
+    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${dbSessionId}`, {
       method: 'DELETE',
       headers: {
         'apikey': supabaseKey,
@@ -315,7 +314,8 @@ async function supabaseRest(table, query = '', options = {}) {
 }
 
 function stateBlobId(userId, kind, key = 'default') {
-  return `${userId}:${kind}:${key}`;
+  const dbSessionId = getDbSessionId(userId);
+  return `${dbSessionId}:${kind}:${key}`;
 }
 
 async function saveStateBlobToSupabase(userId, kind, key, payload) {
