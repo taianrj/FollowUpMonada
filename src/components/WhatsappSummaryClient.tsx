@@ -68,7 +68,7 @@ function parseConversationDisplay(text: string) {
       return;
     }
 
-    const markdownMessage = line.match(/^- \*\*(.*?)\*\* · \*\*(.*?):\*\* (.*)$/);
+    const markdownMessage = line.match(/^- \*\*(.*?)\*\* · \*\*(.*?)(?::\*\*|\*\*:) (.*)$/);
     if (markdownMessage && current) {
       current.messages.push({
         time: unescapeConversationMarkdown(markdownMessage[1]),

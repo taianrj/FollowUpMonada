@@ -2974,6 +2974,7 @@ app.get('/', checkAuth, async (req, res) => {
   res.send(`
     <html>
       <head>
+        <meta charset="utf-8">
         <title>WhatsApp Web Integration Gateway</title>
         <style>
           body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
@@ -3174,7 +3175,7 @@ app.get('/', checkAuth, async (req, res) => {
                 continue;
               }
 
-              const messageMatch = line.match(/^- \\*\\*(.*?)\\*\\* · \\*\\*(.*?):\\*\\* (.*)$/);
+              const messageMatch = line.match(/^- \\*\\*(.*?)\\*\\* · \\*\\*(.*?)(?::\\*\\*|\\*\\*:) (.*)$/);
               if (messageMatch && currentBody) {
                 const row = document.createElement('div');
                 row.className = 'md-message';
