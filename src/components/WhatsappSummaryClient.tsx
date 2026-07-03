@@ -62,6 +62,8 @@ export default function WhatsappSummaryClient({
   
   // Modais de pareamento e visualização de logs
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
+  const [choiceStep, setChoiceStep] = useState<'options' | 'date'>('options');
   const [autoSummaryEnabled, setAutoSummaryEnabled] = useState(false);
   const [autoSummaryDate, setAutoSummaryDate] = useState('');
   const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
@@ -196,6 +198,12 @@ export default function WhatsappSummaryClient({
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       handleFileRead(e.dataTransfer.files[0]);
     }
+  };
+
+  // Prepara e abre o modal intermediário de escolha de autogeração ao tentar conectar o celular
+  const handleStartConnection = () => {
+    setIsChoiceModalOpen(true);
+    setChoiceStep('options');
   };
 
   // Define a data inicial com base no fuso horário local do computador do usuário para evitar hydration mismatches
@@ -940,7 +948,7 @@ export default function WhatsappSummaryClient({
                 <button 
                   type="button"
                   className="btn btnPrimary"
-                  onClick={() => setIsQrModalOpen(true)}
+                  onClick={handleStartConnection}
                   style={{
                     fontSize: '0.82rem',
                     padding: '0.5rem 1rem',
@@ -980,7 +988,7 @@ export default function WhatsappSummaryClient({
                 <button 
                   type="button"
                   className="btn btnPrimary"
-                  onClick={() => setIsQrModalOpen(true)}
+                  onClick={handleStartConnection}
                   style={{
                     fontSize: '0.82rem',
                     padding: '0.5rem 1rem',
@@ -1379,6 +1387,186 @@ export default function WhatsappSummaryClient({
 
       </main>
 
+      {/* Modal de Escolha Intermediária para Conexão */}
+      {isChoiceModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(10, 10, 15, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 9999,
+          animation: 'fadeIn 0.25s ease'
+        }}>
+          <div style={{
+            backgroundColor: 'var(--bg-secondary)',
+            borderRadius: 'var(--radius-lg)',
+            border: '1px solid var(--border-color)',
+            padding: '2.25rem 2rem',
+            width: '420px',
+            maxWidth: '92%',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.5rem',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4)',
+            position: 'relative'
+          }}>
+            <button
+              type="button"
+              onClick={() => setIsChoiceModalOpen(false)}
+              style={{
+                position: 'absolute',
+                top: '1rem',
+                right: '1rem',
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-muted)',
+                fontSize: '1.35rem',
+                cursor: 'pointer',
+                transition: 'color 0.2s'
+              }}
+              onMouseOver={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
+              onMouseOut={(e) => e.currentTarget.style.color = 'var(--text-muted)'}
+              title="Fechar"
+            >
+              ✕
+            </button>
+
+            {choiceStep === 'options' ? (
+              <>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', textAlign: 'center' }}>
+                  <h3 style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                    Conectar WhatsApp 📱
+                  </h3>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+                    A primeira conexão pode levar alguns minutos para sincronizar as mensagens. O que deseja fazer?
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%', marginTop: '0.5rem' }}>
+                  <button
+                    type="button"
+                    className="btn btnPrimary"
+                    onClick={() => {
+                      const d = new Date();
+                      const year = d.getFullYear();
+                      const month = String(d.getMonth() + 1).padStart(2, '0');
+                      const day = String(d.getDate()).padStart(2, '0');
+                      setAutoSummaryDate(`${year}-${month}-${day}`);
+                      setChoiceStep('date');
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem',
+                      fontWeight: 600,
+                      fontSize: '0.85rem',
+                      background: 'linear-gradient(135deg, var(--accent-purple) 0%, #4f46e5 100%)',
+                      border: 'none',
+                      boxShadow: '0 4px 12px rgba(99, 102, 241, 0.2)'
+                    }}
+                  >
+                    ⚡ Gerar resumo automaticamente após conectar
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn btnSecondary"
+                    onClick={() => {
+                      setAutoSummaryEnabled(false);
+                      setIsChoiceModalOpen(false);
+                      setIsQrModalOpen(true);
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem',
+                      fontWeight: 600,
+                      fontSize: '0.85rem',
+                      border: '1px solid var(--border-color)'
+                    }}
+                  >
+                    📱 Apenas conectar
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', textAlign: 'center' }}>
+                  <h3 style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                    Agendar Gerador de Resumos 📅
+                  </h3>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+                    Selecione de qual data deseja obter o resumo assim que a sincronização do celular for concluída:
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', alignItems: 'center' }}>
+                  <input
+                    type="date"
+                    value={autoSummaryDate}
+                    onChange={(e) => setAutoSummaryDate(e.target.value)}
+                    style={{
+                      backgroundColor: 'var(--bg-primary)',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-primary)',
+                      padding: '0.5rem 0.75rem',
+                      borderRadius: 'var(--radius-md)',
+                      fontSize: '0.9rem',
+                      outline: 'none',
+                      width: '100%',
+                      maxWidth: '220px',
+                      textAlign: 'center'
+                    }}
+                  />
+
+                  <div style={{ display: 'flex', gap: '0.75rem', width: '100%', marginTop: '0.5rem' }}>
+                    <button
+                      type="button"
+                      className="btn btnSecondary"
+                      onClick={() => setChoiceStep('options')}
+                      style={{
+                        flex: 1,
+                        padding: '0.65rem',
+                        fontWeight: 600,
+                        fontSize: '0.85rem',
+                        border: '1px solid var(--border-color)'
+                      }}
+                    >
+                      ⬅️ Voltar
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btnPrimary"
+                      onClick={() => {
+                        setAutoSummaryEnabled(true);
+                        setIsChoiceModalOpen(false);
+                        setIsQrModalOpen(true);
+                      }}
+                      style={{
+                        flex: 2,
+                        padding: '0.65rem',
+                        fontWeight: 600,
+                        fontSize: '0.85rem',
+                        background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                        border: 'none',
+                        boxShadow: '0 4px 12px rgba(16, 185, 129, 0.2)'
+                      }}
+                    >
+                      Confirmar e Ver QR Code ✅
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Modal de Pareamento via QR Code */}
       {isQrModalOpen && (
         <div style={{
@@ -1473,62 +1661,6 @@ export default function WhatsappSummaryClient({
                     animation: 'fadeIn 0.3s ease'
                   }}
                 />
-              )}
-            </div>
-
-            <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', margin: '0.25rem 0' }}></div>
-
-            <div style={{ 
-              display: 'flex', 
-              flexDirection: 'column', 
-              gap: '0.75rem', 
-              width: '100%', 
-              backgroundColor: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--border-color)',
-              borderRadius: 'var(--radius-md)',
-              padding: '0.85rem',
-              alignItems: 'flex-start',
-              textAlign: 'left'
-            }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)', userSelect: 'none' }}>
-                <input 
-                  type="checkbox"
-                  checked={autoSummaryEnabled}
-                  onChange={(e) => {
-                    setAutoSummaryEnabled(e.target.checked);
-                    if (e.target.checked && !autoSummaryDate) {
-                      const d = new Date();
-                      const year = d.getFullYear();
-                      const month = String(d.getMonth() + 1).padStart(2, '0');
-                      const day = String(d.getDate()).padStart(2, '0');
-                      setAutoSummaryDate(`${year}-${month}-${day}`);
-                    }
-                  }}
-                  style={{ accentColor: 'var(--accent-purple)', cursor: 'pointer' }}
-                />
-                ⚡ Gerar resumo automaticamente após conectar
-              </label>
-
-              {autoSummaryEnabled && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%', paddingLeft: '1.35rem', animation: 'fadeIn 0.2s ease' }}>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Selecionar data desejada:</span>
-                  <input
-                    type="date"
-                    value={autoSummaryDate}
-                    onChange={(e) => setAutoSummaryDate(e.target.value)}
-                    style={{
-                      backgroundColor: 'var(--bg-primary)',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-primary)',
-                      padding: '0.35rem 0.5rem',
-                      borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.8rem',
-                      outline: 'none',
-                      width: '100%',
-                      maxWidth: '180px'
-                    }}
-                  />
-                </div>
               )}
             </div>
 
