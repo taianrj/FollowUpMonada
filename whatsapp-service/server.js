@@ -203,6 +203,7 @@ async function deleteCredsFromSupabase(userId) {
 // Exclui todas as mensagens e contatos locais e do Supabase associados ao usuário de forma permanente na desconexão
 async function clearAllUserData(userId) {
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const dbSessionId = getDbSessionId(cleanUserId);
   console.log(`[${cleanUserId}] Iniciando limpeza completa de dados pós-desconexão...`);
 
   // 1. Limpa cache de mensagens locais em disco
@@ -263,19 +264,24 @@ async function clearAllUserData(userId) {
       console.error(`[${cleanUserId}] Erro de rede ao limpar contatos no Supabase:`, err.message || err);
     }
 
-    // 5. Limpa blobs de estado do usuário (contacts:default, etc.) na tabela whatsapp_sessions
-    const targets = [
-      `${cleanUserId}:contacts:default`,
-      `${cleanUserId}:local:contacts:default`
+    // 5. Limpa blobs de estado do usuário (messages/contacts) na tabela whatsapp_sessions
+    const statePatterns = [
+      `${dbSessionId}:messages:*`,
+      `${cleanUserId}:messages:*`,
+      `${dbSessionId}:contacts:*`,
+      `${cleanUserId}:contacts:*`,
+      `${dbSessionId}:local:contacts:*`,
+      `${cleanUserId}:local:contacts:*`
     ];
-    for (const targetId of targets) {
+    for (const pattern of [...new Set(statePatterns)]) {
       try {
-        await fetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${targetId}`, {
+        const response = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
           method: 'DELETE',
           headers
         });
+        console.log(`[${cleanUserId}] Limpeza de snapshot ${pattern} no Supabase: status ${response.status}`);
       } catch (e) {
-        // Ignora
+        console.error(`[${cleanUserId}] Erro de rede ao limpar snapshot ${pattern} no Supabase:`, e.message || e);
       }
     }
   }
@@ -958,7 +964,7 @@ function resolveMessageSenderName(message, contactsCache, isGroup, myPushName) {
   if (message.fromMe) {
     if (message.name && message.name !== 'Eu') return message.name;
     if (myPushName && myPushName !== 'Eu') return myPushName;
-    return 'Eu';
+    return 'Você';
   }
   const participantJid = message.participantJid || inferParticipantJidFromMessage(message);
   const aliases = uniqueJids([participantJid, ...(message.participantAliases || [])]);
@@ -1337,7 +1343,7 @@ async function connectUserWhatsApp(userId) {
   });
 
   // Monitora alterações na conexão
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     const { connection, lastDisconnect, qr, receivedPendingNotifications } = update;
 
@@ -1374,10 +1380,10 @@ async function connectUserWhatsApp(userId) {
         instance.connectionStatus = 'disconnected';
         
         // Exclui as credenciais permanentemente do banco de dados do Supabase
-        deleteCredsFromSupabase(userId);
+        await deleteCredsFromSupabase(userId);
 
         // Exclui todas as mensagens e contatos locais e do Supabase de forma permanente na desconexão
-        clearAllUserData(userId);
+        await clearAllUserData(userId);
         
         try {
           fs.rmSync(userAuthDir, { recursive: true, force: true });
@@ -1499,7 +1505,7 @@ async function connectUserWhatsApp(userId) {
           ...relatedAliasesFromCache(directParticipantAliases, instance.contactsCache)
         ]);
         
-        let pushName = 'Eu';
+        let pushName = 'Você';
         if (!fromMe) {
           const savedName = bestNameFromAliases(participantAliases, instance.contactsCache);
           const messagePushName = normalizeDisplayName(msg.pushName);
@@ -1511,7 +1517,7 @@ async function connectUserWhatsApp(userId) {
           }
         } else {
           // Usa o nome real do dono do celular configurado no WhatsApp
-          pushName = instance.myPushName || 'Eu';
+          pushName = instance.myPushName && instance.myPushName !== 'Eu' ? instance.myPushName : 'Você';
         }
 
         const chatName = instance.contactsCache[chatJid] || (!isGroup && !fromMe ? pushName : '');
@@ -1979,7 +1985,7 @@ async function getOrCreateInstance(userId) {
     messagesProcessedCount: 0,
     contactsCache: hydratedContactsCache,
     groupMetadataCache: {}, // Cache de metadados dos grupos para otimização e evitar rate-limit do WhatsApp
-    myPushName: 'Eu', // Nome de perfil do próprio usuário dono do WhatsApp
+    myPushName: 'Você', // Nome de perfil do próprio usuário dono do WhatsApp
     lastSyncActivity: Date.now(),
     syncTimer: null,
     contactsSaveTimer: null,
@@ -3111,26 +3117,14 @@ app.get('/logout', checkAuth, async (req, res) => {
       } catch (e) {}
     }
 
-    // Apaga credenciais do Supabase de forma assíncrona
+    // Apaga credenciais, mensagens e caches persistidos, mantendo os resumos salvos.
     await deleteCredsFromSupabase(cleanUserId);
+    await clearAllUserData(cleanUserId);
 
     // Apaga fisicamente a pasta de chaves de autenticação do usuário
     const userAuthDir = path.join(dataDir, 'auth', cleanUserId);
     fs.rmSync(userAuthDir, { recursive: true, force: true });
     fs.mkdirSync(userAuthDir, { recursive: true });
-
-    // Apaga logs de mensagens diárias anteriores do usuário
-    const userMsgDir = path.join(dataDir, 'messages', cleanUserId);
-    try {
-      if (fs.existsSync(userMsgDir)) {
-        const files = fs.readdirSync(userMsgDir);
-        for (const file of files) {
-          if (file.startsWith('messages-') && file.endsWith('.json')) {
-            fs.unlinkSync(path.join(userMsgDir, file));
-          }
-        }
-      }
-    } catch (e) {}
 
     // Limpa a instância do dicionário de memória
     if (instances[cleanUserId]) {
