@@ -1012,8 +1012,8 @@ export default function WhatsappSummaryClient({
             </div>
           )}
 
-          {/* Card de Sincronização em Andamento - Visível se conectado mas ainda sincronizando histórico */}
-          {integrationConnected && whatsappStatus === 'connected' && whatsappSyncStatus !== 'completed' && (
+          {/* Card de Sincronização em Andamento - Visível se conectado mas ainda sincronizando histórico ou em fase de conexão */}
+          {integrationConnected && (whatsappStatus === 'connecting' || (whatsappStatus === 'connected' && whatsappSyncStatus !== 'completed')) && (
             <div style={{
               backgroundColor: 'var(--bg-secondary)',
               borderRadius: 'var(--radius-lg)',
