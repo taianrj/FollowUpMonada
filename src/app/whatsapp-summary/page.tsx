@@ -28,8 +28,8 @@ export default async function WhatsappSummaryPage() {
     redirect('/login');
   }
 
-  // Permite acesso à funcionalidade apenas para o e-mail específico do proprietário
-  if (profile.email !== 'taiancg@gmail.com') {
+  // Permite acesso à funcionalidade apenas para administradores
+  if (profile.role !== 'admin') {
     redirect('/');
   }
 

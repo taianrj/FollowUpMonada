@@ -52,7 +52,7 @@ export default function Sidebar({ profile, isOpen, onClose }: SidebarProps) {
             Painel de Demandas
           </button>
 
-          {profile?.email === 'taiancg@gmail.com' && (
+          {isAdmin && (
             <button 
               className={`navLink ${pathname === '/whatsapp-summary' ? 'navLinkActive' : ''}`}
               onClick={() => router.push('/whatsapp-summary')}

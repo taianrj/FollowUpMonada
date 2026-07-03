@@ -798,7 +798,7 @@ export default function WhatsappSummaryClient({
                 Verificando conexão com o WhatsApp na nuvem...
               </span>
             </div>
-          ) : integrationConnected && connectedUser ? (
+          ) : integrationConnected && (whatsappStatus === 'connected' || whatsappStatus === 'connecting') ? (
             <div style={{
               display: 'flex',
               alignItems: 'center',
@@ -810,16 +810,9 @@ export default function WhatsappSummaryClient({
               boxShadow: 'var(--shadow-sm)'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#34d399' }}>
-                <span className={whatsappStatus === 'connecting' ? 'pulse' : 'pulseGreen'} style={{ 
-                  display: 'inline-block', 
-                  width: '8px', 
-                  height: '8px', 
-                  backgroundColor: whatsappStatus === 'connecting' ? '#3b82f6' : '#10b981', 
-                  borderRadius: '50%' 
-                }}></span>
+                <span className="pulseGreen" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#10b981', borderRadius: '50%' }}></span>
                 <span>
-                  WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser.name || connectedUser.id.split('@')[0].split(':')[0]}</strong>
-                  {whatsappStatus === 'connecting' && <span style={{ color: '#60a5fa', fontSize: '0.8rem', marginLeft: '0.5rem', fontWeight: 500 }}>(Reconectando...)</span>}
+                  WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser?.name || profile?.name || 'Taian'}</strong>
                 </span>
               </div>
               <button 
@@ -829,47 +822,6 @@ export default function WhatsappSummaryClient({
               >
                 🔴 Desconectar Conta
               </button>
-            </div>
-          ) : integrationConnected && whatsappStatus === 'connecting' ? (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.75rem',
-              backgroundColor: 'rgba(59, 130, 246, 0.08)',
-              border: '1px solid rgba(59, 130, 246, 0.2)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '1.25rem 1.5rem',
-              boxShadow: 'var(--shadow-sm)'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#60a5fa' }}>
-                <span className="pulse" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#3b82f6', borderRadius: '50%' }}></span>
-                ⌛ Iniciando Conexão com o WhatsApp...
-              </div>
-              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
-                O servidor está se comunicando com o celular em segundo plano. Por favor, aguarde alguns instantes.
-              </p>
-              <div>
-                <button 
-                  type="button"
-                  className="btn"
-                  disabled
-                  style={{
-                    fontSize: '0.82rem',
-                    padding: '0.5rem 1rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    background: 'rgba(59, 130, 246, 0.15)',
-                    borderRadius: 'var(--radius-md)',
-                    border: 'none',
-                    color: '#60a5fa',
-                    fontWeight: 600,
-                    cursor: 'not-allowed'
-                  }}
-                >
-                  ⌛ Aguardando Inicialização...
-                </button>
-              </div>
             </div>
           ) : integrationConnected && whatsappStatus === 'qrcode' ? (
             <div style={{
