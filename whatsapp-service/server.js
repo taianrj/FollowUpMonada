@@ -2850,6 +2850,8 @@ app.get('/messages', checkAuth, async (req, res) => {
         hour12: false
       });
 
+      const resolvedChats = [];
+
       for (const chatKey in grouped) {
         const chat = grouped[chatKey];
         const isGroup = isGroupJid(chat.chatJid) || chat.messages.some(m => m.participant && m.participant !== m.sender);
@@ -2871,13 +2873,62 @@ app.get('/messages', checkAuth, async (req, res) => {
           displayName = chatKey;
         }
 
+        resolvedChats.push({
+          chatKey,
+          chatJid: chat.chatJid,
+          isGroup,
+          displayName,
+          messages: chat.messages
+        });
+      }
+
+      // Unifica conversas que possuem o mesmo displayName válido (evita separar LID de JID telefônico)
+      const unifiedGrouped = {};
+      const isValidDisplayName = (name) => {
+        if (!name) return false;
+        if (name === 'Eu') return false;
+        if (name.includes('@')) return false;
+        if (/^[0-9+\s\-()]+$/.test(name)) return false; // Se for puramente número de telefone, não é nome válido
+        return true;
+      };
+
+      resolvedChats.forEach(chat => {
+        const isNameValid = isValidDisplayName(chat.displayName);
+        const unifiedKey = isNameValid ? chat.displayName.trim().toLowerCase() : chat.chatKey;
+
+        if (!unifiedGrouped[unifiedKey]) {
+          unifiedGrouped[unifiedKey] = {
+            displayName: chat.displayName,
+            chatKey: chat.chatKey,
+            chatJid: chat.chatJid,
+            isGroup: chat.isGroup,
+            messages: [...chat.messages]
+          };
+        } else {
+          // Se já existe e a chave atual for JID telefônico (não-LID, mais curto), preferimos o JID telefônico
+          const currentIsLid = chat.chatKey.length > 15;
+          const existingIsLid = unifiedGrouped[unifiedKey].chatKey.length > 15;
+          if (existingIsLid && !currentIsLid) {
+            unifiedGrouped[unifiedKey].chatKey = chat.chatKey;
+            unifiedGrouped[unifiedKey].chatJid = chat.chatJid;
+          }
+          unifiedGrouped[unifiedKey].messages.push(...chat.messages);
+        }
+      });
+
+      for (const key in unifiedGrouped) {
+        const chat = unifiedGrouped[key];
+        
+        // Reordena cronologicamente após unificar as mensagens
+        chat.messages.sort(compareMessagesChronologically);
+
         const chatMessagesText = chat.messages.map(m => {
           const dateTimeStr = dateTimeFormatter.format(new Date(m.timestamp)).replace(',', '');
-          const senderName = resolveMessageSenderName(m, contactsCache, isGroup);
+          const senderName = resolveMessageSenderName(m, contactsCache, chat.isGroup);
           return `  [${dateTimeStr}] ${senderName}: ${m.text}`;
         }).join('\n');
         
-        formattedChats.push(`--- Conversa com: ${displayName} (${chatKey}) ---\n${chatMessagesText}`);
+        formattedChats.push(`--- Conversa com: ${chat.displayName} (${chat.chatKey}) ---\n${chatMessagesText}`);
       }
 
       const textResult = formattedChats.join('\n\n');
