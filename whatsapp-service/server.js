@@ -2520,12 +2520,9 @@ app.get('/status', checkAuth, async (req, res) => {
       disabledTables: Array.from(supabaseDisabledTables),
       fallbackSnapshots: true
     },
-    user: (instance.sock && instance.sock.user) ? {
+    user: instance.sock && instance.sock.user ? {
       id: instance.sock.user.id,
-      name: instance.myPushName || instance.sock.user.name
-    } : (instance.myPushName && instance.myPushName !== 'Eu') ? {
-      id: userId,
-      name: instance.myPushName
+      name: instance.sock.user.name || instance.sock.user.id.split('@')[0].split(':')[0]
     } : null
   });
 });

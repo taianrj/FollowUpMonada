@@ -241,6 +241,10 @@ export default function WhatsappSummaryClient({
           setConnectedUser(data.user || null);
           setIsCheckingStatus(false);
           setCheckAttempts(0);
+        } else if (data.status === 'connecting') {
+          // Se o status for conectando, não limpa o usuário para manter a barra verde de conectado no topo sem pulos
+          setIsCheckingStatus(false);
+          setCheckAttempts(0);
         } else {
           setConnectedUser(null);
           // Se o servidor respondeu, mas não está conectado (ex: qrcode ou disconnected), 
@@ -798,7 +802,7 @@ export default function WhatsappSummaryClient({
                 Verificando conexão com o WhatsApp na nuvem...
               </span>
             </div>
-          ) : integrationConnected && (whatsappStatus === 'connected' || whatsappStatus === 'connecting') ? (
+          ) : integrationConnected && (whatsappStatus === 'connected' || (whatsappStatus === 'connecting' && connectedUser)) ? (
             <div style={{
               display: 'flex',
               alignItems: 'center',
@@ -812,7 +816,8 @@ export default function WhatsappSummaryClient({
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#34d399' }}>
                 <span className="pulseGreen" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#10b981', borderRadius: '50%' }}></span>
                 <span>
-                  WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser?.name || profile?.name || 'Taian'}</strong>
+                  WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser ? (connectedUser.name || connectedUser.id.split('@')[0].split(':')[0]) : 'Carregando...'}</strong>
+                  {whatsappStatus === 'connecting' && <span style={{ color: '#f59e0b', fontSize: '0.82rem', marginLeft: '0.5rem', fontWeight: 600 }}>(Conectando...)</span>}
                 </span>
               </div>
               <button 
