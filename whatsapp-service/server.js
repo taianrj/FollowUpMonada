@@ -1014,10 +1014,66 @@ function compareMessagesChronologically(a, b) {
   return String(a.id || '').localeCompare(String(b.id || ''));
 }
 
-function resolveMessageSenderName(message, contactsCache, isGroup, myPushName) {
+function isSelfNamePlaceholder(name) {
+  const normalized = normalizeDisplayName(name)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  return !normalized || normalized === 'eu' || normalized === 'voce';
+}
+
+function bestWhatsAppOwnName(sock) {
+  const user = sock && sock.user ? sock.user : {};
+  const candidates = [
+    user.name,
+    user.verifiedName,
+    user.notify,
+    user.pushName,
+    user.displayName
+  ];
+
+  for (const candidate of candidates) {
+    const name = normalizeDisplayName(candidate);
+    if (name && !isSelfNamePlaceholder(name) && !looksLikeTechnicalName(name)) {
+      return name;
+    }
+  }
+  return '';
+}
+
+async function ensureOwnerDisplayName(userId, instance) {
+  const whatsappName = bestWhatsAppOwnName(instance?.sock);
+  if (whatsappName) {
+    if (instance) {
+      instance.myPushName = whatsappName;
+      instance.myPushNameSource = 'whatsapp';
+    }
+    return whatsappName;
+  }
+
+  const currentName = normalizeDisplayName(instance?.myPushName);
+  if (currentName && !isSelfNamePlaceholder(currentName) && !looksLikeTechnicalName(currentName)) {
+    return currentName;
+  }
+
+  const profileName = await loadProfileNameFromSupabase(userId);
+  if (profileName) {
+    const cleanProfileName = normalizeDisplayName(profileName);
+    if (instance) {
+      instance.myPushName = cleanProfileName;
+      instance.myPushNameSource = 'profile';
+    }
+    return cleanProfileName;
+  }
+
+  return 'Você';
+}
+
+function resolveMessageSenderName(message, contactsCache, isGroup, myPushName, myPushNameSource = '') {
   if (message.fromMe) {
-    if (message.name && message.name !== 'Eu') return message.name;
-    if (myPushName && myPushName !== 'Eu') return myPushName;
+    if (myPushNameSource === 'whatsapp' && myPushName && !isSelfNamePlaceholder(myPushName)) return myPushName;
+    if (message.name && !isSelfNamePlaceholder(message.name)) return message.name;
+    if (myPushName && !isSelfNamePlaceholder(myPushName)) return myPushName;
     return 'Você';
   }
   const participantJid = message.participantJid || inferParticipantJidFromMessage(message);
@@ -1196,7 +1252,7 @@ function usableContactNameFromMessage(message, isGroup) {
 
   for (const candidate of candidates) {
     const name = normalizeDisplayName(candidate);
-    if (name && name !== 'Eu' && !looksLikeTechnicalName(name)) return name;
+    if (name && !isSelfNamePlaceholder(name) && !looksLikeTechnicalName(name)) return name;
   }
   return '';
 }
@@ -1462,9 +1518,15 @@ async function connectUserWhatsApp(userId) {
       }
       
       // Captura o nome de perfil do próprio dono da conta para usar nas mensagens "fromMe"
-      if (sock.user && sock.user.name) {
-        instance.myPushName = sock.user.name;
+      const whatsappOwnName = bestWhatsAppOwnName(sock);
+      if (whatsappOwnName) {
+        instance.myPushName = whatsappOwnName;
+        instance.myPushNameSource = 'whatsapp';
         console.log(`[${userId}] Nome do dono da conta identificado: ${instance.myPushName}`);
+      } else {
+        ensureOwnerDisplayName(userId, instance).catch(err => {
+          console.warn(`[${userId}] Falha ao carregar nome do dono da conta:`, err.message || err);
+        });
       }
 
       console.log(`[${userId}] WhatsApp conectado com sucesso!`);
@@ -1537,6 +1599,9 @@ async function connectUserWhatsApp(userId) {
     resetUserSyncTimer(userId);
 
     const messageObjects = [];
+    const ownerDisplayName = filteredList.some(msg => msg?.key?.fromMe)
+      ? await ensureOwnerDisplayName(userId, instance)
+      : '';
 
     for (const msg of filteredList) {
       try {
@@ -1559,7 +1624,7 @@ async function connectUserWhatsApp(userId) {
           ...relatedAliasesFromCache(directParticipantAliases, instance.contactsCache)
         ]);
         
-        let pushName = 'Você';
+        let pushName = '';
         if (!fromMe) {
           const savedName = bestNameFromAliases(participantAliases, instance.contactsCache);
           const messagePushName = normalizeDisplayName(msg.pushName);
@@ -1571,7 +1636,7 @@ async function connectUserWhatsApp(userId) {
           }
         } else {
           // Usa o nome real do dono do celular configurado no WhatsApp
-          pushName = instance.myPushName && instance.myPushName !== 'Eu' ? instance.myPushName : 'Você';
+          pushName = ownerDisplayName;
         }
 
         const chatName = instance.contactsCache[chatJid] || (!isGroup && !fromMe ? pushName : '');
@@ -2039,7 +2104,8 @@ async function getOrCreateInstance(userId) {
     messagesProcessedCount: 0,
     contactsCache: hydratedContactsCache,
     groupMetadataCache: {}, // Cache de metadados dos grupos para otimização e evitar rate-limit do WhatsApp
-    myPushName: 'Você', // Nome de perfil do próprio usuário dono do WhatsApp
+    myPushName: '', // Nome de perfil do próprio usuário dono do WhatsApp
+    myPushNameSource: 'fallback',
     lastSyncActivity: Date.now(),
     syncTimer: null,
     contactsSaveTimer: null,
@@ -2068,6 +2134,7 @@ async function getOrCreateInstance(userId) {
     const profileName = await loadProfileNameFromSupabase(cleanUserId);
     if (profileName) {
       instanceState.myPushName = profileName;
+      instanceState.myPushNameSource = 'profile';
       console.log(`[${cleanUserId}] Nome do perfil do Supabase carregado: ${profileName}`);
     }
   } catch (err) {
@@ -2975,6 +3042,7 @@ app.get('/messages', checkAuth, async (req, res) => {
         await loadContactsFromSupabase(cleanUserId),
         activeInstance.contactsCache || {}
       );
+      await ensureOwnerDisplayName(cleanUserId, activeInstance);
       await hydrateContactsFromStoredMessages(cleanUserId, activeInstance, messages, dateStr);
       if (activeInstance.connectionStatus === 'connected') {
         const groupJids = uniqueJids(messages.map(m => m.chatJid)).filter(isGroupJid);
@@ -3045,8 +3113,8 @@ app.get('/messages', checkAuth, async (req, res) => {
           }
         }
         
-        // 3. Se ainda assim não achar, ou se for o JID puro, ou se for "Eu", define fallbacks
-        if (!displayName || displayName === 'Eu' || displayName.includes('@')) {
+        // 3. Se ainda assim não achar, ou se for o JID puro, ou se for placeholder, define fallbacks
+        if (!displayName || isSelfNamePlaceholder(displayName) || displayName.includes('@')) {
           displayName = chatKey;
         }
 
@@ -3063,7 +3131,7 @@ app.get('/messages', checkAuth, async (req, res) => {
       const unifiedGrouped = {};
       const isValidDisplayName = (name) => {
         if (!name) return false;
-        if (name === 'Eu') return false;
+        if (isSelfNamePlaceholder(name)) return false;
         if (name.includes('@')) return false;
         if (/^[0-9+\s\-()]+$/.test(name)) return false; // Se for puramente número de telefone, não é nome válido
         return true;
@@ -3101,7 +3169,13 @@ app.get('/messages', checkAuth, async (req, res) => {
 
         const chatMessagesText = chat.messages.map(m => {
           const dateTimeStr = dateTimeFormatter.format(new Date(m.timestamp)).replace(',', '');
-          const senderName = resolveMessageSenderName(m, contactsCache, chat.isGroup, activeInstance?.myPushName);
+          const senderName = resolveMessageSenderName(
+            m,
+            contactsCache,
+            chat.isGroup,
+            activeInstance?.myPushName,
+            activeInstance?.myPushNameSource
+          );
           return `  [${dateTimeStr}] ${senderName}: ${m.text}`;
         }).join('\n');
         
