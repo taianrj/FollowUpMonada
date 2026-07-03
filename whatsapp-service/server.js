@@ -3060,7 +3060,6 @@ app.get('/', checkAuth, async (req, res) => {
             <div class="form-group">
               <label for="msgFormat">Formato:</label>
               <select id="msgFormat">
-                <option value="markdown">Visual Markdown</option>
                 <option value="text">Texto Corrido (Leitura)</option>
                 <option value="json">JSON Estruturado</option>
               </select>
@@ -3135,70 +3134,120 @@ app.get('/', checkAuth, async (req, res) => {
             markdownOutput.replaceChildren();
 
             const lines = String(markdown || '').split(/\\r?\\n/);
-            let currentChat = null;
-            let currentBody = null;
+            let title = '';
+            const sections = [];
+            let current = null;
+
+            const messageRegex = /^- \\*\\*(.*?)\\*\\*([^\\*]*?)\\*\\*(.*?)(?::\\*\\*|\\*\\*:) (.*)$/;
 
             for (const rawLine of lines) {
               const line = rawLine.trim();
               if (!line) continue;
 
               if (line.startsWith('# ')) {
-                const title = document.createElement('h2');
-                title.className = 'md-title';
-                title.textContent = unescapeMarkdownText(line.slice(2));
-                markdownOutput.appendChild(title);
+                title = unescapeMarkdownText(line.slice(2));
                 continue;
               }
 
               if (line.startsWith('## ')) {
-                currentChat = document.createElement('section');
-                currentChat.className = 'md-chat';
-                const header = document.createElement('div');
-                header.className = 'md-chat-header';
-                const name = document.createElement('h3');
-                name.className = 'md-chat-name';
-                name.textContent = unescapeMarkdownText(line.slice(3));
-                header.appendChild(name);
-                currentBody = document.createElement('div');
-                currentChat.appendChild(header);
-                currentChat.appendChild(currentBody);
-                markdownOutput.appendChild(currentChat);
+                current = {
+                  title: unescapeMarkdownText(line.slice(3)),
+                  meta: '',
+                  messages: [],
+                  notes: []
+                };
+                sections.push(current);
                 continue;
               }
 
-              if (line.startsWith('_Identificador:') && currentChat) {
-                const header = currentChat.querySelector('.md-chat-header');
-                const meta = document.createElement('p');
-                meta.className = 'md-chat-meta';
-                meta.textContent = unescapeMarkdownText(line.replace(/^_Identificador:\\s*/, '').replace(/_$/, ''));
-                header.appendChild(meta);
+              if (line.startsWith('_Identificador:') && current) {
+                current.meta = unescapeMarkdownText(line.replace(/^_Identificador:\\s*/, '').replace(/_$/, ''));
                 continue;
               }
 
-              const messageMatch = line.match(/^- \\*\\*(.*?)\\*\\* · \\*\\*(.*?)(?::\\*\\*|\\*\\*:) (.*)$/);
-              if (messageMatch && currentBody) {
+              const messageMatch = line.match(messageRegex);
+              if (messageMatch && current) {
+                current.messages.push({
+                  time: unescapeMarkdownText(messageMatch[1]),
+                  sender: unescapeMarkdownText(messageMatch[3]),
+                  text: unescapeMarkdownText(messageMatch[4])
+                });
+                continue;
+              }
+
+              if (current) {
+                current.notes.push(unescapeMarkdownText(line));
+              }
+            }
+
+            // Filtra seções válidas (que têm título e possuem mensagens ou notas)
+            const validSections = sections.filter(s => {
+              const hasContent = s.messages.length > 0 || s.notes.length > 0;
+              const hasValidTitle = s.title && s.title.trim() !== '' && s.title !== 'undefined';
+              return hasContent && hasValidTitle;
+            });
+
+            if (title) {
+              const titleEl = document.createElement('h2');
+              titleEl.className = 'md-title';
+              titleEl.textContent = title;
+              markdownOutput.appendChild(titleEl);
+            }
+
+            for (const section of validSections) {
+              const chatSection = document.createElement('section');
+              chatSection.className = 'md-chat';
+              
+              const header = document.createElement('div');
+              header.className = 'md-chat-header';
+              
+              const nameEl = document.createElement('h3');
+              nameEl.className = 'md-chat-name';
+              nameEl.textContent = section.title;
+              header.appendChild(nameEl);
+
+              if (section.meta) {
+                const metaEl = document.createElement('p');
+                metaEl.className = 'md-chat-meta';
+                metaEl.textContent = section.meta;
+                header.appendChild(metaEl);
+              }
+
+              chatSection.appendChild(header);
+              
+              const body = document.createElement('div');
+              
+              for (const msg of section.messages) {
                 const row = document.createElement('div');
                 row.className = 'md-message';
-                const time = document.createElement('span');
-                time.className = 'md-time';
-                time.textContent = unescapeMarkdownText(messageMatch[1]);
-                const sender = document.createElement('span');
-                sender.className = 'md-sender';
-                sender.textContent = unescapeMarkdownText(messageMatch[2]);
-                const text = document.createElement('span');
-                text.className = 'md-text';
-                appendTextWithMediaTag(text, messageMatch[3]);
-                row.appendChild(time);
-                row.appendChild(sender);
-                row.appendChild(text);
-                currentBody.appendChild(row);
-                continue;
+                
+                const timeEl = document.createElement('span');
+                timeEl.className = 'md-time';
+                timeEl.textContent = msg.time;
+                
+                const senderEl = document.createElement('span');
+                senderEl.className = 'md-sender';
+                senderEl.textContent = msg.sender;
+                
+                const textEl = document.createElement('span');
+                textEl.className = 'md-text';
+                appendTextWithMediaTag(textEl, msg.text);
+                
+                row.appendChild(timeEl);
+                row.appendChild(senderEl);
+                row.appendChild(textEl);
+                body.appendChild(row);
               }
 
-              const note = document.createElement('p');
-              note.className = 'md-note';
-              note.textContent = unescapeMarkdownText(line);
-              (currentBody || markdownOutput).appendChild(note);
+              for (const note of section.notes) {
+                const noteEl = document.createElement('p');
+                noteEl.className = 'md-note';
+                noteEl.textContent = note;
+                body.appendChild(noteEl);
+              }
+
+              chatSection.appendChild(body);
+              markdownOutput.appendChild(chatSection);
             }
 
             if (!markdownOutput.childElementCount) {

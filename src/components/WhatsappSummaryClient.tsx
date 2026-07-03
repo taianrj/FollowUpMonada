@@ -68,12 +68,12 @@ function parseConversationDisplay(text: string) {
       return;
     }
 
-    const markdownMessage = line.match(/^- \*\*(.*?)\*\* · \*\*(.*?)(?::\*\*|\*\*:) (.*)$/);
+    const markdownMessage = line.match(/^- \*\*(.*?)\*\*([^\*]*?)\*\*(.*?)(?::\*\*|\*\*:) (.*)$/);
     if (markdownMessage && current) {
       current.messages.push({
         time: unescapeConversationMarkdown(markdownMessage[1]),
-        sender: unescapeConversationMarkdown(markdownMessage[2]),
-        text: unescapeConversationMarkdown(markdownMessage[3])
+        sender: unescapeConversationMarkdown(markdownMessage[3]),
+        text: unescapeConversationMarkdown(markdownMessage[4])
       });
       return;
     }
