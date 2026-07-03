@@ -339,7 +339,7 @@ const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTIO
 const SUPABASE_TIMEOUT_MS = Math.max(2000, parseInt(process.env.SUPABASE_TIMEOUT_MS || '8000', 10));
 const CONTACT_FLUSH_DELAY_MS = Math.max(250, parseInt(process.env.CONTACT_FLUSH_DELAY_MS || '1200', 10));
 const CONTACT_MESSAGE_HYDRATION_INTERVAL_MS = Math.max(60000, parseInt(process.env.CONTACT_MESSAGE_HYDRATION_INTERVAL_MS || '300000', 10));
-const SYNC_IDLE_COMPLETE_MS = Math.max(5000, parseInt(process.env.SYNC_IDLE_COMPLETE_MS || '30000', 10));
+const SYNC_IDLE_COMPLETE_MS = Math.max(5000, parseInt(process.env.SYNC_IDLE_COMPLETE_MS || '90000', 10));
 const JSON_INDENT = process.env.NODE_ENV === 'production' ? 0 : 2;
 
 function getSupabaseConfig() {
@@ -2004,13 +2004,15 @@ async function getOrCreateInstance(userId) {
   }
 
   // Busca o nome do usuário no Supabase profiles para carregar o myPushName real
-  loadProfileNameFromSupabase(cleanUserId).then(name => {
-    if (name) {
-      instanceState.myPushName = name;
+  try {
+    const profileName = await loadProfileNameFromSupabase(cleanUserId);
+    if (profileName) {
+      instanceState.myPushName = profileName;
+      console.log(`[${cleanUserId}] Nome do perfil do Supabase carregado: ${profileName}`);
     }
-  }).catch(err => {
+  } catch (err) {
     console.warn(`[${cleanUserId}] Erro ao carregar nome do perfil no Supabase:`, err.message || err);
-  });
+  }
   
   // Inicia o processo de conexão do Baileys assincronamente
   connectUserWhatsApp(cleanUserId);
@@ -2906,7 +2908,7 @@ app.get('/messages', checkAuth, async (req, res) => {
     }
     const remoteMessages = await loadMessagesFromSupabase(cleanUserId, dateStr);
     const messages = mergeMessages(localMessages, remoteMessages);
-    const activeInstance = instances[cleanUserId];
+    let activeInstance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
     if (activeInstance) {
       activeInstance.contactsCache = mergeContactCaches(
         loadContactsFromFile(cleanUserId),
