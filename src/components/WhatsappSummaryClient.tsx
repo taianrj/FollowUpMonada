@@ -91,6 +91,7 @@ export default function WhatsappSummaryClient({
   } | null>(null);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const hasShownSuccessToastRef = useRef(false);
 
   // Efeito para fechar o dropdown customizado de responsáveis ao clicar fora
   useEffect(() => {
@@ -306,11 +307,14 @@ export default function WhatsappSummaryClient({
           if (data.status === 'qrcode') {
             setQrCodeImage(data.qrCode);
           } else if (data.status === 'connected') {
-            setQrCodeImage(null);
-            setIsQrModalOpen(false);
-            setIntegrationConnected(true);
-            setWhatsappStatus('connected');
-            showToast('WhatsApp conectado com sucesso!', 'success');
+            if (!hasShownSuccessToastRef.current) {
+              hasShownSuccessToastRef.current = true;
+              setQrCodeImage(null);
+              setIsQrModalOpen(false);
+              setIntegrationConnected(true);
+              setWhatsappStatus('connected');
+              showToast('WhatsApp conectado com sucesso!', 'success');
+            }
           } else {
             setQrCodeImage(null);
           }
@@ -321,6 +325,7 @@ export default function WhatsappSummaryClient({
     };
 
     if (isQrModalOpen) {
+      hasShownSuccessToastRef.current = false;
       pollQr();
       timer = setInterval(pollQr, 3000); // Polling a cada 3 segundos
     } else {
