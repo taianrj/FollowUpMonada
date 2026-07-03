@@ -287,6 +287,60 @@ async function clearAllUserData(userId) {
   }
 }
 
+async function clearUserMessagesData(userId) {
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const dbSessionId = getDbSessionId(cleanUserId);
+  const result = {
+    localFiles: 0,
+    supabaseMessagesStatus: null,
+    snapshotStatuses: []
+  };
+
+  try {
+    result.localFiles = clearLocalMessageFiles(cleanUserId);
+  } catch (err) {
+    console.error(`[${cleanUserId}] Falha ao limpar mensagens locais:`, err.message || err);
+  }
+
+  const config = getSupabaseConfig();
+  if (!config) return result;
+
+  const headers = {
+    'apikey': config.key,
+    'Authorization': `Bearer ${config.key}`,
+    'Content-Type': 'application/json'
+  };
+
+  try {
+    const response = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_messages?user_id=eq.${supabaseEq(cleanUserId)}`, {
+      method: 'DELETE',
+      headers
+    });
+    result.supabaseMessagesStatus = response.status;
+  } catch (err) {
+    console.error(`[${cleanUserId}] Erro de rede ao limpar mensagens no Supabase:`, err.message || err);
+  }
+
+  const messagePatterns = [
+    `${dbSessionId}:messages:*`,
+    `${cleanUserId}:messages:*`
+  ];
+  for (const pattern of [...new Set(messagePatterns)]) {
+    try {
+      const response = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
+        method: 'DELETE',
+        headers
+      });
+      result.snapshotStatuses.push({ pattern, status: response.status });
+    } catch (err) {
+      result.snapshotStatuses.push({ pattern, status: 'network-error' });
+      console.error(`[${cleanUserId}] Erro de rede ao limpar snapshot ${pattern} no Supabase:`, err.message || err);
+    }
+  }
+
+  return result;
+}
+
 async function loadProfileNameFromSupabase(userId) {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -3065,31 +3119,25 @@ app.get('/messages', checkAuth, async (req, res) => {
   }
 });
 
-// Limpa todos os arquivos de logs de mensagens diárias do usuário
-app.get('/clear-logs', checkAuth, (req, res) => {
+// Limpa todos os logs/snapshots de mensagens do usuário, localmente e no Supabase.
+app.get('/clear-logs', checkAuth, async (req, res) => {
   const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
   if (!userId) {
     return res.status(400).send('Identificação de usuário necessária.');
   }
 
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
-  const userMsgDir = path.join(dataDir, 'messages', cleanUserId);
 
   try {
-    if (fs.existsSync(userMsgDir)) {
-      const files = fs.readdirSync(userMsgDir);
-      let count = 0;
-      for (const file of files) {
-        if (file.startsWith('messages-') && file.endsWith('.json')) {
-          fs.unlinkSync(path.join(userMsgDir, file));
-          count++;
-        }
-      }
-      return res.send(`Sucesso: ${count} arquivo(s) de logs de mensagens foram apagados para o usuário.`);
-    }
-    res.send('Nenhum log de mensagens encontrado para este usuário.');
+    const result = await clearUserMessagesData(cleanUserId);
+    res.send(
+      `Sucesso: limpeza de mensagens concluída. ` +
+      `Arquivos locais apagados: ${result.localFiles}. ` +
+      `Supabase mensagens: ${result.supabaseMessagesStatus || 'não configurado'}. ` +
+      `Snapshots: ${result.snapshotStatuses.map(item => `${item.pattern}=${item.status}`).join(', ') || 'nenhum'}.`
+    );
   } catch (err) {
-    res.status(500).send('Erro ao limpar arquivos de logs: ' + err.message);
+    res.status(500).send('Erro ao limpar logs de mensagens: ' + err.message);
   }
 });
 
