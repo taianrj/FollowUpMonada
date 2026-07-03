@@ -35,7 +35,7 @@ export default function WhatsappSummaryClient({
   
   // Entrada do usuário
   const [rawText, setRawText] = useState('');
-  const [summaryDate, setSummaryDate] = useState(new Date().toISOString().split('T')[0]);
+  const [summaryDate, setSummaryDate] = useState('');
   const [saveToDb, setSaveToDb] = useState(true);
   
   // Status de processamento
@@ -194,6 +194,18 @@ export default function WhatsappSummaryClient({
       handleFileRead(e.dataTransfer.files[0]);
     }
   };
+
+  // Define a data inicial com base no fuso horário local do computador do usuário para evitar hydration mismatches
+  useEffect(() => {
+    const getLocalDateString = () => {
+      const d = new Date();
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+    setSummaryDate(getLocalDateString());
+  }, []);
 
   // Sincroniza a chave de segurança com o ID do usuário Supabase logado
   useEffect(() => {
@@ -930,30 +942,8 @@ export default function WhatsappSummaryClient({
                   </p>
                 </div>
 
-                {/* Data, Atalhos e Botão de Ação Única */}
+                {/* Data e Botão de Ação Única */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', backgroundColor: 'var(--bg-primary)', padding: '0.2rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-                    <button 
-                      type="button" 
-                      onClick={() => {
-                        const yesterday = new Date();
-                        yesterday.setDate(yesterday.getDate() - 1);
-                        setSummaryDate(yesterday.toISOString().split('T')[0]);
-                      }}
-                      style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: '0.78rem', padding: '0.35rem 0.65rem', cursor: 'pointer', fontWeight: 600 }}
-                    >
-                      Ontem
-                    </button>
-                    <span style={{ color: 'var(--border-color)', fontSize: '0.75rem' }}>|</span>
-                    <button 
-                      type="button" 
-                      onClick={() => setSummaryDate(new Date().toISOString().split('T')[0])}
-                      style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: '0.78rem', padding: '0.35rem 0.65rem', cursor: 'pointer', fontWeight: 600 }}
-                    >
-                      Hoje
-                    </button>
-                  </div>
-
                   <input
                     type="date"
                     value={summaryDate}
@@ -1004,7 +994,7 @@ export default function WhatsappSummaryClient({
                       opacity: apiToken ? 1 : 0.6
                     }}
                   >
-                    {isLoading ? '⚙️ Processando...' : '⚡ Sincronizar & Gerar Resumo'}
+                    {isLoading ? '⚙️ Processando...' : '⚡ Gerar Resumo'}
                   </button>
                 </div>
               </div>
