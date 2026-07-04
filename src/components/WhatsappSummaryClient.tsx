@@ -220,6 +220,11 @@ export default function WhatsappSummaryClient({
   const [transcriptionCompleted, setTranscriptionCompleted] = useState(0);
   const [transcriptionTotal, setTranscriptionTotal] = useState(0);
   const [waitForTranscriptions, setWaitForTranscriptions] = useState(true);
+  const [imageInterpretationRunning, setImageInterpretationRunning] = useState(false);
+  const [imageInterpretationQueueLength, setImageInterpretationQueueLength] = useState(0);
+  const [imageInterpretationCompleted, setImageInterpretationCompleted] = useState(0);
+  const [imageInterpretationTotal, setImageInterpretationTotal] = useState(0);
+  const [waitForImageInterpretation, setWaitForImageInterpretation] = useState(false);
   const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
   const [qrStatus, setQrStatus] = useState<string>('waiting'); // 'waiting' | 'qrcode' | 'connected'
   const [isMessagesModalOpen, setIsMessagesModalOpen] = useState(false);
@@ -412,8 +417,14 @@ export default function WhatsappSummaryClient({
         return; // Aguarda o polling de status atualizar e limpar a fila de áudios
       }
 
+      // Se configurado para aguardar interpretação, espera até que a fila de imagens chegue a zero
+      if (waitForImageInterpretation && (imageInterpretationQueueLength > 0 || imageInterpretationRunning)) {
+        return; // Aguarda o polling de status atualizar e limpar a fila de imagens
+      }
+
       setAutoSummaryEnabled(false);
       setWaitForTranscriptions(false); // Reset para futuros agendamentos
+      setWaitForImageInterpretation(false);
       setSummaryDate(autoSummaryDate);
       
       const dateToGenerate = autoSummaryDate;
@@ -424,7 +435,18 @@ export default function WhatsappSummaryClient({
         handleSyncAndGenerateSummary(dateToGenerate);
       }, 250);
     }
-  }, [autoSummaryEnabled, autoSummaryDate, whatsappStatus, whatsappSyncStatus, waitForTranscriptions, transcriptionQueueLength, transcriptionRunning]);
+  }, [
+    autoSummaryEnabled,
+    autoSummaryDate,
+    whatsappStatus,
+    whatsappSyncStatus,
+    waitForTranscriptions,
+    transcriptionQueueLength,
+    transcriptionRunning,
+    waitForImageInterpretation,
+    imageInterpretationQueueLength,
+    imageInterpretationRunning
+  ]);
 
   // Função auxiliar para testar conexão com o WhatsApp
   const checkConnectionStatus = async (url: string, token: string) => {
@@ -455,6 +477,18 @@ export default function WhatsappSummaryClient({
           setTranscriptionQueueLength(0);
           setTranscriptionCompleted(0);
           setTranscriptionTotal(0);
+        }
+
+        if (data.imageInterpretation) {
+          setImageInterpretationRunning(!!data.imageInterpretation.running);
+          setImageInterpretationQueueLength(data.imageInterpretation.queueLength || 0);
+          setImageInterpretationCompleted(data.imageInterpretation.completed || 0);
+          setImageInterpretationTotal(data.imageInterpretation.total || 0);
+        } else {
+          setImageInterpretationRunning(false);
+          setImageInterpretationQueueLength(0);
+          setImageInterpretationCompleted(0);
+          setImageInterpretationTotal(0);
         }
         
         // Define os dados do usuário conectado
@@ -492,6 +526,10 @@ export default function WhatsappSummaryClient({
     setTranscriptionQueueLength(0);
     setTranscriptionCompleted(0);
     setTranscriptionTotal(0);
+    setImageInterpretationRunning(false);
+    setImageInterpretationQueueLength(0);
+    setImageInterpretationCompleted(0);
+    setImageInterpretationTotal(0);
     
     // Tenta carregar até 8 vezes (8 * 3s = 24 segundos) antes de dar timeout do spinner de inicialização
     setCheckAttempts(prev => {
@@ -1245,6 +1283,45 @@ export default function WhatsappSummaryClient({
             </div>
           )}
 
+          {/* Painel de Progresso de Interpretação de Imagens */}
+          {integrationConnected && whatsappStatus === 'connected' && (imageInterpretationRunning || imageInterpretationQueueLength > 0) && (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.6rem',
+              backgroundColor: 'rgba(20, 184, 166, 0.08)',
+              border: '1px solid rgba(20, 184, 166, 0.22)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '1rem 1.25rem',
+              boxShadow: 'var(--shadow-sm)',
+              marginTop: '0.75rem',
+              animation: 'fadeIn 0.3s ease-out'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', fontWeight: 600, color: '#5eead4' }}>
+                  <span className="spinner" style={{ display: 'inline-block', width: '12px', height: '12px', border: '2px solid rgba(94, 234, 212, 0.1)', borderTop: '2px solid #5eead4', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
+                  <span>🖼️ Interpretando imagens do WhatsApp...</span>
+                </div>
+                <span style={{ fontSize: '0.82rem', color: '#5eead4', fontWeight: 'bold' }}>
+                  {imageInterpretationCompleted} / {imageInterpretationTotal} concluídas ({imageInterpretationQueueLength} na fila)
+                </span>
+              </div>
+
+              <div style={{ width: '100%', height: '4px', backgroundColor: 'rgba(20, 184, 166, 0.15)', borderRadius: '9999px', overflow: 'hidden' }}>
+                <div style={{
+                  width: `${imageInterpretationTotal > 0 ? (imageInterpretationCompleted / imageInterpretationTotal) * 100 : 0}%`,
+                  height: '100%',
+                  backgroundColor: '#5eead4',
+                  transition: 'width 0.4s ease'
+                }}></div>
+              </div>
+
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
+                Você pode gerar o resumo agora, mas imagens que ainda não foram interpretadas serão exibidas apenas como tags genéricas nos relatórios.
+              </p>
+            </div>
+          )}
+
           {/* Card de Configuração de Processamento Simples - Apenas visível se conectado e sincronização concluída */}
           {integrationConnected && whatsappStatus === 'connected' && whatsappSyncStatus === 'completed' && (
             <div style={{
@@ -1698,6 +1775,7 @@ export default function WhatsappSummaryClient({
                       const month = String(d.getMonth() + 1).padStart(2, '0');
                       const day = String(d.getDate()).padStart(2, '0');
                       setAutoSummaryDate(`${year}-${month}-${day}`);
+                      setWaitForImageInterpretation(false);
                       setChoiceStep('date');
                     }}
                     style={{
@@ -1763,7 +1841,7 @@ export default function WhatsappSummaryClient({
                     }}
                   />
 
-                  {/* Opção para aguardar transcrições de áudios */}
+                  {/* Opção para aguardar transcrição de áudios */}
                   <div style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -1798,7 +1876,46 @@ export default function WhatsappSummaryClient({
                       }}
                       onClick={(e) => e.stopPropagation()}
                     >
-                      Gerar resumo somente após as transcrições dos áudios.
+                      Gerar resumo somente após transcrição dos áudios.
+                    </label>
+                  </div>
+
+                  {/* Opção para aguardar interpretação de imagens */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.55rem',
+                    width: '100%',
+                    maxWidth: '300px',
+                    justifyContent: 'center',
+                    marginTop: '0.1rem',
+                    cursor: 'pointer'
+                  }} onClick={() => setWaitForImageInterpretation(!waitForImageInterpretation)}>
+                    <input
+                      type="checkbox"
+                      id="chkWaitForImageInterpretation"
+                      checked={waitForImageInterpretation}
+                      onChange={(e) => setWaitForImageInterpretation(e.target.checked)}
+                      style={{
+                        cursor: 'pointer',
+                        accentColor: '#10b981',
+                        width: '15px',
+                        height: '15px'
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <label
+                      htmlFor="chkWaitForImageInterpretation"
+                      style={{
+                        fontSize: '0.78rem',
+                        color: 'var(--text-secondary)',
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        lineHeight: 1.3
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Gerar resumo somente após interpretação das imagens.
                     </label>
                   </div>
 

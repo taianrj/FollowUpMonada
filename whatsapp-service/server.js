@@ -21,6 +21,12 @@ const pino = require('pino');
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+let sharp = null;
+try {
+  sharp = require('sharp');
+} catch (err) {
+  console.warn('[image] Sharp indisponivel; interpretacao de imagens sera ignorada ate a dependencia estar instalada.', err.message || err);
+}
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -69,7 +75,16 @@ try {
       'AUDIO_TRANSCRIPTION_MAX_BYTES',
       'AUDIO_TRANSCRIPTION_QUEUE_MAX',
       'AUDIO_TRANSCRIPTION_LANGUAGE',
-      'AUDIO_TRANSCRIPTION_PROMPT'
+      'AUDIO_TRANSCRIPTION_PROMPT',
+      'IMAGE_INTERPRETATION_ENABLED',
+      'IMAGE_INTERPRETATION_URL',
+      'IMAGE_INTERPRETATION_API_KEY',
+      'IMAGE_INTERPRETATION_MODEL',
+      'IMAGE_INTERPRETATION_MAX_BYTES',
+      'IMAGE_INTERPRETATION_QUEUE_MAX',
+      'IMAGE_INTERPRETATION_MAX_DIMENSION',
+      'IMAGE_INTERPRETATION_JPEG_QUALITY',
+      'IMAGE_INTERPRETATION_PROMPT'
     ]);
     dotenvContent.split('\n').forEach(line => {
       const parts = line.split('=');
@@ -420,6 +435,15 @@ const AUDIO_TRANSCRIPTION_PROMPT = process.env.AUDIO_TRANSCRIPTION_PROMPT || 'Tr
 const audioTranscriptionQueue = [];
 const queuedAudioTranscriptionKeys = new Set();
 let audioTranscriptionRunning = false;
+const IMAGE_INTERPRETATION_ENABLED = process.env.IMAGE_INTERPRETATION_ENABLED !== 'false';
+const IMAGE_INTERPRETATION_MAX_BYTES = Math.max(256 * 1024, parseInt(process.env.IMAGE_INTERPRETATION_MAX_BYTES || String(3 * 1024 * 1024), 10));
+const IMAGE_INTERPRETATION_QUEUE_MAX = Math.max(1, parseInt(process.env.IMAGE_INTERPRETATION_QUEUE_MAX || '200', 10));
+const IMAGE_INTERPRETATION_MAX_DIMENSION = Math.max(512, parseInt(process.env.IMAGE_INTERPRETATION_MAX_DIMENSION || '1600', 10));
+const IMAGE_INTERPRETATION_JPEG_QUALITY = Math.min(92, Math.max(35, parseInt(process.env.IMAGE_INTERPRETATION_JPEG_QUALITY || '72', 10)));
+const IMAGE_INTERPRETATION_PROMPT = process.env.IMAGE_INTERPRETATION_PROMPT || 'Analise esta imagem de uma conversa de WhatsApp em portugues do Brasil. Descreva objetivamente o conteudo visual, extraia textos legiveis importantes e explique apenas o contexto util para um resumo de atendimento. Seja conciso.';
+const imageInterpretationQueue = [];
+const queuedImageInterpretationKeys = new Set();
+let imageInterpretationRunning = false;
 
 function getSupabaseConfig() {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -820,6 +844,254 @@ async function updateStoredMessageText(userId, rawMessage, nextText) {
 
   await persistMessagesToSupabase(userId, [normalized]);
   return true;
+}
+
+function getImageInterpretationConfig() {
+  if (!IMAGE_INTERPRETATION_ENABLED) return null;
+  if (!sharp) return null;
+
+  const explicitUrl = process.env.IMAGE_INTERPRETATION_URL;
+  const explicitKey = process.env.IMAGE_INTERPRETATION_API_KEY;
+  if (explicitUrl && explicitKey) {
+    return {
+      url: explicitUrl,
+      key: explicitKey,
+      model: process.env.IMAGE_INTERPRETATION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct'
+    };
+  }
+
+  if (process.env.GROQ_API_KEY) {
+    return {
+      url: 'https://api.groq.com/openai/v1/chat/completions',
+      key: process.env.GROQ_API_KEY,
+      model: process.env.IMAGE_INTERPRETATION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct'
+    };
+  }
+
+  return null;
+}
+
+function extractVisionResponseText(data) {
+  if (!data) return '';
+  if (typeof data === 'string') return normalizeDisplayName(data);
+
+  const content = data.choices?.[0]?.message?.content;
+  if (typeof content === 'string') return normalizeDisplayName(content);
+  if (Array.isArray(content)) {
+    return normalizeDisplayName(content.map(part => part?.text || '').join(' '));
+  }
+
+  if (typeof data.text === 'string') return normalizeDisplayName(data.text);
+  return '';
+}
+
+async function compressImageBufferForVision(buffer) {
+  if (!sharp) return null;
+  if (!buffer || buffer.length === 0) return null;
+
+  const dimensions = [...new Set([
+    IMAGE_INTERPRETATION_MAX_DIMENSION,
+    1280,
+    1024,
+    768,
+    640
+  ].filter(value => value <= IMAGE_INTERPRETATION_MAX_DIMENSION || value === IMAGE_INTERPRETATION_MAX_DIMENSION))];
+  const qualities = [...new Set([
+    IMAGE_INTERPRETATION_JPEG_QUALITY,
+    72,
+    64,
+    56,
+    48,
+    40
+  ].filter(value => value > 0))];
+
+  let smallest = null;
+  for (const dimension of dimensions) {
+    for (const quality of qualities) {
+      const compressed = await sharp(buffer, { failOn: 'none' })
+        .rotate()
+        .resize({
+          width: dimension,
+          height: dimension,
+          fit: 'inside',
+          withoutEnlargement: true
+        })
+        .jpeg({
+          quality,
+          mozjpeg: true
+        })
+        .toBuffer();
+
+      if (!smallest || compressed.length < smallest.length) {
+        smallest = compressed;
+      }
+      if (compressed.length <= IMAGE_INTERPRETATION_MAX_BYTES) {
+        return {
+          buffer: compressed,
+          mimetype: 'image/jpeg'
+        };
+      }
+    }
+  }
+
+  if (smallest) {
+    console.warn(`[image] Imagem ignorada para interpretacao: ${smallest.length} bytes apos compressao excedem o limite de ${IMAGE_INTERPRETATION_MAX_BYTES}.`);
+  }
+  return null;
+}
+
+async function interpretImageBuffer(buffer) {
+  const config = getImageInterpretationConfig();
+  if (!config) return '';
+
+  const compressed = await compressImageBufferForVision(buffer);
+  if (!compressed) return '';
+
+  const imageBase64 = compressed.buffer.toString('base64');
+  const response = await fetch(config.url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.key}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: IMAGE_INTERPRETATION_PROMPT },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:${compressed.mimetype};base64,${imageBase64}`
+              }
+            }
+          ]
+        }
+      ],
+      temperature: 0.1,
+      max_completion_tokens: 500
+    })
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw new Error(`image interpretation ${response.status}: ${errText.slice(0, 300)}`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return extractVisionResponseText(await response.json());
+  }
+  return extractVisionResponseText(await response.text());
+}
+
+function isImageInterpretationText(text) {
+  const normalized = normalizeDisplayName(text)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  return normalized.startsWith('[imagem interpretada]');
+}
+
+function shouldQueueImageInterpretation(userId, messageObject, savedKeys) {
+  if (!getImageInterpretationConfig()) return false;
+
+  const dedupeKey = messageObject?.dedupeKey || createDedupeKey(messageObject || {});
+  if (!dedupeKey) return false;
+  if (savedKeys?.has(dedupeKey)) return true;
+
+  const storedMessage = findStoredMessageByDedupeKey(userId, messageObject);
+  return !storedMessage || !isImageInterpretationText(storedMessage.text);
+}
+
+function queueImageInterpretation(item) {
+  if (!getImageInterpretationConfig()) return;
+
+  const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
+  if (!dedupeKey || queuedImageInterpretationKeys.has(dedupeKey)) return;
+
+  if (imageInterpretationQueue.length >= IMAGE_INTERPRETATION_QUEUE_MAX) {
+    console.warn(`[${item.userId}] Fila de interpretacao de imagem cheia; imagem ${dedupeKey} sera mantida como tag.`);
+    return;
+  }
+
+  const userId = item.userId;
+  const instance = instances[userId];
+  if (instance) {
+    const remainingForUser = imageInterpretationQueue.filter(x => x.userId === userId).length;
+    if (remainingForUser === 0 && !instance.imageInterpretationRunning) {
+      instance.imageInterpretationTotal = 0;
+      instance.imageInterpretationCompleted = 0;
+    }
+    instance.imageInterpretationTotal = (instance.imageInterpretationTotal || 0) + 1;
+  }
+
+  queuedImageInterpretationKeys.add(dedupeKey);
+  imageInterpretationQueue.push({
+    ...item,
+    dedupeKey
+  });
+  runImageInterpretationQueue();
+}
+
+async function runImageInterpretationQueue() {
+  if (imageInterpretationRunning) return;
+  imageInterpretationRunning = true;
+
+  while (imageInterpretationQueue.length > 0) {
+    const item = imageInterpretationQueue.shift();
+    const userId = item.userId;
+    const instance = instances[userId];
+    if (instance) {
+      instance.imageInterpretationRunning = true;
+    }
+
+    try {
+      await interpretQueuedImage(item);
+    } catch (err) {
+      console.warn(`[${userId}] Falha ao interpretar imagem ${item.dedupeKey}:`, err.message || err);
+    } finally {
+      queuedImageInterpretationKeys.delete(item.dedupeKey);
+      if (instance) {
+        instance.imageInterpretationCompleted = (instance.imageInterpretationCompleted || 0) + 1;
+        const remainingForUser = imageInterpretationQueue.filter(x => x.userId === userId).length;
+        if (remainingForUser === 0) {
+          instance.imageInterpretationRunning = false;
+        }
+      }
+    }
+  }
+
+  imageInterpretationRunning = false;
+}
+
+function formatImageInterpretationMessage(originalText, interpretation) {
+  const cleanOriginal = normalizeDisplayName(originalText);
+  const cleanInterpretation = normalizeDisplayName(interpretation);
+  if (!cleanInterpretation) return '';
+
+  const caption = cleanOriginal.replace(/^\[Imagem\]\s*/i, '').trim();
+  if (caption) {
+    return `[Imagem interpretada] Legenda: ${caption}. Interpretação: ${cleanInterpretation}`;
+  }
+  return `[Imagem interpretada] ${cleanInterpretation}`;
+}
+
+async function interpretQueuedImage(item) {
+  if (!item?.rawMessage || !item?.messageObject) return;
+
+  const updateMediaMessage = item.instance?.sock?.updateMediaMessage;
+  const downloadContext = typeof updateMediaMessage === 'function'
+    ? { logger, reuploadRequest: updateMediaMessage.bind(item.instance.sock) }
+    : { logger };
+  const buffer = await downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext);
+  const interpretation = await interpretImageBuffer(buffer);
+  const nextText = formatImageInterpretationMessage(item.messageObject.text, interpretation);
+  if (!nextText) return;
+
+  await updateStoredMessageText(item.userId, item.messageObject, nextText);
 }
 
 function normalizeDisplayName(name) {
@@ -2100,6 +2372,7 @@ async function connectUserWhatsApp(userId) {
 
     const messageObjects = [];
     const audioTranscriptionCandidates = [];
+    const imageInterpretationCandidates = [];
     const ownerDisplayName = filteredList.some(msg => msg?.key?.fromMe)
       ? await ensureOwnerDisplayName(userId, instance)
       : '';
@@ -2185,6 +2458,16 @@ async function connectUserWhatsApp(userId) {
           });
         }
 
+        if (mediaInfo?.kind === 'image') {
+          imageInterpretationCandidates.push({
+            userId,
+            instance,
+            rawMessage: msg,
+            messageObject,
+            mimetype: mediaInfo.mimetype
+          });
+        }
+
       } catch (err) {
         console.error(`[${userId}] Erro ao processar mensagem do lote:`, err);
       }
@@ -2200,6 +2483,15 @@ async function connectUserWhatsApp(userId) {
       for (const candidate of audioTranscriptionCandidates) {
         if (shouldQueueAudioTranscription(userId, candidate.messageObject, savedKeys)) {
           queueAudioTranscription(candidate);
+        }
+      }
+    }
+
+    if (imageInterpretationCandidates.length > 0) {
+      const savedKeys = new Set(savedMessages.map(message => message.dedupeKey || createDedupeKey(message)));
+      for (const candidate of imageInterpretationCandidates) {
+        if (shouldQueueImageInterpretation(userId, candidate.messageObject, savedKeys)) {
+          queueImageInterpretation(candidate);
         }
       }
     }
@@ -2332,7 +2624,8 @@ function getMessageMediaInfo(msg) {
   if (content.imageMessage) {
     return {
       kind: 'image',
-      text: mediaText('Imagem', content.imageMessage.caption)
+      text: mediaText('Imagem', content.imageMessage.caption),
+      mimetype: content.imageMessage.mimetype || 'image/jpeg'
     };
   }
 
@@ -3525,6 +3818,14 @@ app.get('/status', checkAuth, async (req, res) => {
       running: !!instance.transcriptionRunning,
       completed: instance.transcriptionCompleted || 0,
       total: instance.transcriptionTotal || 0
+    },
+    imageInterpretation: {
+      configured: !!getImageInterpretationConfig(),
+      compressorAvailable: !!sharp,
+      queueLength: imageInterpretationQueue.filter(x => x.userId === userId).length,
+      running: !!instance.imageInterpretationRunning,
+      completed: instance.imageInterpretationCompleted || 0,
+      total: instance.imageInterpretationTotal || 0
     },
     user: instance.sock && instance.sock.user ? {
       id: instance.sock.user.id,
