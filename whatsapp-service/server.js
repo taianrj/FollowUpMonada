@@ -442,6 +442,7 @@ const audioTranscriptionQueue = [];
 const queuedAudioTranscriptionKeys = new Set();
 const failedAudioTranscriptionKeys = new Set();
 let audioTranscriptionRunning = false;
+let audioTranscriptionBackoffUntil = 0;
 const MEDIA_PROCESSING_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.MEDIA_PROCESSING_MAX_ATTEMPTS || '3', 10));
 const MEDIA_RETRY_FALLBACK_MS = Math.max(1000, parseInt(process.env.MEDIA_RETRY_FALLBACK_MS || '5000', 10));
 const MEDIA_RETRY_MAX_MS = Math.max(MEDIA_RETRY_FALLBACK_MS, parseInt(process.env.MEDIA_RETRY_MAX_MS || '120000', 10));
@@ -458,6 +459,7 @@ const imageInterpretationQueue = [];
 const queuedImageInterpretationKeys = new Set();
 const failedImageInterpretationKeys = new Set();
 let imageInterpretationRunning = false;
+let imageInterpretationBackoffUntil = 0;
 
 function getSupabaseConfig() {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -624,6 +626,14 @@ function retryDelayMsForError(errorMessage, failedAttempt) {
   return Math.min(MEDIA_RETRY_MAX_MS, Math.max(0, delay));
 }
 
+function queuePauseInMs(backoffUntil) {
+  return Math.max(0, Number(backoffUntil || 0) - Date.now());
+}
+
+function extendQueueBackoff(backoffUntil, retryDelayMs) {
+  return Math.max(Number(backoffUntil || 0), Date.now() + Math.max(0, retryDelayMs));
+}
+
 function formatRetryDelay(ms) {
   if (ms < 1000) return `${ms}ms`;
   const seconds = ms / 1000;
@@ -667,17 +677,24 @@ function countScheduledRetriesForUser(queue, userId) {
   return queue.filter(item => item.userId === userId && Number(item.availableAt || 0) > now).length;
 }
 
-function nextRetryInMsForUser(queue, userId) {
+function nextRetryInMsForUser(queue, userId, backoffUntil = 0) {
   const now = Date.now();
   let nextAvailableAt = Infinity;
+  let hasUserItem = false;
   for (const item of queue) {
     if (item.userId !== userId) continue;
+    hasUserItem = true;
     const availableAt = Number(item.availableAt || 0);
     if (availableAt > now && availableAt < nextAvailableAt) {
       nextAvailableAt = availableAt;
     }
   }
-  return Number.isFinite(nextAvailableAt) ? Math.max(0, nextAvailableAt - now) : null;
+
+  const pauseMs = queuePauseInMs(backoffUntil);
+  if (Number.isFinite(nextAvailableAt)) {
+    return Math.max(Math.max(0, nextAvailableAt - now), pauseMs);
+  }
+  return hasUserItem && pauseMs > 0 ? pauseMs : null;
 }
 
 function getAudioTranscriptionConfig() {
@@ -859,6 +876,12 @@ async function runAudioTranscriptionQueue() {
   audioTranscriptionRunning = true;
 
   while (audioTranscriptionQueue.length > 0) {
+    const queuePauseMs = queuePauseInMs(audioTranscriptionBackoffUntil);
+    if (queuePauseMs > 0) {
+      await sleep(Math.min(queuePauseMs, MEDIA_RETRY_POLL_MS));
+      continue;
+    }
+
     const ready = shiftReadyQueueItem(audioTranscriptionQueue);
     if (!ready.item) {
       await sleep(Math.min(ready.waitMs, MEDIA_RETRY_POLL_MS));
@@ -885,6 +908,7 @@ async function runAudioTranscriptionQueue() {
         const retryDelayMs = retryDelayMsForError(errorMessage, attempt);
         item.attempt = attempt + 1;
         item.availableAt = Date.now() + retryDelayMs;
+        audioTranscriptionBackoffUntil = extendQueueBackoff(audioTranscriptionBackoffUntil, retryDelayMs);
         audioTranscriptionQueue.push(item);
         retryScheduled = true;
         if (instance) {
@@ -906,7 +930,10 @@ async function runAudioTranscriptionQueue() {
           instance.transcriptionCompleted = (instance.transcriptionCompleted || 0) + 1;
         } else if (!retryScheduled) {
           instance.transcriptionFailed = (instance.transcriptionFailed || 0) + 1;
-          instance.transcriptionLastError = errorMessage || 'Transcricao nao atualizou a mensagem.';
+          const finalErrorMessage = errorMessage
+            ? `${errorMessage} Tentativas esgotadas (${attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}); item removido da fila.`
+            : 'Transcricao nao atualizou a mensagem.';
+          instance.transcriptionLastError = finalErrorMessage;
         }
         const remainingForUser = audioTranscriptionQueue.filter(x => x.userId === userId).length;
         if (remainingForUser === 0) {
@@ -917,6 +944,9 @@ async function runAudioTranscriptionQueue() {
   }
 
   audioTranscriptionRunning = false;
+  if (audioTranscriptionQueue.length === 0) {
+    audioTranscriptionBackoffUntil = 0;
+  }
 }
 
 async function transcribeQueuedAudio(item) {
@@ -1206,6 +1236,12 @@ async function runImageInterpretationQueue() {
   imageInterpretationRunning = true;
 
   while (imageInterpretationQueue.length > 0) {
+    const queuePauseMs = queuePauseInMs(imageInterpretationBackoffUntil);
+    if (queuePauseMs > 0) {
+      await sleep(Math.min(queuePauseMs, MEDIA_RETRY_POLL_MS));
+      continue;
+    }
+
     const ready = shiftReadyQueueItem(imageInterpretationQueue);
     if (!ready.item) {
       await sleep(Math.min(ready.waitMs, MEDIA_RETRY_POLL_MS));
@@ -1232,6 +1268,7 @@ async function runImageInterpretationQueue() {
         const retryDelayMs = retryDelayMsForError(errorMessage, attempt);
         item.attempt = attempt + 1;
         item.availableAt = Date.now() + retryDelayMs;
+        imageInterpretationBackoffUntil = extendQueueBackoff(imageInterpretationBackoffUntil, retryDelayMs);
         imageInterpretationQueue.push(item);
         retryScheduled = true;
         if (instance) {
@@ -1253,7 +1290,10 @@ async function runImageInterpretationQueue() {
           instance.imageInterpretationCompleted = (instance.imageInterpretationCompleted || 0) + 1;
         } else if (!retryScheduled) {
           instance.imageInterpretationFailed = (instance.imageInterpretationFailed || 0) + 1;
-          instance.imageInterpretationLastError = errorMessage || 'Interpretacao nao atualizou a mensagem.';
+          const finalErrorMessage = errorMessage
+            ? `${errorMessage} Tentativas esgotadas (${attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}); item removido da fila.`
+            : 'Interpretacao nao atualizou a mensagem.';
+          instance.imageInterpretationLastError = finalErrorMessage;
         }
         const remainingForUser = imageInterpretationQueue.filter(x => x.userId === userId).length;
         if (remainingForUser === 0) {
@@ -1264,6 +1304,9 @@ async function runImageInterpretationQueue() {
   }
 
   imageInterpretationRunning = false;
+  if (imageInterpretationQueue.length === 0) {
+    imageInterpretationBackoffUntil = 0;
+  }
 }
 
 function formatImageInterpretationMessage(originalText, interpretation) {
@@ -4075,7 +4118,8 @@ app.get('/status', checkAuth, async (req, res) => {
       configured: !!getAudioTranscriptionConfig(),
       queueLength: audioTranscriptionQueue.filter(x => x.userId === userId).length,
       retrying: countScheduledRetriesForUser(audioTranscriptionQueue, userId),
-      nextRetryInMs: nextRetryInMsForUser(audioTranscriptionQueue, userId),
+      nextRetryInMs: nextRetryInMsForUser(audioTranscriptionQueue, userId, audioTranscriptionBackoffUntil),
+      pauseInMs: queuePauseInMs(audioTranscriptionBackoffUntil),
       maxAttempts: MEDIA_PROCESSING_MAX_ATTEMPTS,
       running: !!instance.transcriptionRunning,
       completed: instance.transcriptionCompleted || 0,
@@ -4088,7 +4132,8 @@ app.get('/status', checkAuth, async (req, res) => {
       compressorAvailable: !!sharp,
       queueLength: imageInterpretationQueue.filter(x => x.userId === userId).length,
       retrying: countScheduledRetriesForUser(imageInterpretationQueue, userId),
-      nextRetryInMs: nextRetryInMsForUser(imageInterpretationQueue, userId),
+      nextRetryInMs: nextRetryInMsForUser(imageInterpretationQueue, userId, imageInterpretationBackoffUntil),
+      pauseInMs: queuePauseInMs(imageInterpretationBackoffUntil),
       maxAttempts: MEDIA_PROCESSING_MAX_ATTEMPTS,
       running: !!instance.imageInterpretationRunning,
       completed: instance.imageInterpretationCompleted || 0,
