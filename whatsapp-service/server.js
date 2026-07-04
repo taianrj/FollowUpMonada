@@ -700,6 +700,18 @@ function queueAudioTranscription(item) {
     return;
   }
 
+  // Incrementa estatísticas da instância correspondente
+  const userId = item.userId;
+  const instance = instances[userId];
+  if (instance) {
+    const remainingForUser = audioTranscriptionQueue.filter(x => x.userId === userId).length;
+    if (remainingForUser === 0 && !instance.transcriptionRunning) {
+      instance.transcriptionTotal = 0;
+      instance.transcriptionCompleted = 0;
+    }
+    instance.transcriptionTotal = (instance.transcriptionTotal || 0) + 1;
+  }
+
   queuedAudioTranscriptionKeys.add(dedupeKey);
   audioTranscriptionQueue.push({
     ...item,
@@ -714,12 +726,25 @@ async function runAudioTranscriptionQueue() {
 
   while (audioTranscriptionQueue.length > 0) {
     const item = audioTranscriptionQueue.shift();
+    const userId = item.userId;
+    const instance = instances[userId];
+    if (instance) {
+      instance.transcriptionRunning = true;
+    }
+
     try {
       await transcribeQueuedAudio(item);
     } catch (err) {
-      console.warn(`[${item.userId}] Falha ao transcrever audio ${item.dedupeKey}:`, err.message || err);
+      console.warn(`[${userId}] Falha ao transcrever audio ${item.dedupeKey}:`, err.message || err);
     } finally {
       queuedAudioTranscriptionKeys.delete(item.dedupeKey);
+      if (instance) {
+        instance.transcriptionCompleted = (instance.transcriptionCompleted || 0) + 1;
+        const remainingForUser = audioTranscriptionQueue.filter(x => x.userId === userId).length;
+        if (remainingForUser === 0) {
+          instance.transcriptionRunning = false;
+        }
+      }
     }
   }
 
@@ -2327,6 +2352,13 @@ function getMessageMediaInfo(msg) {
     };
   }
 
+  if (content.stickerMessage) {
+    return {
+      kind: 'sticker',
+      text: '[Figurinha]'
+    };
+  }
+
   return null;
 }
 
@@ -3489,8 +3521,10 @@ app.get('/status', checkAuth, async (req, res) => {
     },
     audioTranscription: {
       configured: !!getAudioTranscriptionConfig(),
-      queueLength: audioTranscriptionQueue.length,
-      running: audioTranscriptionRunning
+      queueLength: audioTranscriptionQueue.filter(x => x.userId === userId).length,
+      running: !!instance.transcriptionRunning,
+      completed: instance.transcriptionCompleted || 0,
+      total: instance.transcriptionTotal || 0
     },
     user: instance.sock && instance.sock.user ? {
       id: instance.sock.user.id,

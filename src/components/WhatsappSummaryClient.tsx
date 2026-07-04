@@ -215,6 +215,11 @@ export default function WhatsappSummaryClient({
   const [choiceStep, setChoiceStep] = useState<'options' | 'date'>('options');
   const [autoSummaryEnabled, setAutoSummaryEnabled] = useState(false);
   const [autoSummaryDate, setAutoSummaryDate] = useState('');
+  const [transcriptionRunning, setTranscriptionRunning] = useState(false);
+  const [transcriptionQueueLength, setTranscriptionQueueLength] = useState(0);
+  const [transcriptionCompleted, setTranscriptionCompleted] = useState(0);
+  const [transcriptionTotal, setTranscriptionTotal] = useState(0);
+  const [waitForTranscriptions, setWaitForTranscriptions] = useState(false);
   const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
   const [qrStatus, setQrStatus] = useState<string>('waiting'); // 'waiting' | 'qrcode' | 'connected'
   const [isMessagesModalOpen, setIsMessagesModalOpen] = useState(false);
@@ -402,7 +407,13 @@ export default function WhatsappSummaryClient({
   // Efeito de gatilho de autogeração de resumo pós-sincronização
   useEffect(() => {
     if (autoSummaryEnabled && autoSummaryDate && whatsappStatus === 'connected' && whatsappSyncStatus === 'completed') {
+      // Se configurado para aguardar transcrições, espera até que a fila de áudios chegue a zero
+      if (waitForTranscriptions && (transcriptionQueueLength > 0 || transcriptionRunning)) {
+        return; // Aguarda o polling de status atualizar e limpar a fila de áudios
+      }
+
       setAutoSummaryEnabled(false);
+      setWaitForTranscriptions(false); // Reset para futuros agendamentos
       setSummaryDate(autoSummaryDate);
       
       const dateToGenerate = autoSummaryDate;
@@ -413,7 +424,7 @@ export default function WhatsappSummaryClient({
         handleSyncAndGenerateSummary(dateToGenerate);
       }, 250);
     }
-  }, [autoSummaryEnabled, autoSummaryDate, whatsappStatus, whatsappSyncStatus]);
+  }, [autoSummaryEnabled, autoSummaryDate, whatsappStatus, whatsappSyncStatus, waitForTranscriptions, transcriptionQueueLength, transcriptionRunning]);
 
   // Função auxiliar para testar conexão com o WhatsApp
   const checkConnectionStatus = async (url: string, token: string) => {
@@ -433,6 +444,18 @@ export default function WhatsappSummaryClient({
         setWhatsappSyncStatus(data.syncStatus || 'completed');
         setWhatsappMessagesCount(data.messagesCount || 0);
         setWhatsappContactsCount(data.contactsCount || 0);
+        
+        if (data.audioTranscription) {
+          setTranscriptionRunning(!!data.audioTranscription.running);
+          setTranscriptionQueueLength(data.audioTranscription.queueLength || 0);
+          setTranscriptionCompleted(data.audioTranscription.completed || 0);
+          setTranscriptionTotal(data.audioTranscription.total || 0);
+        } else {
+          setTranscriptionRunning(false);
+          setTranscriptionQueueLength(0);
+          setTranscriptionCompleted(0);
+          setTranscriptionTotal(0);
+        }
         
         // Define os dados do usuário conectado
         if (data.status === 'connected') {
@@ -465,6 +488,10 @@ export default function WhatsappSummaryClient({
     setWhatsappSyncStatus('completed');
     setWhatsappMessagesCount(0);
     setWhatsappContactsCount(0);
+    setTranscriptionRunning(false);
+    setTranscriptionQueueLength(0);
+    setTranscriptionCompleted(0);
+    setTranscriptionTotal(0);
     
     // Tenta carregar até 8 vezes (8 * 3s = 24 segundos) antes de dar timeout do spinner de inicialização
     setCheckAttempts(prev => {
@@ -1137,7 +1164,48 @@ export default function WhatsappSummaryClient({
                 🔴 Desconectar Conta
               </button>
             </div>
-          ) : integrationConnected && whatsappStatus === 'qrcode' ? (
+          ) : null}
+
+          {/* Painel de Progresso de Transcrição de Áudios */}
+          {integrationConnected && whatsappStatus === 'connected' && (transcriptionRunning || transcriptionQueueLength > 0) && (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.6rem',
+              backgroundColor: 'rgba(168, 85, 247, 0.08)',
+              border: '1px solid rgba(168, 85, 247, 0.2)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '1rem 1.25rem',
+              boxShadow: 'var(--shadow-sm)',
+              marginTop: '0.75rem',
+              animation: 'fadeIn 0.3s ease-out'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', fontWeight: 600, color: '#c084fc' }}>
+                  <span className="spinner" style={{ display: 'inline-block', width: '12px', height: '12px', border: '2px solid rgba(192, 132, 252, 0.1)', borderTop: '2px solid #c084fc', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
+                  <span>🎙️ Transcrevendo áudios do WhatsApp...</span>
+                </div>
+                <span style={{ fontSize: '0.82rem', color: '#c084fc', fontWeight: 'bold' }}>
+                  {transcriptionCompleted} / {transcriptionTotal} concluídos ({transcriptionQueueLength} na fila)
+                </span>
+              </div>
+              
+              <div style={{ width: '100%', height: '4px', backgroundColor: 'rgba(168, 85, 247, 0.15)', borderRadius: '9999px', overflow: 'hidden' }}>
+                <div style={{ 
+                  width: `${transcriptionTotal > 0 ? (transcriptionCompleted / transcriptionTotal) * 100 : 0}%`, 
+                  height: '100%', 
+                  backgroundColor: '#c084fc', 
+                  transition: 'width 0.4s ease' 
+                }}></div>
+              </div>
+              
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
+                Você pode gerar o resumo agora, mas áudios que ainda não foram transcritos serão exibidos apenas como tags genéricas nos relatórios.
+              </p>
+            </div>
+          )}
+
+          {integrationConnected && whatsappStatus === 'qrcode' ? (
             <div style={{
               display: 'flex',
               flexDirection: 'column',
@@ -1736,6 +1804,45 @@ export default function WhatsappSummaryClient({
                       textAlign: 'center'
                     }}
                   />
+
+                  {/* Opção para aguardar transcrições de áudios */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.55rem',
+                    width: '100%',
+                    maxWidth: '280px',
+                    justifyContent: 'center',
+                    marginTop: '0.25rem',
+                    cursor: 'pointer'
+                  }} onClick={() => setWaitForTranscriptions(!waitForTranscriptions)}>
+                    <input
+                      type="checkbox"
+                      id="chkWaitForTranscriptions"
+                      checked={waitForTranscriptions}
+                      onChange={(e) => setWaitForTranscriptions(e.target.checked)}
+                      style={{
+                        cursor: 'pointer',
+                        accentColor: '#10b981',
+                        width: '15px',
+                        height: '15px'
+                      }}
+                      onClick={(e) => e.stopPropagation()} // Evita duplo clique ao disparar o onClick da div
+                    />
+                    <label 
+                      htmlFor="chkWaitForTranscriptions"
+                      style={{ 
+                        fontSize: '0.78rem', 
+                        color: 'var(--text-secondary)', 
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        lineHeight: 1.3
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Gerar resumo somente após as transcrições dos áudios.
+                    </label>
+                  </div>
 
                   <div style={{ display: 'flex', gap: '0.75rem', width: '100%', marginTop: '0.5rem' }}>
                     <button
