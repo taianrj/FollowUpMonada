@@ -84,7 +84,13 @@ try {
       'IMAGE_INTERPRETATION_QUEUE_MAX',
       'IMAGE_INTERPRETATION_MAX_DIMENSION',
       'IMAGE_INTERPRETATION_JPEG_QUALITY',
-      'IMAGE_INTERPRETATION_PROMPT'
+      'IMAGE_INTERPRETATION_PROMPT',
+      'MEDIA_PROCESSING_MAX_ATTEMPTS',
+      'MEDIA_RETRY_FALLBACK_MS',
+      'MEDIA_RETRY_MAX_MS',
+      'MEDIA_RETRY_BUFFER_MS',
+      'MEDIA_RETRY_POLL_MS',
+      'MEDIA_ERROR_SNIPPET_LENGTH'
     ]);
     dotenvContent.split('\n').forEach(line => {
       const parts = line.split('=');
@@ -434,7 +440,14 @@ const AUDIO_TRANSCRIPTION_LANGUAGE = process.env.AUDIO_TRANSCRIPTION_LANGUAGE ||
 const AUDIO_TRANSCRIPTION_PROMPT = process.env.AUDIO_TRANSCRIPTION_PROMPT || 'Transcreva mensagens de voz de WhatsApp em portugues do Brasil, preservando nomes proprios quando possivel.';
 const audioTranscriptionQueue = [];
 const queuedAudioTranscriptionKeys = new Set();
+const failedAudioTranscriptionKeys = new Set();
 let audioTranscriptionRunning = false;
+const MEDIA_PROCESSING_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.MEDIA_PROCESSING_MAX_ATTEMPTS || '3', 10));
+const MEDIA_RETRY_FALLBACK_MS = Math.max(1000, parseInt(process.env.MEDIA_RETRY_FALLBACK_MS || '5000', 10));
+const MEDIA_RETRY_MAX_MS = Math.max(MEDIA_RETRY_FALLBACK_MS, parseInt(process.env.MEDIA_RETRY_MAX_MS || '120000', 10));
+const MEDIA_RETRY_BUFFER_MS = Math.max(0, parseInt(process.env.MEDIA_RETRY_BUFFER_MS || '250', 10));
+const MEDIA_RETRY_POLL_MS = Math.max(250, parseInt(process.env.MEDIA_RETRY_POLL_MS || '1000', 10));
+const MEDIA_ERROR_SNIPPET_LENGTH = Math.max(300, parseInt(process.env.MEDIA_ERROR_SNIPPET_LENGTH || '1000', 10));
 const IMAGE_INTERPRETATION_ENABLED = process.env.IMAGE_INTERPRETATION_ENABLED !== 'false';
 const IMAGE_INTERPRETATION_MAX_BYTES = Math.max(256 * 1024, parseInt(process.env.IMAGE_INTERPRETATION_MAX_BYTES || String(3 * 1024 * 1024), 10));
 const IMAGE_INTERPRETATION_QUEUE_MAX = Math.max(1, parseInt(process.env.IMAGE_INTERPRETATION_QUEUE_MAX || '200', 10));
@@ -443,6 +456,7 @@ const IMAGE_INTERPRETATION_JPEG_QUALITY = Math.min(92, Math.max(35, parseInt(pro
 const IMAGE_INTERPRETATION_PROMPT = process.env.IMAGE_INTERPRETATION_PROMPT || 'Analise esta imagem ou figurinha de uma conversa de WhatsApp em portugues do Brasil. Descreva objetivamente o conteudo visual, extraia textos legiveis importantes e explique apenas o contexto util para um resumo de atendimento. Seja conciso.';
 const imageInterpretationQueue = [];
 const queuedImageInterpretationKeys = new Set();
+const failedImageInterpretationKeys = new Set();
 let imageInterpretationRunning = false;
 
 function getSupabaseConfig() {
@@ -576,6 +590,96 @@ function chunkArray(items, size) {
   return chunks;
 }
 
+function mediaProcessingKey(userId, dedupeKey) {
+  return `${userId || 'unknown'}|${dedupeKey || ''}`;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function parseRetryDelayMs(message) {
+  const text = String(message || '');
+  const retryMatch = text.match(/(?:please\s+)?try\s+again\s+in\s+([0-9]+(?:\.[0-9]+)?)\s*(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m)\b/i) ||
+    text.match(/retry(?:-|\s*)after[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m)?\b/i);
+  if (!retryMatch) return null;
+
+  const value = Number(retryMatch[1]);
+  if (!Number.isFinite(value) || value < 0) return null;
+
+  const unit = String(retryMatch[2] || 's').toLowerCase();
+  if (unit.startsWith('ms') || unit.startsWith('millisecond') || unit.startsWith('msec')) {
+    return Math.round(value);
+  }
+  if (unit === 'm' || unit.startsWith('min')) {
+    return Math.round(value * 60 * 1000);
+  }
+  return Math.round(value * 1000);
+}
+
+function retryDelayMsForError(errorMessage, failedAttempt) {
+  const explicitDelay = parseRetryDelayMs(errorMessage);
+  const fallbackDelay = MEDIA_RETRY_FALLBACK_MS * Math.pow(2, Math.max(0, failedAttempt - 1));
+  const delay = explicitDelay == null ? fallbackDelay : explicitDelay + MEDIA_RETRY_BUFFER_MS;
+  return Math.min(MEDIA_RETRY_MAX_MS, Math.max(0, delay));
+}
+
+function formatRetryDelay(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds % 1 === 0 ? 0 : 1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  return remainingSeconds > 0 ? `${minutes}m${remainingSeconds}s` : `${minutes}m`;
+}
+
+function shiftReadyQueueItem(queue) {
+  const now = Date.now();
+  let nextReadyIndex = -1;
+  let nextAvailableAt = Infinity;
+
+  for (let i = 0; i < queue.length; i++) {
+    const availableAt = Number(queue[i].availableAt || 0);
+    if (!availableAt || availableAt <= now) {
+      nextReadyIndex = i;
+      break;
+    }
+    if (availableAt < nextAvailableAt) {
+      nextAvailableAt = availableAt;
+    }
+  }
+
+  if (nextReadyIndex >= 0) {
+    return {
+      item: queue.splice(nextReadyIndex, 1)[0],
+      waitMs: 0
+    };
+  }
+
+  return {
+    item: null,
+    waitMs: Number.isFinite(nextAvailableAt) ? Math.max(0, nextAvailableAt - now) : 0
+  };
+}
+
+function countScheduledRetriesForUser(queue, userId) {
+  const now = Date.now();
+  return queue.filter(item => item.userId === userId && Number(item.availableAt || 0) > now).length;
+}
+
+function nextRetryInMsForUser(queue, userId) {
+  const now = Date.now();
+  let nextAvailableAt = Infinity;
+  for (const item of queue) {
+    if (item.userId !== userId) continue;
+    const availableAt = Number(item.availableAt || 0);
+    if (availableAt > now && availableAt < nextAvailableAt) {
+      nextAvailableAt = availableAt;
+    }
+  }
+  return Number.isFinite(nextAvailableAt) ? Math.max(0, nextAvailableAt - now) : null;
+}
+
 function getAudioTranscriptionConfig() {
   if (!AUDIO_TRANSCRIPTION_ENABLED) return null;
 
@@ -663,7 +767,7 @@ async function transcribeAudioBuffer(buffer, mimetype) {
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
-    throw new Error(`transcription ${response.status}: ${errText.slice(0, 300)}`);
+    throw new Error(`transcription ${response.status}: ${errText.slice(0, MEDIA_ERROR_SNIPPET_LENGTH)}`);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -707,6 +811,7 @@ function shouldQueueAudioTranscription(userId, messageObject, savedKeys) {
 
   const dedupeKey = messageObject?.dedupeKey || createDedupeKey(messageObject || {});
   if (!dedupeKey) return false;
+  if (failedAudioTranscriptionKeys.has(mediaProcessingKey(userId, dedupeKey))) return false;
   if (savedKeys?.has(dedupeKey)) return true;
 
   const storedMessage = findStoredMessageByDedupeKey(userId, messageObject);
@@ -718,6 +823,7 @@ function queueAudioTranscription(item) {
 
   const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
   if (!dedupeKey || queuedAudioTranscriptionKeys.has(dedupeKey)) return;
+  if (failedAudioTranscriptionKeys.has(mediaProcessingKey(item.userId, dedupeKey))) return;
 
   if (audioTranscriptionQueue.length >= AUDIO_TRANSCRIPTION_QUEUE_MAX) {
     console.warn(`[${item.userId}] Fila de transcricao de audio cheia; audio ${dedupeKey} sera mantido como tag.`);
@@ -741,7 +847,9 @@ function queueAudioTranscription(item) {
   queuedAudioTranscriptionKeys.add(dedupeKey);
   audioTranscriptionQueue.push({
     ...item,
-    dedupeKey
+    dedupeKey,
+    attempt: item.attempt || 1,
+    availableAt: item.availableAt || 0
   });
   runAudioTranscriptionQueue();
 }
@@ -751,26 +859,52 @@ async function runAudioTranscriptionQueue() {
   audioTranscriptionRunning = true;
 
   while (audioTranscriptionQueue.length > 0) {
-    const item = audioTranscriptionQueue.shift();
+    const ready = shiftReadyQueueItem(audioTranscriptionQueue);
+    if (!ready.item) {
+      await sleep(Math.min(ready.waitMs, MEDIA_RETRY_POLL_MS));
+      continue;
+    }
+
+    const item = ready.item;
     const userId = item.userId;
     const instance = instances[userId];
     if (instance) {
       instance.transcriptionRunning = true;
     }
 
+    const attempt = Math.max(1, Number(item.attempt || 1));
     let success = false;
     let errorMessage = '';
+    let retryScheduled = false;
     try {
       success = await transcribeQueuedAudio(item);
     } catch (err) {
       errorMessage = err.message || String(err);
       console.warn(`[${userId}] Falha ao transcrever audio ${item.dedupeKey}:`, errorMessage);
+      if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS) {
+        const retryDelayMs = retryDelayMsForError(errorMessage, attempt);
+        item.attempt = attempt + 1;
+        item.availableAt = Date.now() + retryDelayMs;
+        audioTranscriptionQueue.push(item);
+        retryScheduled = true;
+        if (instance) {
+          instance.transcriptionLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
+        }
+        console.warn(`[${userId}] Audio ${item.dedupeKey} sera tentado novamente em ${formatRetryDelay(retryDelayMs)} (${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}).`);
+      }
     } finally {
-      queuedAudioTranscriptionKeys.delete(item.dedupeKey);
+      if (success || !retryScheduled) {
+        queuedAudioTranscriptionKeys.delete(item.dedupeKey);
+      }
+      if (success) {
+        failedAudioTranscriptionKeys.delete(mediaProcessingKey(userId, item.dedupeKey));
+      } else if (!retryScheduled) {
+        failedAudioTranscriptionKeys.add(mediaProcessingKey(userId, item.dedupeKey));
+      }
       if (instance) {
         if (success) {
           instance.transcriptionCompleted = (instance.transcriptionCompleted || 0) + 1;
-        } else {
+        } else if (!retryScheduled) {
           instance.transcriptionFailed = (instance.transcriptionFailed || 0) + 1;
           instance.transcriptionLastError = errorMessage || 'Transcricao nao atualizou a mensagem.';
         }
@@ -1001,7 +1135,7 @@ async function interpretImageBuffer(buffer) {
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
-    throw new Error(`image interpretation ${response.status}: ${errText.slice(0, 300)}`);
+    throw new Error(`image interpretation ${response.status}: ${errText.slice(0, MEDIA_ERROR_SNIPPET_LENGTH)}`);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -1025,6 +1159,7 @@ function shouldQueueImageInterpretation(userId, messageObject, savedKeys) {
 
   const dedupeKey = messageObject?.dedupeKey || createDedupeKey(messageObject || {});
   if (!dedupeKey) return false;
+  if (failedImageInterpretationKeys.has(mediaProcessingKey(userId, dedupeKey))) return false;
   if (savedKeys?.has(dedupeKey)) return true;
 
   const storedMessage = findStoredMessageByDedupeKey(userId, messageObject);
@@ -1036,6 +1171,7 @@ function queueImageInterpretation(item) {
 
   const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
   if (!dedupeKey || queuedImageInterpretationKeys.has(dedupeKey)) return;
+  if (failedImageInterpretationKeys.has(mediaProcessingKey(item.userId, dedupeKey))) return;
 
   if (imageInterpretationQueue.length >= IMAGE_INTERPRETATION_QUEUE_MAX) {
     console.warn(`[${item.userId}] Fila de interpretacao visual cheia; midia ${dedupeKey} sera mantida como tag.`);
@@ -1058,7 +1194,9 @@ function queueImageInterpretation(item) {
   queuedImageInterpretationKeys.add(dedupeKey);
   imageInterpretationQueue.push({
     ...item,
-    dedupeKey
+    dedupeKey,
+    attempt: item.attempt || 1,
+    availableAt: item.availableAt || 0
   });
   runImageInterpretationQueue();
 }
@@ -1068,26 +1206,52 @@ async function runImageInterpretationQueue() {
   imageInterpretationRunning = true;
 
   while (imageInterpretationQueue.length > 0) {
-    const item = imageInterpretationQueue.shift();
+    const ready = shiftReadyQueueItem(imageInterpretationQueue);
+    if (!ready.item) {
+      await sleep(Math.min(ready.waitMs, MEDIA_RETRY_POLL_MS));
+      continue;
+    }
+
+    const item = ready.item;
     const userId = item.userId;
     const instance = instances[userId];
     if (instance) {
       instance.imageInterpretationRunning = true;
     }
 
+    const attempt = Math.max(1, Number(item.attempt || 1));
     let success = false;
     let errorMessage = '';
+    let retryScheduled = false;
     try {
       success = await interpretQueuedImage(item);
     } catch (err) {
       errorMessage = err.message || String(err);
       console.warn(`[${userId}] Falha ao interpretar midia visual ${item.dedupeKey}:`, errorMessage);
+      if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS) {
+        const retryDelayMs = retryDelayMsForError(errorMessage, attempt);
+        item.attempt = attempt + 1;
+        item.availableAt = Date.now() + retryDelayMs;
+        imageInterpretationQueue.push(item);
+        retryScheduled = true;
+        if (instance) {
+          instance.imageInterpretationLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
+        }
+        console.warn(`[${userId}] Midia visual ${item.dedupeKey} sera tentada novamente em ${formatRetryDelay(retryDelayMs)} (${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}).`);
+      }
     } finally {
-      queuedImageInterpretationKeys.delete(item.dedupeKey);
+      if (success || !retryScheduled) {
+        queuedImageInterpretationKeys.delete(item.dedupeKey);
+      }
+      if (success) {
+        failedImageInterpretationKeys.delete(mediaProcessingKey(userId, item.dedupeKey));
+      } else if (!retryScheduled) {
+        failedImageInterpretationKeys.add(mediaProcessingKey(userId, item.dedupeKey));
+      }
       if (instance) {
         if (success) {
           instance.imageInterpretationCompleted = (instance.imageInterpretationCompleted || 0) + 1;
-        } else {
+        } else if (!retryScheduled) {
           instance.imageInterpretationFailed = (instance.imageInterpretationFailed || 0) + 1;
           instance.imageInterpretationLastError = errorMessage || 'Interpretacao nao atualizou a mensagem.';
         }
@@ -3910,6 +4074,9 @@ app.get('/status', checkAuth, async (req, res) => {
     audioTranscription: {
       configured: !!getAudioTranscriptionConfig(),
       queueLength: audioTranscriptionQueue.filter(x => x.userId === userId).length,
+      retrying: countScheduledRetriesForUser(audioTranscriptionQueue, userId),
+      nextRetryInMs: nextRetryInMsForUser(audioTranscriptionQueue, userId),
+      maxAttempts: MEDIA_PROCESSING_MAX_ATTEMPTS,
       running: !!instance.transcriptionRunning,
       completed: instance.transcriptionCompleted || 0,
       failed: instance.transcriptionFailed || 0,
@@ -3920,6 +4087,9 @@ app.get('/status', checkAuth, async (req, res) => {
       configured: !!getImageInterpretationConfig(),
       compressorAvailable: !!sharp,
       queueLength: imageInterpretationQueue.filter(x => x.userId === userId).length,
+      retrying: countScheduledRetriesForUser(imageInterpretationQueue, userId),
+      nextRetryInMs: nextRetryInMsForUser(imageInterpretationQueue, userId),
+      maxAttempts: MEDIA_PROCESSING_MAX_ATTEMPTS,
       running: !!instance.imageInterpretationRunning,
       completed: instance.imageInterpretationCompleted || 0,
       failed: instance.imageInterpretationFailed || 0,
