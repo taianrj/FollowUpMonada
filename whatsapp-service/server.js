@@ -36,11 +36,13 @@ app.use(express.json({ limit: '1mb' }));
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 const authDir = path.join(dataDir, 'auth');
 const contactsDir = path.join(dataDir, 'contacts');
+const mediaStateDir = path.join(dataDir, 'media-processing');
 
 // Garante que os diretórios existam
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(authDir, { recursive: true });
 fs.mkdirSync(contactsDir, { recursive: true });
+fs.mkdirSync(mediaStateDir, { recursive: true });
 
 // Tenta carregar variáveis do .env do próprio microsserviço se rodando localmente
 try {
@@ -90,7 +92,10 @@ try {
       'MEDIA_RETRY_MAX_MS',
       'MEDIA_RETRY_BUFFER_MS',
       'MEDIA_RETRY_POLL_MS',
-      'MEDIA_ERROR_SNIPPET_LENGTH'
+      'MEDIA_ERROR_SNIPPET_LENGTH',
+      'MEDIA_LONG_TERM_RETRY_STEP_MS',
+      'MEDIA_LONG_TERM_RETRY_MAX_MS',
+      'MEDIA_STATE_PERSIST_DELAY_MS'
     ]);
     dotenvContent.split('\n').forEach(line => {
       const parts = line.split('=');
@@ -265,6 +270,7 @@ async function clearAllUserData(userId) {
   if (instance) {
     instance.contactsCache = {};
   }
+  await clearMediaProcessingState(cleanUserId);
 
   // 3. Limpa mensagens do Supabase
   const config = getSupabaseConfig();
@@ -303,7 +309,9 @@ async function clearAllUserData(userId) {
       `${dbSessionId}:contacts:*`,
       `${cleanUserId}:contacts:*`,
       `${dbSessionId}:local:contacts:*`,
-      `${cleanUserId}:local:contacts:*`
+      `${cleanUserId}:local:contacts:*`,
+      `${dbSessionId}:media-processing:*`,
+      `${cleanUserId}:media-processing:*`
     ];
     for (const pattern of [...new Set(statePatterns)]) {
       try {
@@ -426,6 +434,7 @@ const contactsCache = {};
 const supabaseDisabledTables = new Set();
 const pendingContactWrites = new Map();
 const pendingContactTimers = new Map();
+const pendingMediaStateTimers = new Map();
 
 const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '2', 10)); // Padrão de 2 dias (48 horas) para sincronização e retenção de histórico
 const SUPABASE_TIMEOUT_MS = Math.max(2000, parseInt(process.env.SUPABASE_TIMEOUT_MS || '8000', 10));
@@ -449,6 +458,9 @@ const MEDIA_RETRY_MAX_MS = Math.max(MEDIA_RETRY_FALLBACK_MS, parseInt(process.en
 const MEDIA_RETRY_BUFFER_MS = Math.max(0, parseInt(process.env.MEDIA_RETRY_BUFFER_MS || '250', 10));
 const MEDIA_RETRY_POLL_MS = Math.max(250, parseInt(process.env.MEDIA_RETRY_POLL_MS || '1000', 10));
 const MEDIA_ERROR_SNIPPET_LENGTH = Math.max(300, parseInt(process.env.MEDIA_ERROR_SNIPPET_LENGTH || '1000', 10));
+const MEDIA_LONG_TERM_RETRY_STEP_MS = Math.max(1000, parseInt(process.env.MEDIA_LONG_TERM_RETRY_STEP_MS || '60000', 10));
+const MEDIA_LONG_TERM_RETRY_MAX_MS = Math.max(MEDIA_LONG_TERM_RETRY_STEP_MS, parseInt(process.env.MEDIA_LONG_TERM_RETRY_MAX_MS || String(30 * 60 * 1000), 10));
+const MEDIA_STATE_PERSIST_DELAY_MS = Math.max(100, parseInt(process.env.MEDIA_STATE_PERSIST_DELAY_MS || '250', 10));
 const IMAGE_INTERPRETATION_ENABLED = process.env.IMAGE_INTERPRETATION_ENABLED !== 'false';
 const IMAGE_INTERPRETATION_MAX_BYTES = Math.max(256 * 1024, parseInt(process.env.IMAGE_INTERPRETATION_MAX_BYTES || String(3 * 1024 * 1024), 10));
 const IMAGE_INTERPRETATION_QUEUE_MAX = Math.max(1, parseInt(process.env.IMAGE_INTERPRETATION_QUEUE_MAX || '200', 10));
@@ -708,6 +720,429 @@ function nextRetryInMsForUser(queue, userId, backoffUntil = 0) {
   return hasUserItem && pauseMs > 0 ? pauseMs : null;
 }
 
+function countLongTermItemsForUser(queue, userId) {
+  return queue.filter(item => item.userId === userId && item.longTerm).length;
+}
+
+function nextLongTermRetryInMsForUser(queue, userId) {
+  const now = Date.now();
+  let nextAvailableAt = Infinity;
+  for (const item of queue) {
+    if (item.userId !== userId || !item.longTerm) continue;
+    const availableAt = Number(item.availableAt || 0);
+    if (availableAt > now && availableAt < nextAvailableAt) {
+      nextAvailableAt = availableAt;
+    }
+  }
+  return Number.isFinite(nextAvailableAt) ? Math.max(0, nextAvailableAt - now) : null;
+}
+
+function longTermRetryDelayMs(longTermAttempts) {
+  const step = Math.max(1, Number(longTermAttempts || 1));
+  return Math.min(MEDIA_LONG_TERM_RETRY_MAX_MS, step * MEDIA_LONG_TERM_RETRY_STEP_MS);
+}
+
+function scheduleLongTermMediaRetry(item, errorMessage) {
+  const longTermAttempts = Math.max(0, Number(item.longTermAttempts || 0)) + 1;
+  const retryDelayMs = longTermRetryDelayMs(longTermAttempts);
+  item.longTerm = true;
+  item.longTermAttempts = longTermAttempts;
+  item.attempt = MEDIA_PROCESSING_MAX_ATTEMPTS;
+  item.availableAt = Date.now() + retryDelayMs;
+  item.lastError = String(errorMessage || '').slice(0, MEDIA_ERROR_SNIPPET_LENGTH);
+  return retryDelayMs;
+}
+
+function mediaStateFilePath(userId) {
+  const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
+  return path.join(mediaStateDir, `${cleanUserId}.json`);
+}
+
+function normalizeMediaNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function normalizeMediaStats(stats = {}) {
+  return {
+    total: normalizeMediaNumber(stats.total),
+    completed: normalizeMediaNumber(stats.completed),
+    failed: normalizeMediaNumber(stats.failed),
+    lastError: normalizeDisplayName(stats.lastError || '')
+  };
+}
+
+function mediaStatsFromInstance(instance, kind) {
+  if (kind === 'audio') {
+    return {
+      total: normalizeMediaNumber(instance?.transcriptionTotal),
+      completed: normalizeMediaNumber(instance?.transcriptionCompleted),
+      failed: normalizeMediaNumber(instance?.transcriptionFailed),
+      lastError: normalizeDisplayName(instance?.transcriptionLastError || '')
+    };
+  }
+  return {
+    total: normalizeMediaNumber(instance?.imageInterpretationTotal),
+    completed: normalizeMediaNumber(instance?.imageInterpretationCompleted),
+    failed: normalizeMediaNumber(instance?.imageInterpretationFailed),
+    lastError: normalizeDisplayName(instance?.imageInterpretationLastError || '')
+  };
+}
+
+function applyMediaStatsToInstance(instance, kind, stats) {
+  const normalized = normalizeMediaStats(stats);
+  if (kind === 'audio') {
+    instance.transcriptionTotal = normalized.total;
+    instance.transcriptionCompleted = normalized.completed;
+    instance.transcriptionFailed = normalized.failed;
+    instance.transcriptionLastError = normalized.lastError;
+    return;
+  }
+  instance.imageInterpretationTotal = normalized.total;
+  instance.imageInterpretationCompleted = normalized.completed;
+  instance.imageInterpretationFailed = normalized.failed;
+  instance.imageInterpretationLastError = normalized.lastError;
+}
+
+function serializeMediaQueueItem(item) {
+  const messageObject = item?.messageObject;
+  const rawMessage = item?.rawMessage;
+  const dedupeKey = item?.dedupeKey || messageObject?.dedupeKey || createDedupeKey(messageObject || {});
+  if (!dedupeKey || !messageObject || !rawMessage) return null;
+
+  return {
+    userId: String(item.userId || '').replace(/[^a-zA-Z0-9-_]/g, ''),
+    dedupeKey,
+    rawMessage,
+    messageObject: {
+      ...messageObject,
+      dedupeKey
+    },
+    mimetype: item.mimetype || messageObject.mediaMimetype || '',
+    attempt: Math.max(1, normalizeMediaNumber(item.attempt, 1)),
+    availableAt: normalizeMediaNumber(item.availableAt),
+    longTerm: !!item.longTerm,
+    longTermAttempts: normalizeMediaNumber(item.longTermAttempts),
+    lastError: String(item.lastError || '').slice(0, MEDIA_ERROR_SNIPPET_LENGTH)
+  };
+}
+
+function normalizeMediaQueueItem(userId, item) {
+  const serialized = serializeMediaQueueItem({ ...item, userId: item?.userId || userId });
+  if (!serialized?.userId || !serialized.dedupeKey) return null;
+  return serialized;
+}
+
+function shouldRestoreMediaQueueItem(kind, userId, item) {
+  const storedMessage = findStoredMessageByDedupeKey(userId, item.messageObject);
+  const text = storedMessage?.text || item.messageObject?.text || '';
+  return kind === 'audio'
+    ? !isAudioTranscriptionText(text)
+    : !isImageInterpretationText(text);
+}
+
+function buildMediaProcessingStateSnapshot(userId, instance) {
+  const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
+  const audioQueue = audioTranscriptionQueue
+    .filter(item => item.userId === cleanUserId)
+    .map(serializeMediaQueueItem)
+    .filter(Boolean);
+  const imageQueue = imageInterpretationQueue
+    .filter(item => item.userId === cleanUserId)
+    .map(serializeMediaQueueItem)
+    .filter(Boolean);
+
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    audio: {
+      queue: audioQueue,
+      backoffUntil: audioTranscriptionBackoffUntil,
+      stats: mediaStatsFromInstance(instance, 'audio')
+    },
+    image: {
+      queue: imageQueue,
+      backoffUntil: imageInterpretationBackoffUntil,
+      stats: mediaStatsFromInstance(instance, 'image')
+    }
+  };
+}
+
+function mediaStateUpdatedAtMs(state) {
+  const timestamp = new Date(state?.updatedAt || 0).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function mergeMediaStats(primary = {}, secondary = {}) {
+  return {
+    total: Math.max(normalizeMediaNumber(primary.total), normalizeMediaNumber(secondary.total)),
+    completed: Math.max(normalizeMediaNumber(primary.completed), normalizeMediaNumber(secondary.completed)),
+    failed: Math.max(normalizeMediaNumber(primary.failed), normalizeMediaNumber(secondary.failed)),
+    lastError: normalizeDisplayName(primary.lastError || secondary.lastError || '')
+  };
+}
+
+function mergeMediaQueueItems(userId, ...queues) {
+  const merged = new Map();
+  for (const queue of queues) {
+    for (const rawItem of Array.isArray(queue) ? queue : []) {
+      const item = normalizeMediaQueueItem(userId, rawItem);
+      if (!item) continue;
+      const key = mediaProcessingKey(item.userId, item.dedupeKey);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, item);
+        continue;
+      }
+      merged.set(key, {
+        ...existing,
+        ...item,
+        attempt: Math.max(normalizeMediaNumber(existing.attempt, 1), normalizeMediaNumber(item.attempt, 1)),
+        availableAt: Math.max(normalizeMediaNumber(existing.availableAt), normalizeMediaNumber(item.availableAt)),
+        longTerm: !!existing.longTerm || !!item.longTerm,
+        longTermAttempts: Math.max(normalizeMediaNumber(existing.longTermAttempts), normalizeMediaNumber(item.longTermAttempts)),
+        lastError: item.lastError || existing.lastError || ''
+      });
+    }
+  }
+  return Array.from(merged.values());
+}
+
+function normalizeMediaProcessingState(userId, payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  return {
+    version: 1,
+    updatedAt: payload.updatedAt || null,
+    audio: {
+      queue: mergeMediaQueueItems(userId, payload.audio?.queue),
+      backoffUntil: normalizeMediaNumber(payload.audio?.backoffUntil),
+      stats: normalizeMediaStats(payload.audio?.stats)
+    },
+    image: {
+      queue: mergeMediaQueueItems(userId, payload.image?.queue),
+      backoffUntil: normalizeMediaNumber(payload.image?.backoffUntil),
+      stats: normalizeMediaStats(payload.image?.stats)
+    }
+  };
+}
+
+function mergeMediaProcessingStates(userId, localState, remoteState) {
+  const local = normalizeMediaProcessingState(userId, localState);
+  const remote = normalizeMediaProcessingState(userId, remoteState);
+  if (!local && !remote) return null;
+  if (!local) return remote;
+  if (!remote) return local;
+
+  const primary = mediaStateUpdatedAtMs(remote) >= mediaStateUpdatedAtMs(local) ? remote : local;
+  const secondary = primary === remote ? local : remote;
+
+  return {
+    version: 1,
+    updatedAt: primary.updatedAt || secondary.updatedAt || new Date().toISOString(),
+    audio: {
+      queue: mergeMediaQueueItems(userId, primary.audio.queue, secondary.audio.queue),
+      backoffUntil: Math.max(primary.audio.backoffUntil || 0, secondary.audio.backoffUntil || 0),
+      stats: mergeMediaStats(primary.audio.stats, secondary.audio.stats)
+    },
+    image: {
+      queue: mergeMediaQueueItems(userId, primary.image.queue, secondary.image.queue),
+      backoffUntil: Math.max(primary.image.backoffUntil || 0, secondary.image.backoffUntil || 0),
+      stats: mergeMediaStats(primary.image.stats, secondary.image.stats)
+    }
+  };
+}
+
+function loadLocalMediaProcessingState(userId) {
+  const filePath = mediaStateFilePath(userId);
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao carregar estado local da fila de midia:`, err.message || err);
+    return null;
+  }
+}
+
+async function loadMediaProcessingState(userId, instance) {
+  const localState = loadLocalMediaProcessingState(userId);
+  const remoteState = await loadStateBlobFromSupabase(userId, 'media-processing', 'default');
+  const mergedState = mergeMediaProcessingStates(userId, localState, remoteState);
+  if (!mergedState) return;
+
+  applyMediaStatsToInstance(instance, 'audio', mergedState.audio.stats);
+  applyMediaStatsToInstance(instance, 'image', mergedState.image.stats);
+  audioTranscriptionBackoffUntil = Math.max(audioTranscriptionBackoffUntil, mergedState.audio.backoffUntil || 0);
+  imageInterpretationBackoffUntil = Math.max(imageInterpretationBackoffUntil, mergedState.image.backoffUntil || 0);
+
+  const restoredAudio = restoreMediaQueueItems(userId, 'audio', mergedState.audio.queue);
+  const restoredImages = restoreMediaQueueItems(userId, 'image', mergedState.image.queue);
+  if (restoredAudio > 0 || restoredImages > 0) {
+    console.log(`[${userId}] Fila de midia restaurada: audios=${restoredAudio}, imagens=${restoredImages}.`);
+  }
+  const snapshot = makeMediaStateJsonSafe(buildMediaProcessingStateSnapshot(userId, instance));
+  if (snapshot) saveMediaProcessingStateLocally(userId, snapshot);
+}
+
+function restoreMediaQueueItems(userId, kind, items) {
+  const queue = kind === 'audio' ? audioTranscriptionQueue : imageInterpretationQueue;
+  const queuedKeys = kind === 'audio' ? queuedAudioTranscriptionKeys : queuedImageInterpretationKeys;
+  const failedKeys = kind === 'audio' ? failedAudioTranscriptionKeys : failedImageInterpretationKeys;
+  let restored = 0;
+
+  for (const rawItem of Array.isArray(items) ? items : []) {
+    const item = normalizeMediaQueueItem(userId, rawItem);
+    if (!item || !shouldRestoreMediaQueueItem(kind, userId, item)) continue;
+
+    const key = mediaProcessingKey(item.userId, item.dedupeKey);
+    if (queuedKeys.has(key)) continue;
+    failedKeys.delete(key);
+    queuedKeys.add(key);
+    queue.push({
+      ...item,
+      instance: instances[item.userId] || null
+    });
+    restored++;
+  }
+
+  return restored;
+}
+
+function saveMediaProcessingStateLocally(userId, snapshot) {
+  try {
+    fs.mkdirSync(mediaStateDir, { recursive: true });
+    fs.writeFileSync(mediaStateFilePath(userId), JSON.stringify(snapshot, mediaStateJsonReplacer, JSON_INDENT), 'utf8');
+    return true;
+  } catch (err) {
+    console.warn(`[${userId}] Falha ao salvar estado local da fila de midia:`, err.message || err);
+    return false;
+  }
+}
+
+function mediaStateJsonReplacer(key, value) {
+  if (typeof value === 'bigint') return value.toString();
+  return value;
+}
+
+function makeMediaStateJsonSafe(snapshot) {
+  try {
+    return JSON.parse(JSON.stringify(snapshot, mediaStateJsonReplacer));
+  } catch (err) {
+    console.warn('[media] Falha ao preparar snapshot da fila de midia:', err.message || err);
+    return null;
+  }
+}
+
+async function saveMediaProcessingStateNow(userId, instance = instances[userId]) {
+  if (!instance) return false;
+  const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
+  const snapshot = makeMediaStateJsonSafe(buildMediaProcessingStateSnapshot(cleanUserId, instance));
+  if (!snapshot) return false;
+  saveMediaProcessingStateLocally(cleanUserId, snapshot);
+  try {
+    await saveStateBlobToSupabase(cleanUserId, 'media-processing', 'default', snapshot);
+  } catch (err) {
+    console.warn(`[${cleanUserId}] Falha ao salvar fila de midia no Supabase:`, err.message || err);
+  }
+  return true;
+}
+
+function scheduleMediaProcessingStateSave(userId) {
+  const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
+  if (!cleanUserId) return;
+  const instance = instances[cleanUserId];
+  if (instance) {
+    const snapshot = makeMediaStateJsonSafe(buildMediaProcessingStateSnapshot(cleanUserId, instance));
+    if (snapshot) saveMediaProcessingStateLocally(cleanUserId, snapshot);
+  }
+  const existingTimer = pendingMediaStateTimers.get(cleanUserId);
+  if (existingTimer) clearTimeout(existingTimer);
+  const timer = setTimeout(() => {
+    pendingMediaStateTimers.delete(cleanUserId);
+    saveMediaProcessingStateNow(cleanUserId).catch(err => {
+      console.warn(`[${cleanUserId}] Falha ao persistir estado da fila de midia:`, err.message || err);
+    });
+  }, MEDIA_STATE_PERSIST_DELAY_MS);
+  pendingMediaStateTimers.set(cleanUserId, timer);
+}
+
+async function flushMediaProcessingStateSave(userId) {
+  const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
+  const timer = pendingMediaStateTimers.get(cleanUserId);
+  if (timer) clearTimeout(timer);
+  pendingMediaStateTimers.delete(cleanUserId);
+  await saveMediaProcessingStateNow(cleanUserId);
+}
+
+function removeMediaQueueItemsForUser(queue, queuedKeys, failedKeys, userId) {
+  for (let i = queue.length - 1; i >= 0; i--) {
+    const item = queue[i];
+    if (item.userId !== userId) continue;
+    const key = mediaProcessingKey(userId, item.dedupeKey || item.messageObject?.dedupeKey || '');
+    queuedKeys.delete(key);
+    queuedKeys.delete(item.dedupeKey);
+    failedKeys.delete(key);
+    queue.splice(i, 1);
+  }
+}
+
+async function clearMediaProcessingState(userId) {
+  const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
+  const instance = instances[cleanUserId];
+  const timer = pendingMediaStateTimers.get(cleanUserId);
+  if (timer) clearTimeout(timer);
+  pendingMediaStateTimers.delete(cleanUserId);
+
+  removeMediaQueueItemsForUser(audioTranscriptionQueue, queuedAudioTranscriptionKeys, failedAudioTranscriptionKeys, cleanUserId);
+  removeMediaQueueItemsForUser(imageInterpretationQueue, queuedImageInterpretationKeys, failedImageInterpretationKeys, cleanUserId);
+  if (audioTranscriptionQueue.length === 0) audioTranscriptionBackoffUntil = 0;
+  if (imageInterpretationQueue.length === 0) imageInterpretationBackoffUntil = 0;
+
+  if (instance) {
+    applyMediaStatsToInstance(instance, 'audio', {});
+    applyMediaStatsToInstance(instance, 'image', {});
+    instance.transcriptionRunning = false;
+    instance.imageInterpretationRunning = false;
+  }
+
+  try {
+    const filePath = mediaStateFilePath(cleanUserId);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (err) {
+    console.warn(`[${cleanUserId}] Falha ao excluir estado local da fila de midia:`, err.message || err);
+  }
+
+  const config = getSupabaseConfig();
+  if (!config) return;
+  const headers = {
+    'apikey': config.key,
+    'Authorization': `Bearer ${config.key}`,
+    'Content-Type': 'application/json'
+  };
+  const dbSessionId = getDbSessionId(cleanUserId);
+  const patterns = [
+    `${dbSessionId}:media-processing:*`,
+    `${cleanUserId}:media-processing:*`
+  ];
+  for (const pattern of [...new Set(patterns)]) {
+    try {
+      await fetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
+        method: 'DELETE',
+        headers
+      });
+    } catch (err) {
+      console.warn(`[${cleanUserId}] Falha ao excluir estado remoto da fila de midia:`, err.message || err);
+    }
+  }
+}
+
+function resumeMediaProcessingForUser(userId) {
+  const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
+  const instance = instances[cleanUserId];
+  if (!instance || instance.connectionStatus !== 'connected') return;
+  if (audioTranscriptionQueue.some(item => item.userId === cleanUserId)) runAudioTranscriptionQueue();
+  if (imageInterpretationQueue.some(item => item.userId === cleanUserId)) runImageInterpretationQueue();
+}
+
 function getAudioTranscriptionConfig() {
   if (!AUDIO_TRANSCRIPTION_ENABLED) return null;
 
@@ -850,35 +1285,31 @@ function queueAudioTranscription(item) {
   if (!getAudioTranscriptionConfig()) return;
 
   const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
-  if (!dedupeKey || queuedAudioTranscriptionKeys.has(dedupeKey)) return;
-  if (failedAudioTranscriptionKeys.has(mediaProcessingKey(item.userId, dedupeKey))) return;
+  const processingKey = mediaProcessingKey(item.userId, dedupeKey);
+  if (!dedupeKey || queuedAudioTranscriptionKeys.has(processingKey)) return;
+  if (failedAudioTranscriptionKeys.has(processingKey)) return;
 
   if (audioTranscriptionQueue.length >= AUDIO_TRANSCRIPTION_QUEUE_MAX) {
-    console.warn(`[${item.userId}] Fila de transcricao de audio cheia; audio ${dedupeKey} sera mantido como tag.`);
-    return;
+    console.warn(`[${item.userId}] Fila de transcricao de audio acima do limite configurado; audio ${dedupeKey} sera mantido na fila persistente.`);
   }
 
   // Incrementa estatísticas da instância correspondente
   const userId = item.userId;
   const instance = instances[userId];
   if (instance) {
-    const remainingForUser = audioTranscriptionQueue.filter(x => x.userId === userId).length;
-    if (remainingForUser === 0 && !instance.transcriptionRunning) {
-      instance.transcriptionTotal = 0;
-      instance.transcriptionCompleted = 0;
-      instance.transcriptionFailed = 0;
-      instance.transcriptionLastError = '';
-    }
     instance.transcriptionTotal = (instance.transcriptionTotal || 0) + 1;
   }
 
-  queuedAudioTranscriptionKeys.add(dedupeKey);
+  queuedAudioTranscriptionKeys.add(processingKey);
   audioTranscriptionQueue.push({
     ...item,
     dedupeKey,
     attempt: item.attempt || 1,
-    availableAt: item.availableAt || 0
+    availableAt: item.availableAt || 0,
+    longTerm: !!item.longTerm,
+    longTermAttempts: item.longTermAttempts || 0
   });
+  scheduleMediaProcessingStateSave(userId);
   runAudioTranscriptionQueue();
 }
 
@@ -903,10 +1334,12 @@ async function runAudioTranscriptionQueue() {
     const userId = item.userId;
     const instance = instances[userId];
     if (instance) {
+      item.instance = instance;
       instance.transcriptionRunning = true;
     }
 
     const attempt = Math.max(1, Number(item.attempt || 1));
+    const processingKey = mediaProcessingKey(userId, item.dedupeKey);
     let success = false;
     let errorMessage = '';
     let retryScheduled = false;
@@ -933,15 +1366,23 @@ async function runAudioTranscriptionQueue() {
           instance.transcriptionLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
         }
         console.warn(`[${userId}] Audio ${item.dedupeKey} sera tentado novamente em ${formatRetryDelay(retryDelayMs)} (${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}).`);
+      } else {
+        retryDelayMs = scheduleLongTermMediaRetry(item, errorMessage);
+        audioTranscriptionQueue.unshift(item);
+        retryScheduled = true;
+        if (instance) {
+          instance.transcriptionLastError = `${errorMessage} Tentativas curtas esgotadas; audio mantido na fila longa. Proxima tentativa em ${formatRetryDelay(retryDelayMs)}.`;
+        }
+        console.warn(`[${userId}] Audio ${item.dedupeKey} mantido na fila longa; nova tentativa em ${formatRetryDelay(retryDelayMs)} (ciclo ${item.longTermAttempts}).`);
       }
     } finally {
       if (success || !retryScheduled) {
-        queuedAudioTranscriptionKeys.delete(item.dedupeKey);
+        queuedAudioTranscriptionKeys.delete(processingKey);
       }
       if (success) {
-        failedAudioTranscriptionKeys.delete(mediaProcessingKey(userId, item.dedupeKey));
+        failedAudioTranscriptionKeys.delete(processingKey);
       } else if (!retryScheduled) {
-        failedAudioTranscriptionKeys.add(mediaProcessingKey(userId, item.dedupeKey));
+        failedAudioTranscriptionKeys.add(processingKey);
       }
       if (instance) {
         if (success) {
@@ -960,6 +1401,10 @@ async function runAudioTranscriptionQueue() {
         if (remainingForUser === 0) {
           instance.transcriptionRunning = false;
         }
+        if (audioTranscriptionQueue.length === 0) {
+          audioTranscriptionBackoffUntil = 0;
+        }
+        scheduleMediaProcessingStateSave(userId);
       }
     }
   }
@@ -1221,34 +1666,30 @@ function queueImageInterpretation(item) {
   if (!getImageInterpretationConfig()) return;
 
   const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
-  if (!dedupeKey || queuedImageInterpretationKeys.has(dedupeKey)) return;
-  if (failedImageInterpretationKeys.has(mediaProcessingKey(item.userId, dedupeKey))) return;
+  const processingKey = mediaProcessingKey(item.userId, dedupeKey);
+  if (!dedupeKey || queuedImageInterpretationKeys.has(processingKey)) return;
+  if (failedImageInterpretationKeys.has(processingKey)) return;
 
   if (imageInterpretationQueue.length >= IMAGE_INTERPRETATION_QUEUE_MAX) {
-    console.warn(`[${item.userId}] Fila de interpretacao visual cheia; midia ${dedupeKey} sera mantida como tag.`);
-    return;
+    console.warn(`[${item.userId}] Fila de interpretacao visual acima do limite configurado; midia ${dedupeKey} sera mantida na fila persistente.`);
   }
 
   const userId = item.userId;
   const instance = instances[userId];
   if (instance) {
-    const remainingForUser = imageInterpretationQueue.filter(x => x.userId === userId).length;
-    if (remainingForUser === 0 && !instance.imageInterpretationRunning) {
-      instance.imageInterpretationTotal = 0;
-      instance.imageInterpretationCompleted = 0;
-      instance.imageInterpretationFailed = 0;
-      instance.imageInterpretationLastError = '';
-    }
     instance.imageInterpretationTotal = (instance.imageInterpretationTotal || 0) + 1;
   }
 
-  queuedImageInterpretationKeys.add(dedupeKey);
+  queuedImageInterpretationKeys.add(processingKey);
   imageInterpretationQueue.push({
     ...item,
     dedupeKey,
     attempt: item.attempt || 1,
-    availableAt: item.availableAt || 0
+    availableAt: item.availableAt || 0,
+    longTerm: !!item.longTerm,
+    longTermAttempts: item.longTermAttempts || 0
   });
+  scheduleMediaProcessingStateSave(userId);
   runImageInterpretationQueue();
 }
 
@@ -1273,10 +1714,12 @@ async function runImageInterpretationQueue() {
     const userId = item.userId;
     const instance = instances[userId];
     if (instance) {
+      item.instance = instance;
       instance.imageInterpretationRunning = true;
     }
 
     const attempt = Math.max(1, Number(item.attempt || 1));
+    const processingKey = mediaProcessingKey(userId, item.dedupeKey);
     let success = false;
     let errorMessage = '';
     let retryScheduled = false;
@@ -1303,15 +1746,23 @@ async function runImageInterpretationQueue() {
           instance.imageInterpretationLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
         }
         console.warn(`[${userId}] Midia visual ${item.dedupeKey} sera tentada novamente em ${formatRetryDelay(retryDelayMs)} (${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}).`);
+      } else {
+        retryDelayMs = scheduleLongTermMediaRetry(item, errorMessage);
+        imageInterpretationQueue.unshift(item);
+        retryScheduled = true;
+        if (instance) {
+          instance.imageInterpretationLastError = `${errorMessage} Tentativas curtas esgotadas; midia mantida na fila longa. Proxima tentativa em ${formatRetryDelay(retryDelayMs)}.`;
+        }
+        console.warn(`[${userId}] Midia visual ${item.dedupeKey} mantida na fila longa; nova tentativa em ${formatRetryDelay(retryDelayMs)} (ciclo ${item.longTermAttempts}).`);
       }
     } finally {
       if (success || !retryScheduled) {
-        queuedImageInterpretationKeys.delete(item.dedupeKey);
+        queuedImageInterpretationKeys.delete(processingKey);
       }
       if (success) {
-        failedImageInterpretationKeys.delete(mediaProcessingKey(userId, item.dedupeKey));
+        failedImageInterpretationKeys.delete(processingKey);
       } else if (!retryScheduled) {
-        failedImageInterpretationKeys.add(mediaProcessingKey(userId, item.dedupeKey));
+        failedImageInterpretationKeys.add(processingKey);
       }
       if (instance) {
         if (success) {
@@ -1330,6 +1781,10 @@ async function runImageInterpretationQueue() {
         if (remainingForUser === 0) {
           instance.imageInterpretationRunning = false;
         }
+        if (imageInterpretationQueue.length === 0) {
+          imageInterpretationBackoffUntil = 0;
+        }
+        scheduleMediaProcessingStateSave(userId);
       }
     }
   }
@@ -2625,6 +3080,7 @@ async function connectUserWhatsApp(userId) {
 
       console.log(`[${userId}] WhatsApp conectado com sucesso!`);
       resetUserSyncTimer(userId);
+      resumeMediaProcessingForUser(userId);
       hydrateContactsFromStoredMessages(userId, instance)
         .then(() => refreshGroupMetadataAliases(userId, instance))
         .catch(err => {
@@ -3320,6 +3776,7 @@ async function getOrCreateInstance(userId) {
   if (Object.keys(hydratedContactsCache).length > 0) {
     saveContactsToFile(cleanUserId, hydratedContactsCache);
   }
+  await loadMediaProcessingState(cleanUserId, instanceState);
 
   // Busca o nome do usuário no Supabase profiles para carregar o myPushName real
   try {
@@ -4127,8 +4584,9 @@ app.get('/status', checkAuth, async (req, res) => {
   if (!instance) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
-  applyOwnerNameHint(userId.replace(/[^a-zA-Z0-9-_]/g, ''), instance, readOwnerNameHint(req));
-  const ownerDisplayName = await ensureOwnerDisplayName(userId.replace(/[^a-zA-Z0-9-_]/g, ''), instance);
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  applyOwnerNameHint(cleanUserId, instance, readOwnerNameHint(req));
+  const ownerDisplayName = await ensureOwnerDisplayName(cleanUserId, instance);
 
   res.json({
     status: instance.connectionStatus,
@@ -4147,11 +4605,15 @@ app.get('/status', checkAuth, async (req, res) => {
     },
     audioTranscription: {
       configured: !!getAudioTranscriptionConfig(),
-      queueLength: audioTranscriptionQueue.filter(x => x.userId === userId).length,
-      retrying: countScheduledRetriesForUser(audioTranscriptionQueue, userId),
-      nextRetryInMs: nextRetryInMsForUser(audioTranscriptionQueue, userId, audioTranscriptionBackoffUntil),
+      queueLength: audioTranscriptionQueue.filter(x => x.userId === cleanUserId).length,
+      retrying: countScheduledRetriesForUser(audioTranscriptionQueue, cleanUserId),
+      nextRetryInMs: nextRetryInMsForUser(audioTranscriptionQueue, cleanUserId, audioTranscriptionBackoffUntil),
       pauseInMs: queuePauseInMs(audioTranscriptionBackoffUntil),
       maxAttempts: MEDIA_PROCESSING_MAX_ATTEMPTS,
+      longTermQueueLength: countLongTermItemsForUser(audioTranscriptionQueue, cleanUserId),
+      longTermNextRetryInMs: nextLongTermRetryInMsForUser(audioTranscriptionQueue, cleanUserId),
+      longTermRetryStepMs: MEDIA_LONG_TERM_RETRY_STEP_MS,
+      longTermRetryMaxMs: MEDIA_LONG_TERM_RETRY_MAX_MS,
       running: !!instance.transcriptionRunning,
       completed: instance.transcriptionCompleted || 0,
       failed: instance.transcriptionFailed || 0,
@@ -4161,11 +4623,15 @@ app.get('/status', checkAuth, async (req, res) => {
     imageInterpretation: {
       configured: !!getImageInterpretationConfig(),
       compressorAvailable: !!sharp,
-      queueLength: imageInterpretationQueue.filter(x => x.userId === userId).length,
-      retrying: countScheduledRetriesForUser(imageInterpretationQueue, userId),
-      nextRetryInMs: nextRetryInMsForUser(imageInterpretationQueue, userId, imageInterpretationBackoffUntil),
+      queueLength: imageInterpretationQueue.filter(x => x.userId === cleanUserId).length,
+      retrying: countScheduledRetriesForUser(imageInterpretationQueue, cleanUserId),
+      nextRetryInMs: nextRetryInMsForUser(imageInterpretationQueue, cleanUserId, imageInterpretationBackoffUntil),
       pauseInMs: queuePauseInMs(imageInterpretationBackoffUntil),
       maxAttempts: MEDIA_PROCESSING_MAX_ATTEMPTS,
+      longTermQueueLength: countLongTermItemsForUser(imageInterpretationQueue, cleanUserId),
+      longTermNextRetryInMs: nextLongTermRetryInMsForUser(imageInterpretationQueue, cleanUserId),
+      longTermRetryStepMs: MEDIA_LONG_TERM_RETRY_STEP_MS,
+      longTermRetryMaxMs: MEDIA_LONG_TERM_RETRY_MAX_MS,
       running: !!instance.imageInterpretationRunning,
       completed: instance.imageInterpretationCompleted || 0,
       failed: instance.imageInterpretationFailed || 0,
