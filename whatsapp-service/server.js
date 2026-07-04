@@ -626,12 +626,23 @@ function retryDelayMsForError(errorMessage, failedAttempt) {
   return Math.min(MEDIA_RETRY_MAX_MS, Math.max(0, delay));
 }
 
+function shouldPauseMediaQueueForError(errorMessage) {
+  const text = String(errorMessage || '').toLowerCase();
+  return parseRetryDelayMs(text) != null ||
+    /\b429\b/.test(text) ||
+    text.includes('rate limit') ||
+    text.includes('too many requests') ||
+    text.includes('retry-after') ||
+    text.includes('try again') ||
+    text.includes('temporarily unavailable');
+}
+
 function queuePauseInMs(backoffUntil) {
   return Math.max(0, Number(backoffUntil || 0) - Date.now());
 }
 
-function extendQueueBackoff(backoffUntil, retryDelayMs) {
-  return Math.max(Number(backoffUntil || 0), Date.now() + Math.max(0, retryDelayMs));
+function extendQueueBackoff(backoffUntil, retryDelayMs, now = Date.now()) {
+  return Math.max(Number(backoffUntil || 0), now + Math.max(0, retryDelayMs));
 }
 
 function formatRetryDelay(ms) {
@@ -899,17 +910,24 @@ async function runAudioTranscriptionQueue() {
     let success = false;
     let errorMessage = '';
     let retryScheduled = false;
+    let retryDelayMs = 0;
+    let shouldPauseQueue = false;
     try {
       success = await transcribeQueuedAudio(item);
     } catch (err) {
       errorMessage = err.message || String(err);
       console.warn(`[${userId}] Falha ao transcrever audio ${item.dedupeKey}:`, errorMessage);
+      retryDelayMs = retryDelayMsForError(errorMessage, attempt);
+      shouldPauseQueue = shouldPauseMediaQueueForError(errorMessage);
+      const retryNow = Date.now();
+      const retryAt = retryNow + retryDelayMs;
+      if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS || shouldPauseQueue) {
+        audioTranscriptionBackoffUntil = extendQueueBackoff(audioTranscriptionBackoffUntil, retryDelayMs, retryNow);
+      }
       if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS) {
-        const retryDelayMs = retryDelayMsForError(errorMessage, attempt);
         item.attempt = attempt + 1;
-        item.availableAt = Date.now() + retryDelayMs;
-        audioTranscriptionBackoffUntil = extendQueueBackoff(audioTranscriptionBackoffUntil, retryDelayMs);
-        audioTranscriptionQueue.push(item);
+        item.availableAt = retryAt;
+        audioTranscriptionQueue.unshift(item);
         retryScheduled = true;
         if (instance) {
           instance.transcriptionLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
@@ -930,8 +948,11 @@ async function runAudioTranscriptionQueue() {
           instance.transcriptionCompleted = (instance.transcriptionCompleted || 0) + 1;
         } else if (!retryScheduled) {
           instance.transcriptionFailed = (instance.transcriptionFailed || 0) + 1;
+          const finalPauseMessage = shouldPauseQueue
+            ? ` Fila pausada por ${formatRetryDelay(retryDelayMs)} antes do proximo item.`
+            : '';
           const finalErrorMessage = errorMessage
-            ? `${errorMessage} Tentativas esgotadas (${attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}); item removido da fila.`
+            ? `${errorMessage} Tentativas esgotadas (${attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}); item removido da fila.${finalPauseMessage}`
             : 'Transcricao nao atualizou a mensagem.';
           instance.transcriptionLastError = finalErrorMessage;
         }
@@ -1259,17 +1280,24 @@ async function runImageInterpretationQueue() {
     let success = false;
     let errorMessage = '';
     let retryScheduled = false;
+    let retryDelayMs = 0;
+    let shouldPauseQueue = false;
     try {
       success = await interpretQueuedImage(item);
     } catch (err) {
       errorMessage = err.message || String(err);
       console.warn(`[${userId}] Falha ao interpretar midia visual ${item.dedupeKey}:`, errorMessage);
+      retryDelayMs = retryDelayMsForError(errorMessage, attempt);
+      shouldPauseQueue = shouldPauseMediaQueueForError(errorMessage);
+      const retryNow = Date.now();
+      const retryAt = retryNow + retryDelayMs;
+      if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS || shouldPauseQueue) {
+        imageInterpretationBackoffUntil = extendQueueBackoff(imageInterpretationBackoffUntil, retryDelayMs, retryNow);
+      }
       if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS) {
-        const retryDelayMs = retryDelayMsForError(errorMessage, attempt);
         item.attempt = attempt + 1;
-        item.availableAt = Date.now() + retryDelayMs;
-        imageInterpretationBackoffUntil = extendQueueBackoff(imageInterpretationBackoffUntil, retryDelayMs);
-        imageInterpretationQueue.push(item);
+        item.availableAt = retryAt;
+        imageInterpretationQueue.unshift(item);
         retryScheduled = true;
         if (instance) {
           instance.imageInterpretationLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
@@ -1290,8 +1318,11 @@ async function runImageInterpretationQueue() {
           instance.imageInterpretationCompleted = (instance.imageInterpretationCompleted || 0) + 1;
         } else if (!retryScheduled) {
           instance.imageInterpretationFailed = (instance.imageInterpretationFailed || 0) + 1;
+          const finalPauseMessage = shouldPauseQueue
+            ? ` Fila pausada por ${formatRetryDelay(retryDelayMs)} antes do proximo item.`
+            : '';
           const finalErrorMessage = errorMessage
-            ? `${errorMessage} Tentativas esgotadas (${attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}); item removido da fila.`
+            ? `${errorMessage} Tentativas esgotadas (${attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}); item removido da fila.${finalPauseMessage}`
             : 'Interpretacao nao atualizou a mensagem.';
           instance.imageInterpretationLastError = finalErrorMessage;
         }
