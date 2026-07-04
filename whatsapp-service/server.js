@@ -70,6 +70,9 @@ try {
     const serviceEnvKeys = new Set([
       'GROQ_API_KEY',
       'OPENAI_API_KEY',
+      'GEMINI_API_KEY',
+      'GEMINI_AUDIO_MODEL',
+      'GEMINI_VISION_MODEL',
       'AUDIO_TRANSCRIPTION_ENABLED',
       'AUDIO_TRANSCRIPTION_URL',
       'AUDIO_TRANSCRIPTION_API_KEY',
@@ -95,6 +98,7 @@ try {
       'MEDIA_ERROR_SNIPPET_LENGTH',
       'MEDIA_LONG_TERM_RETRY_STEP_MS',
       'MEDIA_LONG_TERM_RETRY_MAX_MS',
+      'MEDIA_MAX_LONG_TERM_ATTEMPTS',
       'MEDIA_STATE_PERSIST_DELAY_MS'
     ]);
     dotenvContent.split('\n').forEach(line => {
@@ -381,7 +385,7 @@ async function clearUserMessagesData(userId) {
   return result;
 }
 
-async function loadProfileNameFromSupabase(userId) {
+async function loadProfileDataFromSupabase(userId) {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   
@@ -391,10 +395,10 @@ async function loadProfileNameFromSupabase(userId) {
 
   const cleanUrl = supabaseUrl.replace(/\/$/, '');
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout
+  const timeoutId = setTimeout(() => controller.abort(), 4000);
 
   try {
-    const response = await fetch(`${cleanUrl}/rest/v1/profiles?id=eq.${userId}&select=name,email`, {
+    let response = await fetch(`${cleanUrl}/rest/v1/profiles?id=eq.${userId}&select=name,email,transcribe_audio,interpret_images`, {
       headers: {
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`
@@ -402,21 +406,38 @@ async function loadProfileNameFromSupabase(userId) {
       signal: controller.signal
     });
 
-    clearTimeout(timeoutId);
+    if (!response.ok) {
+      // Se falhar (ex: colunas novas ainda não existem), faz fallback
+      const fallbackController = new AbortController();
+      const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), 4000);
+      response = await fetch(`${cleanUrl}/rest/v1/profiles?id=eq.${userId}&select=name,email`, {
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`
+        },
+        signal: fallbackController.signal
+      });
+      clearTimeout(fallbackTimeoutId);
+    } else {
+      clearTimeout(timeoutId);
+    }
 
     if (response.ok) {
       const data = await response.json();
       if (data && data.length > 0) {
-        const profileName = data[0].name || (data[0].email ? data[0].email.split('@')[0] : null);
-        if (profileName) {
-          console.log(`[${userId}] Nome do perfil do Supabase carregado: ${profileName}`);
-          return profileName;
-        }
+        return data[0];
       }
     }
   } catch (err) {
-    clearTimeout(timeoutId);
-    console.error(`[${userId}] Erro de rede ao buscar nome no Supabase profiles:`, err.message || err);
+    console.error(`[${userId}] Erro de rede ao buscar dados do perfil no Supabase:`, err.message || err);
+  }
+  return null;
+}
+
+async function loadProfileNameFromSupabase(userId) {
+  const profile = await loadProfileDataFromSupabase(userId);
+  if (profile) {
+    return profile.name || (profile.email ? profile.email.split('@')[0] : null);
   }
   return null;
 }
@@ -460,6 +481,7 @@ const MEDIA_RETRY_POLL_MS = Math.max(250, parseInt(process.env.MEDIA_RETRY_POLL_
 const MEDIA_ERROR_SNIPPET_LENGTH = Math.max(300, parseInt(process.env.MEDIA_ERROR_SNIPPET_LENGTH || '1000', 10));
 const MEDIA_LONG_TERM_RETRY_STEP_MS = Math.max(1000, parseInt(process.env.MEDIA_LONG_TERM_RETRY_STEP_MS || '60000', 10));
 const MEDIA_LONG_TERM_RETRY_MAX_MS = Math.max(MEDIA_LONG_TERM_RETRY_STEP_MS, parseInt(process.env.MEDIA_LONG_TERM_RETRY_MAX_MS || String(30 * 60 * 1000), 10));
+const MEDIA_MAX_LONG_TERM_ATTEMPTS = Math.max(1, parseInt(process.env.MEDIA_MAX_LONG_TERM_ATTEMPTS || '10', 10));
 const MEDIA_STATE_PERSIST_DELAY_MS = Math.max(100, parseInt(process.env.MEDIA_STATE_PERSIST_DELAY_MS || '250', 10));
 const IMAGE_INTERPRETATION_ENABLED = process.env.IMAGE_INTERPRETATION_ENABLED !== 'false';
 const IMAGE_INTERPRETATION_MAX_BYTES = Math.max(256 * 1024, parseInt(process.env.IMAGE_INTERPRETATION_MAX_BYTES || String(3 * 1024 * 1024), 10));
@@ -751,6 +773,11 @@ function scheduleLongTermMediaRetry(item, errorMessage) {
   item.availableAt = Date.now() + retryDelayMs;
   item.lastError = String(errorMessage || '').slice(0, MEDIA_ERROR_SNIPPET_LENGTH);
   return retryDelayMs;
+}
+
+function isPermanentMediaError(errorMessage = '') {
+  const err = String(errorMessage).toLowerCase();
+  return err.includes('status code 403') || err.includes('forbidden') || err.includes('404') || err.includes('status code 404');
 }
 
 function mediaStateFilePath(userId) {
@@ -1203,41 +1230,117 @@ function extractTranscriptionText(data) {
 
 async function transcribeAudioBuffer(buffer, mimetype) {
   const config = getAudioTranscriptionConfig();
-  if (!config) return '';
-  if (!buffer || buffer.length === 0) return '';
-  if (buffer.length > AUDIO_TRANSCRIPTION_MAX_BYTES) {
-    console.warn(`[audio] Audio ignorado para transcricao: ${buffer.length} bytes excedem o limite de ${AUDIO_TRANSCRIPTION_MAX_BYTES}.`);
-    return '';
+  if (!config) {
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        return await transcribeAudioWithGemini(buffer, mimetype);
+      } catch (geminiErr) {
+        throw new Error(`Fallback Gemini falhou: ${geminiErr.message}`);
+      }
+    }
+    return { text: '', provider: '' };
   }
 
-  const form = new FormData();
-  const extension = extensionFromMimeType(mimetype);
-  const blob = new Blob([buffer], { type: blobTypeFromMimeType(mimetype) });
-  form.append('file', blob, `whatsapp-audio.${extension}`);
-  form.append('model', config.model);
-  form.append('response_format', 'json');
-  form.append('temperature', '0');
-  if (AUDIO_TRANSCRIPTION_LANGUAGE) form.append('language', AUDIO_TRANSCRIPTION_LANGUAGE);
-  if (AUDIO_TRANSCRIPTION_PROMPT) form.append('prompt', AUDIO_TRANSCRIPTION_PROMPT);
+  if (!buffer || buffer.length === 0) return { text: '', provider: '' };
+  if (buffer.length > AUDIO_TRANSCRIPTION_MAX_BYTES) {
+    console.warn(`[audio] Audio ignorado para transcricao: ${buffer.length} bytes excedem o limite de ${AUDIO_TRANSCRIPTION_MAX_BYTES}.`);
+    return { text: '', provider: '' };
+  }
 
-  const response = await fetch(config.url, {
+  try {
+    const form = new FormData();
+    const extension = extensionFromMimeType(mimetype);
+    const blob = new Blob([buffer], { type: blobTypeFromMimeType(mimetype) });
+    form.append('file', blob, `whatsapp-audio.${extension}`);
+    form.append('model', config.model);
+    form.append('response_format', 'json');
+    form.append('temperature', '0');
+    if (AUDIO_TRANSCRIPTION_LANGUAGE) form.append('language', AUDIO_TRANSCRIPTION_LANGUAGE);
+    if (AUDIO_TRANSCRIPTION_PROMPT) form.append('prompt', AUDIO_TRANSCRIPTION_PROMPT);
+
+    const response = await fetch(config.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.key}`
+      },
+      body: form
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`transcription ${response.status}: ${errText.slice(0, MEDIA_ERROR_SNIPPET_LENGTH)}`);
+    }
+
+    const provider = config.url.includes('groq') ? 'Groq' : (config.url.includes('openai') ? 'OpenAI' : 'Serviço Principal');
+    let text = '';
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      text = extractTranscriptionText(await response.json());
+    } else {
+      text = extractTranscriptionText(await response.text());
+    }
+    return { text, provider };
+  } catch (primaryErr) {
+    console.warn(`[audio] Servico de transcricao principal falhou: ${primaryErr.message}. Tentando fallback com Gemini...`);
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        return await transcribeAudioWithGemini(buffer, mimetype);
+      } catch (geminiErr) {
+        throw new Error(`Servico principal falhou (${primaryErr.message}) e fallback Gemini tambem falhou: ${geminiErr.message}`);
+      }
+    }
+    throw primaryErr;
+  }
+}
+
+async function transcribeAudioWithGemini(buffer, mimetype) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('Chave GEMINI_API_KEY nao configurada.');
+  }
+
+  const model = process.env.GEMINI_AUDIO_MODEL || 'gemini-2.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const base64Data = buffer.toString('base64');
+  const cleanMime = blobTypeFromMimeType(mimetype);
+
+  const prompt = AUDIO_TRANSCRIPTION_PROMPT || 'Transcreva este audio em texto.';
+
+  const response = await fetch(url, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${config.key}`
+      'Content-Type': 'application/json'
     },
-    body: form
+    body: JSON.stringify({
+      contents: [{
+        parts: [
+          { text: prompt },
+          {
+            inlineData: {
+              mimeType: cleanMime,
+              data: base64Data
+            }
+          }
+        ]
+      }],
+      generationConfig: {
+        temperature: 0.0
+      }
+    })
   });
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
-    throw new Error(`transcription ${response.status}: ${errText.slice(0, MEDIA_ERROR_SNIPPET_LENGTH)}`);
+    throw new Error(`Gemini transcription error ${response.status}: ${errText.slice(0, MEDIA_ERROR_SNIPPET_LENGTH)}`);
   }
 
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return extractTranscriptionText(await response.json());
+  const data = await response.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    throw new Error('Resposta de transcricao do Gemini veio vazia ou com formato invalido.');
   }
-  return extractTranscriptionText(await response.text());
+
+  return { text: normalizeDisplayName(text), provider: 'Gemini' };
 }
 
 function isAudioTranscriptionText(text) {
@@ -1271,6 +1374,11 @@ function findStoredMessageByDedupeKey(userId, messageObject) {
 
 function shouldQueueAudioTranscription(userId, messageObject, savedKeys) {
   if (!getAudioTranscriptionConfig()) return false;
+
+  const instance = instances[userId];
+  if (instance && instance.transcribeAudioSetting === false) {
+    return false;
+  }
 
   const dedupeKey = messageObject?.dedupeKey || createDedupeKey(messageObject || {});
   if (!dedupeKey) return false;
@@ -1350,30 +1458,46 @@ async function runAudioTranscriptionQueue() {
     } catch (err) {
       errorMessage = err.message || String(err);
       console.warn(`[${userId}] Falha ao transcrever audio ${item.dedupeKey}:`, errorMessage);
-      retryDelayMs = retryDelayMsForError(errorMessage, attempt);
-      shouldPauseQueue = shouldPauseMediaQueueForError(errorMessage);
-      const retryNow = Date.now();
-      const retryAt = retryNow + retryDelayMs;
-      if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS || shouldPauseQueue) {
-        audioTranscriptionBackoffUntil = extendQueueBackoff(audioTranscriptionBackoffUntil, retryDelayMs, retryNow);
-      }
-      if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS) {
-        item.attempt = attempt + 1;
-        item.availableAt = retryAt;
-        audioTranscriptionQueue.unshift(item);
-        retryScheduled = true;
+
+      if (isPermanentMediaError(errorMessage)) {
+        console.error(`[${userId}] Audio ${item.dedupeKey} falhou com erro permanente (${errorMessage}). Descartando da fila de retentativas imediatamente.`);
         if (instance) {
-          instance.transcriptionLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
+          instance.transcriptionLastError = `Erro permanente no download/processamento: ${errorMessage}. Item descartado.`;
         }
-        console.warn(`[${userId}] Audio ${item.dedupeKey} sera tentado novamente em ${formatRetryDelay(retryDelayMs)} (${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}).`);
       } else {
-        retryDelayMs = scheduleLongTermMediaRetry(item, errorMessage);
-        audioTranscriptionQueue.unshift(item);
-        retryScheduled = true;
-        if (instance) {
-          instance.transcriptionLastError = `${errorMessage} Tentativas curtas esgotadas; audio mantido na fila longa. Proxima tentativa em ${formatRetryDelay(retryDelayMs)}.`;
+        retryDelayMs = retryDelayMsForError(errorMessage, attempt);
+        shouldPauseQueue = shouldPauseMediaQueueForError(errorMessage);
+        const retryNow = Date.now();
+        const retryAt = retryNow + retryDelayMs;
+        if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS || shouldPauseQueue) {
+          audioTranscriptionBackoffUntil = extendQueueBackoff(audioTranscriptionBackoffUntil, retryDelayMs, retryNow);
         }
-        console.warn(`[${userId}] Audio ${item.dedupeKey} mantido na fila longa; nova tentativa em ${formatRetryDelay(retryDelayMs)} (ciclo ${item.longTermAttempts}).`);
+        if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS) {
+          item.attempt = attempt + 1;
+          item.availableAt = retryAt;
+          audioTranscriptionQueue.unshift(item);
+          retryScheduled = true;
+          if (instance) {
+            instance.transcriptionLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
+          }
+          console.warn(`[${userId}] Audio ${item.dedupeKey} sera tentado novamente em ${formatRetryDelay(retryDelayMs)} (${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}).`);
+        } else {
+          const nextAttempts = Math.max(0, Number(item.longTermAttempts || 0)) + 1;
+          if (nextAttempts > MEDIA_MAX_LONG_TERM_ATTEMPTS) {
+            console.error(`[${userId}] Audio ${item.dedupeKey} excedeu o limite maximo de tentativas de longo prazo (${MEDIA_MAX_LONG_TERM_ATTEMPTS}). Removendo da fila permanentemente.`);
+            if (instance) {
+              instance.transcriptionLastError = `Erro persistente: ${errorMessage}. Removido da fila apos ${MEDIA_MAX_LONG_TERM_ATTEMPTS} tentativas de longo prazo.`;
+            }
+          } else {
+            retryDelayMs = scheduleLongTermMediaRetry(item, errorMessage);
+            audioTranscriptionQueue.unshift(item);
+            retryScheduled = true;
+            if (instance) {
+              instance.transcriptionLastError = `${errorMessage} Tentativas curtas esgotadas; audio mantido na fila longa. Proxima tentativa em ${formatRetryDelay(retryDelayMs)}.`;
+            }
+            console.warn(`[${userId}] Audio ${item.dedupeKey} mantido na fila longa; nova tentativa em ${formatRetryDelay(retryDelayMs)} (ciclo ${item.longTermAttempts}).`);
+          }
+        }
       }
     } finally {
       if (success || !retryScheduled) {
@@ -1428,12 +1552,13 @@ async function transcribeQueuedAudio(item) {
   if (!buffer || buffer.length === 0) {
     throw new Error('Download do audio retornou vazio.');
   }
-  const transcript = await transcribeAudioBuffer(buffer, item.mimetype);
-  if (!transcript) {
+  const result = await transcribeAudioBuffer(buffer, item.mimetype);
+  if (!result || !result.text) {
     throw new Error('Servico de transcricao retornou texto vazio.');
   }
 
-  const updated = await updateStoredMessageText(item.userId, item.messageObject, `[Áudio transcrito] ${transcript}`);
+  const tag = `[Áudio transcrito por ${result.provider}]`;
+  const updated = await updateStoredMessageText(item.userId, item.messageObject, `${tag} ${result.text}`);
   if (!updated) {
     throw new Error('Transcricao gerada, mas a mensagem nao foi atualizada.');
   }
@@ -1595,50 +1720,124 @@ async function compressImageBufferForVision(buffer) {
 }
 
 async function interpretImageBuffer(buffer) {
-  const config = getImageInterpretationConfig();
-  if (!config) return '';
-
   const compressed = await compressImageBufferForVision(buffer);
-  if (!compressed) return '';
+  if (!compressed) return { text: '', provider: '' };
 
-  const imageBase64 = compressed.buffer.toString('base64');
-  const response = await fetch(config.url, {
+  const config = getImageInterpretationConfig();
+  if (!config) {
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        return await interpretImageWithGemini(compressed);
+      } catch (geminiErr) {
+        throw new Error(`Fallback Gemini falhou: ${geminiErr.message}`);
+      }
+    }
+    return { text: '', provider: '' };
+  }
+
+  try {
+    const imageBase64 = compressed.buffer.toString('base64');
+    const response = await fetch(config.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.key}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: IMAGE_INTERPRETATION_PROMPT },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:${compressed.mimetype};base64,${imageBase64}`
+                }
+              }
+            ]
+          }
+        ],
+        temperature: 0.1,
+        max_completion_tokens: 500
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`image interpretation ${response.status}: ${errText.slice(0, MEDIA_ERROR_SNIPPET_LENGTH)}`);
+    }
+
+    const provider = config.url.includes('groq') ? 'Groq' : (config.url.includes('openai') ? 'OpenAI' : 'Serviço Principal');
+    let text = '';
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      text = extractVisionResponseText(await response.json());
+    } else {
+      text = extractVisionResponseText(await response.text());
+    }
+    return { text, provider };
+  } catch (primaryErr) {
+    console.warn(`[image] Servico de interpretacao principal falhou: ${primaryErr.message}. Tentando fallback com Gemini...`);
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        return await interpretImageWithGemini(compressed);
+      } catch (geminiErr) {
+        throw new Error(`Servico principal falhou (${primaryErr.message}) e fallback Gemini tambem falhou: ${geminiErr.message}`);
+      }
+    }
+    throw primaryErr;
+  }
+}
+
+async function interpretImageWithGemini(compressed) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('Chave GEMINI_API_KEY nao configurada.');
+  }
+
+  const model = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const base64Data = compressed.buffer.toString('base64');
+  const cleanMime = compressed.mimetype;
+
+  const response = await fetch(url, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${config.key}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: config.model,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: IMAGE_INTERPRETATION_PROMPT },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:${compressed.mimetype};base64,${imageBase64}`
-              }
+      contents: [{
+        parts: [
+          { text: IMAGE_INTERPRETATION_PROMPT },
+          {
+            inlineData: {
+              mimeType: cleanMime,
+              data: base64Data
             }
-          ]
-        }
-      ],
-      temperature: 0.1,
-      max_completion_tokens: 500
+          }
+        ]
+      }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 500
+      }
     })
   });
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
-    throw new Error(`image interpretation ${response.status}: ${errText.slice(0, MEDIA_ERROR_SNIPPET_LENGTH)}`);
+    throw new Error(`Gemini image interpretation error ${response.status}: ${errText.slice(0, MEDIA_ERROR_SNIPPET_LENGTH)}`);
   }
 
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return extractVisionResponseText(await response.json());
+  const data = await response.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    throw new Error('Resposta de interpretacao do Gemini veio vazia ou com formato invalido.');
   }
-  return extractVisionResponseText(await response.text());
+
+  return { text: normalizeDisplayName(text), provider: 'Gemini' };
 }
 
 function isImageInterpretationText(text) {
@@ -1652,6 +1851,11 @@ function isImageInterpretationText(text) {
 
 function shouldQueueImageInterpretation(userId, messageObject, savedKeys) {
   if (!getImageInterpretationConfig()) return false;
+
+  const instance = instances[userId];
+  if (instance && instance.interpretImagesSetting === false) {
+    return false;
+  }
 
   const dedupeKey = messageObject?.dedupeKey || createDedupeKey(messageObject || {});
   if (!dedupeKey) return false;
@@ -1730,30 +1934,46 @@ async function runImageInterpretationQueue() {
     } catch (err) {
       errorMessage = err.message || String(err);
       console.warn(`[${userId}] Falha ao interpretar midia visual ${item.dedupeKey}:`, errorMessage);
-      retryDelayMs = retryDelayMsForError(errorMessage, attempt);
-      shouldPauseQueue = shouldPauseMediaQueueForError(errorMessage);
-      const retryNow = Date.now();
-      const retryAt = retryNow + retryDelayMs;
-      if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS || shouldPauseQueue) {
-        imageInterpretationBackoffUntil = extendQueueBackoff(imageInterpretationBackoffUntil, retryDelayMs, retryNow);
-      }
-      if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS) {
-        item.attempt = attempt + 1;
-        item.availableAt = retryAt;
-        imageInterpretationQueue.unshift(item);
-        retryScheduled = true;
+
+      if (isPermanentMediaError(errorMessage)) {
+        console.error(`[${userId}] Midia visual ${item.dedupeKey} falhou com erro permanente (${errorMessage}). Descartando da fila de retentativas imediatamente.`);
         if (instance) {
-          instance.imageInterpretationLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
+          instance.imageInterpretationLastError = `Erro permanente no download/processamento: ${errorMessage}. Item descartado.`;
         }
-        console.warn(`[${userId}] Midia visual ${item.dedupeKey} sera tentada novamente em ${formatRetryDelay(retryDelayMs)} (${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}).`);
       } else {
-        retryDelayMs = scheduleLongTermMediaRetry(item, errorMessage);
-        imageInterpretationQueue.unshift(item);
-        retryScheduled = true;
-        if (instance) {
-          instance.imageInterpretationLastError = `${errorMessage} Tentativas curtas esgotadas; midia mantida na fila longa. Proxima tentativa em ${formatRetryDelay(retryDelayMs)}.`;
+        retryDelayMs = retryDelayMsForError(errorMessage, attempt);
+        shouldPauseQueue = shouldPauseMediaQueueForError(errorMessage);
+        const retryNow = Date.now();
+        const retryAt = retryNow + retryDelayMs;
+        if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS || shouldPauseQueue) {
+          imageInterpretationBackoffUntil = extendQueueBackoff(imageInterpretationBackoffUntil, retryDelayMs, retryNow);
         }
-        console.warn(`[${userId}] Midia visual ${item.dedupeKey} mantida na fila longa; nova tentativa em ${formatRetryDelay(retryDelayMs)} (ciclo ${item.longTermAttempts}).`);
+        if (attempt < MEDIA_PROCESSING_MAX_ATTEMPTS) {
+          item.attempt = attempt + 1;
+          item.availableAt = retryAt;
+          imageInterpretationQueue.unshift(item);
+          retryScheduled = true;
+          if (instance) {
+            instance.imageInterpretationLastError = `${errorMessage} Nova tentativa ${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS} em ${formatRetryDelay(retryDelayMs)}.`;
+          }
+          console.warn(`[${userId}] Midia visual ${item.dedupeKey} sera tentada novamente em ${formatRetryDelay(retryDelayMs)} (${item.attempt}/${MEDIA_PROCESSING_MAX_ATTEMPTS}).`);
+        } else {
+          const nextAttempts = Math.max(0, Number(item.longTermAttempts || 0)) + 1;
+          if (nextAttempts > MEDIA_MAX_LONG_TERM_ATTEMPTS) {
+            console.error(`[${userId}] Midia visual ${item.dedupeKey} excedeu o limite maximo de tentativas de longo prazo (${MEDIA_MAX_LONG_TERM_ATTEMPTS}). Removendo da fila permanentemente.`);
+            if (instance) {
+              instance.imageInterpretationLastError = `Erro persistente: ${errorMessage}. Removida da fila apos ${MEDIA_MAX_LONG_TERM_ATTEMPTS} tentativas de longo prazo.`;
+            }
+          } else {
+            retryDelayMs = scheduleLongTermMediaRetry(item, errorMessage);
+            imageInterpretationQueue.unshift(item);
+            retryScheduled = true;
+            if (instance) {
+              instance.imageInterpretationLastError = `${errorMessage} Tentativas curtas esgotadas; midia mantida na fila longa. Proxima tentativa em ${formatRetryDelay(retryDelayMs)}.`;
+            }
+            console.warn(`[${userId}] Midia visual ${item.dedupeKey} mantida na fila longa; nova tentativa em ${formatRetryDelay(retryDelayMs)} (ciclo ${item.longTermAttempts}).`);
+          }
+        }
       }
     } finally {
       if (success || !retryScheduled) {
@@ -1795,13 +2015,15 @@ async function runImageInterpretationQueue() {
   }
 }
 
-function formatImageInterpretationMessage(originalText, interpretation) {
+function formatImageInterpretationMessage(originalText, interpretation, provider) {
   const cleanOriginal = normalizeDisplayName(originalText);
   const cleanInterpretation = normalizeDisplayName(interpretation);
   if (!cleanInterpretation) return '';
 
   const isSticker = normalizedComparableText(cleanOriginal).startsWith('[figurinha]');
-  const tag = isSticker ? 'Figurinha interpretada' : 'Imagem interpretada';
+  const tag = isSticker 
+    ? `Figurinha interpretada por ${provider}` 
+    : `Imagem interpretada por ${provider}`;
   const caption = cleanOriginal.replace(/^\[(Imagem|Figurinha)\]\s*/i, '').trim();
   if (caption) {
     return `[${tag}] Legenda: ${caption}. Interpretacao: ${cleanInterpretation}`;
@@ -1822,8 +2044,11 @@ async function interpretQueuedImage(item) {
   if (!buffer || buffer.length === 0) {
     throw new Error('Download da imagem retornou vazio.');
   }
-  const interpretation = await interpretImageBuffer(buffer);
-  const nextText = formatImageInterpretationMessage(item.messageObject.text, interpretation);
+  const result = await interpretImageBuffer(buffer);
+  if (!result || !result.text) {
+    throw new Error('Servico de interpretacao retornou texto vazio.');
+  }
+  const nextText = formatImageInterpretationMessage(item.messageObject.text, result.text, result.provider);
   if (!nextText) {
     throw new Error('Servico de interpretacao retornou texto vazio.');
   }
@@ -2497,13 +2722,26 @@ function isValidConversationDisplayName(name) {
   return true;
 }
 
-function buildMessageConversations(messages, contactsCache) {
+function buildMessageConversations(messages, contactsCache, ownerJid = '', ownerLid = '', ownerPushName = 'Você') {
   const grouped = {};
 
   messages.forEach(rawMessage => {
     const normalized = normalizeStoredMessage(rawMessage);
-    const chatKey = normalized.sender;
+    let chatKey = normalized.sender;
     if (!chatKey || chatKey === 'undefined' || chatKey.trim() === '') return;
+
+    // Unifica a conversa do próprio usuário consigo mesmo (LID + JID)
+    if (ownerJid) {
+      const cleanOwnerJid = ownerJid.split('@')[0].split(':')[0];
+      const cleanOwnerLid = ownerLid ? ownerLid.split('@')[0].split(':')[0] : '';
+      const cleanChatKey = chatKey.split('@')[0].split(':')[0];
+
+      if (cleanChatKey === cleanOwnerJid || (cleanOwnerLid && cleanChatKey === cleanOwnerLid)) {
+        chatKey = cleanOwnerJid;
+        normalized.sender = cleanOwnerJid;
+        normalized.chatJid = `${cleanOwnerJid}@s.whatsapp.net`;
+      }
+    }
 
     if (!grouped[chatKey]) {
       grouped[chatKey] = {
@@ -2525,6 +2763,13 @@ function buildMessageConversations(messages, contactsCache) {
     if (!displayName && !isGroup) {
       const nonMeMessage = chat.messages.find(m => !m.fromMe);
       if (nonMeMessage) displayName = nonMeMessage.name;
+    }
+
+    if (ownerJid) {
+      const cleanOwnerJid = ownerJid.split('@')[0].split(':')[0];
+      if (chatKey === cleanOwnerJid) {
+        displayName = ownerPushName || 'Você';
+      }
     }
 
     if (!displayName || isSelfNamePlaceholder(displayName) || displayName.includes('@')) {
@@ -3061,6 +3306,10 @@ async function connectUserWhatsApp(userId) {
       instance.currentQr = null;
       instance.connectionStatus = 'connected';
       instance.syncStatus = 'syncing';
+      if (sock && sock.user) {
+        instance.myJid = jidNumber(sock.user.id);
+        instance.myLid = sock.user.lid ? jidNumber(sock.user.lid) : '';
+      }
       if (instance.reconnectTimer) {
         clearTimeout(instance.reconnectTimer);
         instance.reconnectTimer = null;
@@ -3739,6 +3988,8 @@ async function getOrCreateInstance(userId) {
     currentQr: null,
     connectionStatus: 'connecting',
     syncStatus: 'pending',
+    transcribeAudioSetting: true, // padrao ativado
+    interpretImagesSetting: false, // padrao desativado,
     messagesProcessedCount: 0,
     contactsCache: hydratedContactsCache,
     groupMetadataCache: {}, // Cache de metadados dos grupos para otimização e evitar rate-limit do WhatsApp
@@ -3778,16 +4029,22 @@ async function getOrCreateInstance(userId) {
   }
   await loadMediaProcessingState(cleanUserId, instanceState);
 
-  // Busca o nome do usuário no Supabase profiles para carregar o myPushName real
+  // Busca as configuracoes e o nome do usuario no Supabase profiles
   try {
-    const profileName = await loadProfileNameFromSupabase(cleanUserId);
-    if (profileName) {
-      instanceState.myPushName = profileName;
-      instanceState.myPushNameSource = 'profile';
-      console.log(`[${cleanUserId}] Nome do perfil do Supabase carregado: ${profileName}`);
+    const profile = await loadProfileDataFromSupabase(cleanUserId);
+    if (profile) {
+      const profileName = profile.name || (profile.email ? profile.email.split('@')[0] : null);
+      if (profileName) {
+        instanceState.myPushName = profileName;
+        instanceState.myPushNameSource = 'profile';
+        console.log(`[${cleanUserId}] Nome do perfil do Supabase carregado: ${profileName}`);
+      }
+      instanceState.transcribeAudioSetting = profile.transcribe_audio !== false;
+      instanceState.interpretImagesSetting = !!profile.interpret_images;
+      console.log(`[${cleanUserId}] Configurações de mídia do Supabase carregadas: transcribeAudio=${instanceState.transcribeAudioSetting}, interpretImages=${instanceState.interpretImagesSetting}`);
     }
   } catch (err) {
-    console.warn(`[${cleanUserId}] Erro ao carregar nome do perfil no Supabase:`, err.message || err);
+    console.warn(`[${cleanUserId}] Erro ao carregar dados do perfil no Supabase:`, err.message || err);
   }
   
   // Inicia o processo de conexão do Baileys assincronamente
@@ -4643,7 +4900,33 @@ app.get('/status', checkAuth, async (req, res) => {
       name: instance.sock.user.name || instance.sock.user.id.split('@')[0].split(':')[0]
     } : null,
     ownerDisplayName,
-    ownerDisplayNameSource: instance.myPushNameSource || 'fallback'
+    ownerDisplayNameSource: instance.myPushNameSource || 'fallback',
+    settings: {
+      transcribeAudio: instance.transcribeAudioSetting !== false,
+      interpretImages: !!instance.interpretImagesSetting
+    }
+  });
+});
+
+// Atualiza as configurações de processamento de mídia (áudio e imagem) do usuário em memória
+app.post('/settings', checkAuth, async (req, res) => {
+  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const instance = await getOrCreateInstance(cleanUserId);
+  if (!instance) {
+    return res.status(400).json({ error: 'Instância não encontrada.' });
+  }
+
+  const { transcribe_audio, interpret_images } = req.body;
+  if (transcribe_audio !== undefined) instance.transcribeAudioSetting = !!transcribe_audio;
+  if (interpret_images !== undefined) instance.interpretImagesSetting = !!interpret_images;
+
+  res.json({
+    success: true,
+    settings: {
+      transcribeAudio: instance.transcribeAudioSetting !== false,
+      interpretImages: !!instance.interpretImagesSetting
+    }
   });
 });
 
@@ -4940,13 +5223,17 @@ app.get('/messages', checkAuth, async (req, res) => {
     messages.sort(compareMessagesChronologically);
 
     const requestedFormat = String(req.query.format || '').toLowerCase();
+    const ownJid = activeInstance?.myJid || (activeInstance?.sock?.user?.id ? jidNumber(activeInstance.sock.user.id) : '');
+    const ownLid = activeInstance?.myLid || (activeInstance?.sock?.user?.lid ? jidNumber(activeInstance.sock.user.lid) : '');
+    const ownName = activeInstance?.myPushName || 'Você';
+
     if (requestedFormat === 'json_grouped') {
       const contactsCache = mergeContactCaches(
         loadContactsFromFile(cleanUserId),
         await loadContactsFromSupabase(cleanUserId),
         activeInstance ? (activeInstance.contactsCache || {}) : {}
       );
-      const conversations = buildMessageConversations(messages, contactsCache);
+      const conversations = buildMessageConversations(messages, contactsCache, ownJid, ownLid, ownName);
       const formattedConversations = conversations.map(chat => {
         return {
           chatKey: chat.chatKey,
@@ -4981,7 +5268,7 @@ app.get('/messages', checkAuth, async (req, res) => {
         await loadContactsFromSupabase(cleanUserId),
         activeInstance ? (activeInstance.contactsCache || {}) : {}
       );
-      const conversations = buildMessageConversations(messages, contactsCache);
+      const conversations = buildMessageConversations(messages, contactsCache, ownJid, ownLid, ownName);
 
       if (requestedFormat === 'markdown' || requestedFormat === 'md') {
         res.type('text/markdown');

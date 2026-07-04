@@ -7,6 +7,8 @@ export interface Profile {
   created_at: string;
   name?: string;
   is_active: boolean;
+  transcribe_audio?: boolean;
+  interpret_images?: boolean;
 }
 
 export interface Client {

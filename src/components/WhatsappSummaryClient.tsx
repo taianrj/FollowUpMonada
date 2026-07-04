@@ -177,6 +177,39 @@ export default function WhatsappSummaryClient({
   // Estados de navegação e layout
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
+  // Estado para diálogo de confirmação personalizado
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    onCancel?: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {}
+  });
+
+  // Função helper para exibir diálogos de confirmação customizados
+  const showCustomConfirm = (title: string, message: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setConfirmModal({
+        isOpen: true,
+        title,
+        message,
+        onConfirm: () => {
+          setConfirmModal((prev) => ({ ...prev, isOpen: false }));
+          resolve(true);
+        },
+        onCancel: () => {
+          setConfirmModal((prev) => ({ ...prev, isOpen: false }));
+          resolve(false);
+        }
+      });
+    });
+  };
+
   // Estados de dados
   const [clients, setClients] = useState<Client[]>(initialClients);
   const [statuses] = useState<Status[]>(initialStatuses);
@@ -215,16 +248,16 @@ export default function WhatsappSummaryClient({
   const [choiceStep, setChoiceStep] = useState<'options' | 'date'>('options');
   const [autoSummaryEnabled, setAutoSummaryEnabled] = useState(false);
   const [autoSummaryDate, setAutoSummaryDate] = useState('');
+  const [transcribeAudioFlag, setTranscribeAudioFlag] = useState(profile?.transcribe_audio !== false);
+  const [interpretImagesFlag, setInterpretImagesFlag] = useState(!!profile?.interpret_images);
   const [transcriptionRunning, setTranscriptionRunning] = useState(false);
   const [transcriptionQueueLength, setTranscriptionQueueLength] = useState(0);
   const [transcriptionCompleted, setTranscriptionCompleted] = useState(0);
   const [transcriptionTotal, setTranscriptionTotal] = useState(0);
-  const [waitForTranscriptions, setWaitForTranscriptions] = useState(true);
   const [imageInterpretationRunning, setImageInterpretationRunning] = useState(false);
   const [imageInterpretationQueueLength, setImageInterpretationQueueLength] = useState(0);
   const [imageInterpretationCompleted, setImageInterpretationCompleted] = useState(0);
   const [imageInterpretationTotal, setImageInterpretationTotal] = useState(0);
-  const [waitForImageInterpretation, setWaitForImageInterpretation] = useState(false);
   const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
   const [qrStatus, setQrStatus] = useState<string>('waiting'); // 'waiting' | 'qrcode' | 'connected'
   const [isMessagesModalOpen, setIsMessagesModalOpen] = useState(false);
@@ -412,19 +445,17 @@ export default function WhatsappSummaryClient({
   // Efeito de gatilho de autogeração de resumo pós-sincronização
   useEffect(() => {
     if (autoSummaryEnabled && autoSummaryDate && whatsappStatus === 'connected' && whatsappSyncStatus === 'completed') {
-      // Se configurado para aguardar transcrições, espera até que a fila de áudios chegue a zero
-      if (waitForTranscriptions && (transcriptionQueueLength > 0 || transcriptionRunning)) {
+      // Se configurado para transcrever áudios, espera até que a fila de áudios chegue a zero
+      if (transcribeAudioFlag && (transcriptionQueueLength > 0 || transcriptionRunning)) {
         return; // Aguarda o polling de status atualizar e limpar a fila de áudios
       }
 
-      // Se configurado para aguardar interpretação, espera até que a fila de imagens chegue a zero
-      if (waitForImageInterpretation && (imageInterpretationQueueLength > 0 || imageInterpretationRunning)) {
+      // Se configurado para interpretar imagens, espera até que a fila de imagens chegue a zero
+      if (interpretImagesFlag && (imageInterpretationQueueLength > 0 || imageInterpretationRunning)) {
         return; // Aguarda o polling de status atualizar e limpar a fila de imagens
       }
 
       setAutoSummaryEnabled(false);
-      setWaitForTranscriptions(false); // Reset para futuros agendamentos
-      setWaitForImageInterpretation(false);
       setSummaryDate(autoSummaryDate);
       
       const dateToGenerate = autoSummaryDate;
@@ -440,13 +471,78 @@ export default function WhatsappSummaryClient({
     autoSummaryDate,
     whatsappStatus,
     whatsappSyncStatus,
-    waitForTranscriptions,
+    transcribeAudioFlag,
     transcriptionQueueLength,
     transcriptionRunning,
-    waitForImageInterpretation,
+    interpretImagesFlag,
     imageInterpretationQueueLength,
     imageInterpretationRunning
   ]);
+
+  // Atualiza as configurações de processamento de mídias do usuário no banco e no microsserviço
+  const handleToggleSetting = async (key: 'transcribeAudio' | 'interpretImages', val: boolean) => {
+    if (!profile?.id) return;
+    
+    if (val && whatsappStatus === 'connected') {
+      let confirmMsg = '';
+      if (key === 'transcribeAudio') {
+        confirmMsg = 'Os áudios recebidos a partir desse momento serão transcritos. Os áudios recebidos anteriormente não serão processados. Deseja continuar?';
+      } else {
+        confirmMsg = 'As imagens e figurinhas recebidas a partir desse momento serão interpretadas. As imagens e figurinhas recebidas anteriormente não serão processadas. Deseja continuar?';
+      }
+      
+      const confirmed = await showCustomConfirm('Confirmar Alteração', confirmMsg);
+      if (!confirmed) {
+        // Se o usuário cancelar, restaura o estado visual da checkbox (forçando re-renderização)
+        if (key === 'transcribeAudio') {
+          setTranscribeAudioFlag(false);
+          // Força reset temporário
+          setTimeout(() => setTranscribeAudioFlag(false), 0);
+        } else {
+          setInterpretImagesFlag(false);
+          setTimeout(() => setInterpretImagesFlag(false), 0);
+        }
+        return;
+      }
+    }
+    
+    if (key === 'transcribeAudio') {
+      setTranscribeAudioFlag(val);
+    } else {
+      setInterpretImagesFlag(val);
+    }
+
+    try {
+      const updateData = key === 'transcribeAudio' 
+        ? { transcribe_audio: val } 
+        : { interpret_images: val };
+
+      const { error } = await supabase
+        .from('profiles')
+        .update(updateData)
+        .eq('id', profile.id);
+
+      if (error) throw error;
+
+      if (apiToken && apiUrl) {
+        const normalizedUrl = apiUrl.replace(/\/$/, '');
+        const body = key === 'transcribeAudio'
+          ? { transcribe_audio: val }
+          : { interpret_images: val };
+
+        await fetch(`${normalizedUrl}/settings?key=${apiToken}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
+      }
+    } catch (err) {
+      console.error('Erro ao salvar configurações de mídia:', err);
+      showToast('Erro ao salvar as configurações de mídia.', 'error');
+    }
+  };
 
   // Função auxiliar para testar conexão com o WhatsApp
   const checkConnectionStatus = async (url: string, token: string) => {
@@ -466,6 +562,11 @@ export default function WhatsappSummaryClient({
         setWhatsappSyncStatus(data.syncStatus || 'completed');
         setWhatsappMessagesCount(data.messagesCount || 0);
         setWhatsappContactsCount(data.contactsCount || 0);
+        
+        if (data.settings) {
+          setTranscribeAudioFlag(data.settings.transcribeAudio);
+          setInterpretImagesFlag(data.settings.interpretImages);
+        }
         
         if (data.audioTranscription) {
           setTranscriptionRunning(!!data.audioTranscription.running);
@@ -664,7 +765,8 @@ export default function WhatsappSummaryClient({
 
   // Envia logout para o servidor e zera estados locais
   const handleDisconnect = async () => {
-    if (!confirm('Deseja realmente desconectar o seu WhatsApp do servidor?')) return;
+    const confirmed = await showCustomConfirm('Desconectar WhatsApp', 'Deseja realmente desconectar o seu WhatsApp do servidor?');
+    if (!confirmed) return;
     
     const normalizedUrl = apiUrl.replace(/\/$/, '');
     try {
@@ -1011,7 +1113,8 @@ export default function WhatsappSummaryClient({
       return;
     }
 
-    if (!window.confirm('Tem certeza de que deseja excluir permanentemente este resumo do histórico?')) {
+    const confirmed = await showCustomConfirm('Excluir Resumo', 'Tem certeza de que deseja excluir permanentemente este resumo do histórico?');
+    if (!confirmed) {
       return;
     }
 
@@ -1137,7 +1240,7 @@ export default function WhatsappSummaryClient({
         </section>
 
         {/* Área de Trabalho Principal */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: '2rem', height: 'calc(100vh - 5rem)', overflowY: 'auto' }} className="custom-scroll">
+        <section style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', height: 'calc(100vh - 5rem)', overflowY: 'auto' }} className="custom-scroll">
           {/* Header Mobile / Desktop */}
           <div className="header" style={{ marginBottom: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
@@ -1157,7 +1260,7 @@ export default function WhatsappSummaryClient({
             </div>
           </div>
 
-          {/* Painel de Status de Sincronização do Celular (Especialmente para Leigos) */}
+          {/* Painel de Status Único e Compacto (Celular) */}
           {isCheckingStatus ? (
             <div style={{
               display: 'flex',
@@ -1167,213 +1270,261 @@ export default function WhatsappSummaryClient({
               backgroundColor: 'var(--bg-secondary)',
               border: '1px solid var(--border-color)',
               borderRadius: 'var(--radius-lg)',
-              padding: '1.25rem 1.5rem',
+              padding: '0.65rem 1.25rem',
               boxShadow: 'var(--shadow-sm)',
               animation: 'fadeIn 0.25s ease'
             }}>
-              <div className="spinner" style={{ width: '18px', height: '18px', border: '2px solid rgba(168, 85, 247, 0.1)', borderTop: '2px solid var(--accent-purple)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
-              <span style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
+              <div className="spinner" style={{ width: '14px', height: '14px', border: '2px solid rgba(168, 85, 247, 0.1)', borderTop: '2px solid var(--accent-purple)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
                 Verificando conexão com o WhatsApp na nuvem...
               </span>
             </div>
           ) : integrationConnected && (whatsappStatus === 'connected' || (whatsappStatus === 'connecting' && connectedUser)) ? (
+            /* Barra de Status Única e Compacta (WhatsApp Conectado) */
             <div style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              backgroundColor: 'rgba(16, 185, 129, 0.08)',
-              border: '1px solid rgba(16, 185, 129, 0.2)',
+              flexWrap: 'wrap',
+              gap: '1rem',
+              backgroundColor: 'rgba(16, 185, 129, 0.04)',
+              border: '1px solid rgba(16, 185, 129, 0.15)',
               borderRadius: 'var(--radius-lg)',
-              padding: '0.85rem 1.25rem',
-              boxShadow: 'var(--shadow-sm)'
+              padding: '0.65rem 1.25rem',
+              boxShadow: 'var(--shadow-sm)',
+              fontSize: '0.82rem'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#34d399' }}>
+              {/* Conexão e Usuário */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
                 <span className="pulseGreen" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#10b981', borderRadius: '50%' }}></span>
-                <span>
+                <span style={{ color: 'var(--text-primary)' }}>
                   WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser ? (connectedUser.name || connectedUser.id.split('@')[0].split(':')[0]) : 'Carregando...'}</strong>
-                  {whatsappStatus === 'connecting' && <span style={{ color: '#f59e0b', fontSize: '0.82rem', marginLeft: '0.5rem', fontWeight: 600 }}>(Conectando...)</span>}
                 </span>
+                {whatsappStatus === 'connecting' && <span style={{ color: '#f59e0b', fontSize: '0.78rem', marginLeft: '0.25rem' }}>(Reconectando...)</span>}
               </div>
+
+              {/* Status de Sincronização e Mídias em Linha */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                {/* Mensagens Sincronizadas / Histórico */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-secondary)' }} title={whatsappSyncStatus === 'completed' ? "Histórico sincronizado" : "Sincronizando mensagens..."}>
+                  <span>💬</span>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{whatsappMessagesCount}</span>
+                  {whatsappSyncStatus !== 'completed' ? (
+                    <span className="spinner" style={{ display: 'inline-block', width: '10px', height: '10px', border: '1.5px solid rgba(168, 85, 247, 0.1)', borderTop: '1.5px solid var(--accent-purple)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
+                  ) : (
+                    <span style={{ color: '#10b981', fontSize: '0.75rem' }}>✅</span>
+                  )}
+                </div>
+
+                {/* Transcrição de Áudio */}
+                {transcribeAudioFlag && (
+                  <>
+                    <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--border-color)', margin: '0 0.25rem' }}></div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-secondary)' }} title="Áudios processados / total na fila">
+                      <span>🎙️</span>
+                      {transcriptionTotal > 0 ? (
+                        <>
+                          <span style={{ color: '#c084fc', fontWeight: 600 }}>
+                            {transcriptionCompleted}/{Math.max(transcriptionTotal, transcriptionCompleted)}
+                          </span>
+                          {(transcriptionQueueLength > 0 || transcriptionRunning) && (
+                            <span className="spinner" style={{ display: 'inline-block', width: '10px', height: '10px', border: '1.5px solid rgba(192, 132, 252, 0.1)', borderTop: '1.5px solid #c084fc', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: '#10b981', fontSize: '0.75rem' }}>✅</span>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {/* Interpretação de Imagens */}
+                {interpretImagesFlag && (
+                  <>
+                    <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--border-color)', margin: '0 0.25rem' }}></div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-secondary)' }} title="Imagens/figurinhas processadas / total na fila">
+                      <span>📸</span>
+                      {imageInterpretationTotal > 0 ? (
+                        <>
+                          <span style={{ color: '#5eead4', fontWeight: 600 }}>
+                            {imageInterpretationCompleted}/{Math.max(imageInterpretationTotal, imageInterpretationCompleted)}
+                          </span>
+                          {(imageInterpretationQueueLength > 0 || imageInterpretationRunning) && (
+                            <span className="spinner" style={{ display: 'inline-block', width: '10px', height: '10px', border: '1.5px solid rgba(94, 234, 212, 0.1)', borderTop: '1.5px solid #5eead4', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: '#10b981', fontSize: '0.75rem' }}>✅</span>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Botão Desconectar */}
               <button 
                 type="button" 
                 onClick={handleDisconnect}
-                style={{ background: 'none', border: 'none', color: '#f87171', fontSize: '0.82rem', cursor: 'pointer', fontWeight: 600 }}
+                style={{ background: 'none', border: 'none', color: '#f87171', fontSize: '0.78rem', cursor: 'pointer', fontWeight: 600, padding: 0 }}
               >
-                🔴 Desconectar Conta
+                🔴 Desconectar
               </button>
             </div>
           ) : (
+            /* Barra de Status Única e Compacta (WhatsApp Desconectado) */
             <div style={{
               display: 'flex',
-              flexDirection: 'column',
-              gap: '0.75rem',
-              backgroundColor: 'rgba(245, 158, 11, 0.08)',
-              border: '1px solid rgba(245, 158, 11, 0.2)',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '1rem',
+              backgroundColor: 'rgba(245, 158, 11, 0.04)',
+              border: '1px solid rgba(245, 158, 11, 0.15)',
               borderRadius: 'var(--radius-lg)',
-              padding: '1.25rem 1.5rem',
-              boxShadow: 'var(--shadow-sm)'
+              padding: '0.65rem 1.25rem',
+              boxShadow: 'var(--shadow-sm)',
+              fontSize: '0.82rem'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#f59e0b' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600, color: '#f59e0b' }}>
                 <span style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#f59e0b', borderRadius: '50%' }}></span>
-                WhatsApp Desconectado
+                <span>WhatsApp Desconectado</span>
               </div>
-              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
-                Para poder ler as mensagens e gerar os resumos automáticos, é necessário parear o seu celular.
-              </p>
-              <div>
-                <button 
-                  type="button"
-                  className="btn btnPrimary"
-                  onClick={handleStartConnection}
-                  style={{
-                    fontSize: '0.82rem',
-                    padding: '0.5rem 1rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                    borderRadius: 'var(--radius-md)',
-                    border: 'none',
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                >
-                  📱 Conectar Celular (Escanear QR Code)
-                </button>
-              </div>
+              <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                Pareie o celular para ler as mensagens e gerar resumos.
+              </span>
+              <button 
+                type="button"
+                className="btn btnPrimary"
+                onClick={handleStartConnection}
+                style={{
+                  fontSize: '0.78rem',
+                  padding: '0.4rem 0.85rem',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                  borderRadius: 'var(--radius-md)',
+                  border: 'none',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                📱 Conectar Celular
+              </button>
             </div>
           )}
 
-          {/* Painel de Progresso de Transcrição de Áudios */}
-          {integrationConnected && whatsappStatus === 'connected' && (transcriptionRunning || transcriptionQueueLength > 0) && (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.6rem',
-              backgroundColor: 'rgba(168, 85, 247, 0.08)',
-              border: '1px solid rgba(168, 85, 247, 0.2)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '1rem 1.25rem',
-              boxShadow: 'var(--shadow-sm)',
-              marginTop: '0.75rem',
-              animation: 'fadeIn 0.3s ease-out'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', fontWeight: 600, color: '#c084fc' }}>
-                  <span className="spinner" style={{ display: 'inline-block', width: '12px', height: '12px', border: '2px solid rgba(192, 132, 252, 0.1)', borderTop: '2px solid #c084fc', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
-                  <span>🎙️ Transcrevendo áudios do WhatsApp...</span>
-                </div>
-                <span style={{ fontSize: '0.82rem', color: '#c084fc', fontWeight: 'bold' }}>
-                  {transcriptionCompleted} / {transcriptionTotal} concluídos ({transcriptionQueueLength} na fila)
-                </span>
-              </div>
+          {/* Painel de Configurações de Mídia do WhatsApp (2 Flags) */}
+          <div style={{
+            backgroundColor: 'var(--bg-secondary)',
+            borderRadius: 'var(--radius-lg)',
+            border: '1px solid var(--border-color)',
+            padding: '0.75rem 1.25rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '1rem',
+            boxShadow: 'var(--shadow-sm)',
+            animation: 'fadeIn 0.3s ease-out'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.92rem' }}>⚙️</span>
+              <h3 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                Configurações de Processamento
+              </h3>
+            </div>
+            <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text-secondary)', userSelect: 'none' }}>
+                <input
+                  type="checkbox"
+                  checked={transcribeAudioFlag}
+                  onChange={(e) => handleToggleSetting('transcribeAudio', e.target.checked)}
+                  style={{ width: '15px', height: '15px', accentColor: 'var(--accent-purple)', cursor: 'pointer' }}
+                />
+                Transcrever áudios automaticamente
+              </label>
               
-              <div style={{ width: '100%', height: '4px', backgroundColor: 'rgba(168, 85, 247, 0.15)', borderRadius: '9999px', overflow: 'hidden' }}>
-                <div style={{ 
-                  width: `${transcriptionTotal > 0 ? (transcriptionCompleted / transcriptionTotal) * 100 : 0}%`, 
-                  height: '100%', 
-                  backgroundColor: '#c084fc', 
-                  transition: 'width 0.4s ease' 
-                }}></div>
-              </div>
-              
-              <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
-                Você pode gerar o resumo agora, mas áudios que ainda não foram transcritos serão exibidos apenas como tags genéricas nos relatórios.
-              </p>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text-secondary)', userSelect: 'none' }}>
+                <input
+                  type="checkbox"
+                  checked={interpretImagesFlag}
+                  onChange={(e) => handleToggleSetting('interpretImages', e.target.checked)}
+                  style={{ width: '15px', height: '15px', accentColor: 'var(--accent-purple)', cursor: 'pointer' }}
+                />
+                Interpretar imagens e figurinhas
+              </label>
             </div>
-          )}
+          </div>
 
-          {/* Painel de Progresso de Interpretação de Imagens e Figurinhas */}
-          {integrationConnected && whatsappStatus === 'connected' && (imageInterpretationRunning || imageInterpretationQueueLength > 0) && (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.6rem',
-              backgroundColor: 'rgba(20, 184, 166, 0.08)',
-              border: '1px solid rgba(20, 184, 166, 0.22)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '1rem 1.25rem',
-              boxShadow: 'var(--shadow-sm)',
-              marginTop: '0.75rem',
-              animation: 'fadeIn 0.3s ease-out'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', fontWeight: 600, color: '#5eead4' }}>
-                  <span className="spinner" style={{ display: 'inline-block', width: '12px', height: '12px', border: '2px solid rgba(94, 234, 212, 0.1)', borderTop: '2px solid #5eead4', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
-                  <span>🖼️ Interpretando imagens e figurinhas do WhatsApp...</span>
-                </div>
-                <span style={{ fontSize: '0.82rem', color: '#5eead4', fontWeight: 'bold' }}>
-                  {imageInterpretationCompleted} / {imageInterpretationTotal} concluídas ({imageInterpretationQueueLength} na fila)
-                </span>
-              </div>
-
-              <div style={{ width: '100%', height: '4px', backgroundColor: 'rgba(20, 184, 166, 0.15)', borderRadius: '9999px', overflow: 'hidden' }}>
-                <div style={{
-                  width: `${imageInterpretationTotal > 0 ? (imageInterpretationCompleted / imageInterpretationTotal) * 100 : 0}%`,
-                  height: '100%',
-                  backgroundColor: '#5eead4',
-                  transition: 'width 0.4s ease'
-                }}></div>
-              </div>
-
-              <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
-                Você pode gerar o resumo agora, mas imagens e figurinhas que ainda não foram interpretadas serão exibidas apenas como tags genéricas nos relatórios.
-              </p>
-            </div>
-          )}
-
-          {/* Card de Configuração de Processamento Simples - Apenas visível se conectado e sincronização concluída */}
-          {integrationConnected && whatsappStatus === 'connected' && whatsappSyncStatus === 'completed' && (
-            <div style={{
-              backgroundColor: 'var(--bg-secondary)',
-              borderRadius: 'var(--radius-lg)',
-              border: '1px solid var(--border-color)',
-              padding: '1.75rem',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1.5rem',
-              animation: 'fadeIn 0.3s ease-out'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.25rem' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                  <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>Gerar Novo Resumo</h3>
-                  <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
-                    Importa conversas do WhatsApp do dia selecionado e gera a análise de tarefas de forma automatizada.
-                  </p>
-                </div>
-
-                {/* Data e Botão de Ação Única */}
+          {/* Card de Configuração de Processamento Simples - Sempre visível */}
+          {(() => {
+            const isActionBarDisabled = !integrationConnected || whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed';
+            return (
+              <div style={{
+                backgroundColor: 'var(--bg-secondary)',
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid var(--border-color)',
+                padding: '0.75rem 1.25rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '1rem',
+                animation: 'fadeIn 0.3s ease-out',
+                opacity: isActionBarDisabled ? 0.65 : 1
+              }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <h3 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                    Gerar Novo Resumo
+                    {whatsappStatus !== 'connected' && (
+                      <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 'normal', marginLeft: '0.35rem' }}>
+                        (WhatsApp desconectado)
+                      </span>
+                    )}
+                    {whatsappStatus === 'connected' && whatsappSyncStatus !== 'completed' && (
+                      <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 'normal', marginLeft: '0.35rem' }}>
+                        (Sincronizando histórico...)
+                      </span>
+                    )}
+                    :
+                  </h3>
                   <input
                     type="date"
                     value={summaryDate}
                     onChange={(e) => setSummaryDate(e.target.value)}
+                    disabled={isActionBarDisabled}
                     style={{
                       backgroundColor: 'var(--bg-primary)',
                       border: '1px solid var(--border-color)',
                       color: 'var(--text-primary)',
-                      padding: '0.45rem 0.75rem',
+                      padding: '0.4rem 0.65rem',
                       borderRadius: 'var(--radius-md)',
-                      fontSize: '0.85rem',
-                      outline: 'none'
+                      fontSize: '0.82rem',
+                      outline: 'none',
+                      opacity: isActionBarDisabled ? 0.6 : 1,
+                      cursor: isActionBarDisabled ? 'not-allowed' : 'default'
                     }}
                   />
+                </div>
 
+                {/* Botões de Ação */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                   <button
                     type="button"
                     className="btn btnSecondary"
                     onClick={handleOpenMessagesModal}
-                    disabled={isLoading || !apiToken}
+                    disabled={isActionBarDisabled || isLoading || !apiToken}
                     style={{
-                      padding: '0.55rem 1.35rem',
-                      fontSize: '0.85rem',
+                      padding: '0.45rem 1rem',
+                      fontSize: '0.82rem',
                       fontWeight: 600,
                       border: '1px solid var(--border-color)',
-                      cursor: apiToken ? 'pointer' : 'not-allowed',
-                      opacity: apiToken ? 1 : 0.6,
+                      cursor: (isActionBarDisabled || !apiToken) ? 'not-allowed' : 'pointer',
+                      opacity: (isActionBarDisabled || !apiToken) ? 0.5 : 1,
                       display: 'inline-flex',
                       alignItems: 'center',
-                      gap: '0.5rem'
+                      gap: '0.4rem'
                     }}
                   >
                     👁️ Ver Mensagens
@@ -1383,55 +1534,25 @@ export default function WhatsappSummaryClient({
                     type="button"
                     className="btn btnPrimary"
                     onClick={() => handleSyncAndGenerateSummary()}
-                    disabled={isLoading || !apiToken}
+                    disabled={isActionBarDisabled || isLoading || !apiToken}
                     style={{
-                      padding: '0.55rem 1.35rem',
-                      fontSize: '0.85rem',
+                      padding: '0.45rem 1rem',
+                      fontSize: '0.82rem',
                       fontWeight: 700,
                       background: 'linear-gradient(135deg, var(--accent-purple) 0%, #4f46e5 100%)',
-                      boxShadow: '0 4px 12px rgba(99, 102, 241, 0.25)',
-                      cursor: apiToken ? 'pointer' : 'not-allowed',
-                      opacity: apiToken ? 1 : 0.6
+                      boxShadow: isActionBarDisabled ? 'none' : '0 4px 10px rgba(99, 102, 241, 0.2)',
+                      cursor: (isActionBarDisabled || !apiToken) ? 'not-allowed' : 'pointer',
+                      opacity: (isActionBarDisabled || !apiToken) ? 0.5 : 1
                     }}
                   >
                     {isLoading ? '⚙️ Processando...' : '⚡ Gerar Resumo'}
                   </button>
                 </div>
               </div>
+            );
+          })()}
 
-            </div>
-          )}
 
-          {/* Card de Sincronização em Andamento - Visível se conectado mas ainda sincronizando histórico ou em fase de conexão */}
-          {integrationConnected && (whatsappStatus === 'connecting' || (whatsappStatus === 'connected' && whatsappSyncStatus !== 'completed')) && (
-            <div style={{
-              backgroundColor: 'var(--bg-secondary)',
-              borderRadius: 'var(--radius-lg)',
-              border: '1px solid rgba(245, 158, 11, 0.25)',
-              padding: '1.75rem',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '1rem',
-              textAlign: 'center',
-              animation: 'fadeIn 0.3s ease-out',
-              boxShadow: 'var(--shadow-sm)'
-            }}>
-              <div className="spinner" style={{ width: '28px', height: '28px', border: '3px solid rgba(245, 158, 11, 0.1)', borderTop: '3px solid #f59e0b', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#f59e0b', margin: 0 }}>
-                  🔄 Sincronizando dados com o celular...
-                </h3>
-                <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0, maxWidth: '500px' }}>
-                  Por favor, aguarde alguns instantes enquanto importamos o histórico recente de conversas para podermos gerar os resumos com total precisão.
-                </p>
-                <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)', marginTop: '0.5rem' }}>
-                  Mensagens importadas: {whatsappMessagesCount}
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Estado de Carregamento Premium com Skeleton */}
           {isLoading && (
@@ -1471,17 +1592,27 @@ export default function WhatsappSummaryClient({
 
           {/* Exibição do Resumo Ativo */}
           {!isLoading && activeSummary && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', animation: 'fadeIn 0.3s ease-out' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h2 style={{ fontSize: '1.3rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+            <div style={{
+              backgroundColor: 'var(--bg-secondary)',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--border-color)',
+              padding: '1.5rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1.5rem',
+              animation: 'fadeIn 0.3s ease-out',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
                   Resumo Semântico do Dia - {new Date(activeSummary.summary_date + 'T00:00:00').toLocaleDateString('pt-BR')}
                 </h2>
               </div>
 
               {/* Grid de Clientes no Resumo */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.75rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.25rem' }}>
                 {activeSummary.summary_data.summaries.length === 0 ? (
-                  <div style={{ backgroundColor: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <div style={{ backgroundColor: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                     Nenhum cliente ou tópico relevante foi identificado nas conversas deste dia.
                   </div>
                 ) : (
@@ -1492,10 +1623,10 @@ export default function WhatsappSummaryClient({
                       <div
                         key={cIndex}
                         style={{
-                          backgroundColor: 'var(--bg-secondary)',
+                          backgroundColor: 'var(--bg-primary)',
                           borderRadius: 'var(--radius-lg)',
                           border: '1px solid var(--border-color)',
-                          padding: '1.75rem',
+                          padding: '1.5rem',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: '1.25rem',
@@ -1775,7 +1906,6 @@ export default function WhatsappSummaryClient({
                       const month = String(d.getMonth() + 1).padStart(2, '0');
                       const day = String(d.getDate()).padStart(2, '0');
                       setAutoSummaryDate(`${year}-${month}-${day}`);
-                      setWaitForImageInterpretation(false);
                       setChoiceStep('date');
                     }}
                     style={{
@@ -1841,83 +1971,7 @@ export default function WhatsappSummaryClient({
                     }}
                   />
 
-                  {/* Opção para aguardar transcrição de áudios */}
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.55rem',
-                    width: '100%',
-                    maxWidth: '280px',
-                    justifyContent: 'center',
-                    marginTop: '0.25rem',
-                    cursor: 'pointer'
-                  }} onClick={() => setWaitForTranscriptions(!waitForTranscriptions)}>
-                    <input
-                      type="checkbox"
-                      id="chkWaitForTranscriptions"
-                      checked={waitForTranscriptions}
-                      onChange={(e) => setWaitForTranscriptions(e.target.checked)}
-                      style={{
-                        cursor: 'pointer',
-                        accentColor: '#10b981',
-                        width: '15px',
-                        height: '15px'
-                      }}
-                      onClick={(e) => e.stopPropagation()} // Evita duplo clique ao disparar o onClick da div
-                    />
-                    <label 
-                      htmlFor="chkWaitForTranscriptions"
-                      style={{ 
-                        fontSize: '0.78rem', 
-                        color: 'var(--text-secondary)', 
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        lineHeight: 1.3
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      Gerar resumo somente após transcrição dos áudios.
-                    </label>
-                  </div>
 
-                  {/* Opção para aguardar interpretação de imagens */}
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.55rem',
-                    width: '100%',
-                    maxWidth: '300px',
-                    justifyContent: 'center',
-                    marginTop: '0.1rem',
-                    cursor: 'pointer'
-                  }} onClick={() => setWaitForImageInterpretation(!waitForImageInterpretation)}>
-                    <input
-                      type="checkbox"
-                      id="chkWaitForImageInterpretation"
-                      checked={waitForImageInterpretation}
-                      onChange={(e) => setWaitForImageInterpretation(e.target.checked)}
-                      style={{
-                        cursor: 'pointer',
-                        accentColor: '#10b981',
-                        width: '15px',
-                        height: '15px'
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                    <label
-                      htmlFor="chkWaitForImageInterpretation"
-                      style={{
-                        fontSize: '0.78rem',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        lineHeight: 1.3
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      Gerar resumo somente após interpretação das imagens e figurinhas.
-                    </label>
-                  </div>
 
                   <div style={{ display: 'flex', gap: '0.75rem', width: '100%', marginTop: '0.5rem' }}>
                     <button
@@ -2231,7 +2285,7 @@ export default function WhatsappSummaryClient({
                                 </div>
                               </div>
                             </div>
-                            <div className="chatMessageList custom-scroll">
+                            <div key={activeChat.chatKey} className="chatMessageList custom-scroll">
                               {activeChat.messages.map((message: any) => {
                                 const formattedTime = (() => {
                                   if (!message.timestamp) return '';
@@ -2805,6 +2859,73 @@ export default function WhatsappSummaryClient({
           to { opacity: 1; transform: translateY(0); }
         }
       `}</style>
+      {/* Modal de Confirmação Personalizado */}
+      {confirmModal.isOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.65)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '1rem',
+          animation: 'fadeIn 0.2s ease-out'
+        }}>
+          <div style={{
+            backgroundColor: 'var(--bg-secondary)',
+            borderRadius: 'var(--radius-lg)',
+            border: '1px solid var(--border-color)',
+            width: '100%',
+            maxWidth: '420px',
+            padding: '1.5rem',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 10px 10px -5px rgba(0, 0, 0, 0.3)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.25rem',
+            animation: 'fadeIn 0.25s ease-out'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '1.25rem' }}>⚠️</span>
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                {confirmModal.title}
+              </h3>
+            </div>
+            
+            <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+              {confirmModal.message}
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+              <button
+                type="button"
+                className="btn btnSecondary"
+                onClick={() => confirmModal.onCancel?.()}
+                style={{ padding: '0.45rem 1rem', fontSize: '0.82rem', fontWeight: 600 }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btnPrimary"
+                onClick={confirmModal.onConfirm}
+                style={{
+                  padding: '0.45rem 1rem',
+                  fontSize: '0.82rem',
+                  fontWeight: 700,
+                  background: 'linear-gradient(135deg, var(--accent-purple) 0%, #4f46e5 100%)'
+                }}
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

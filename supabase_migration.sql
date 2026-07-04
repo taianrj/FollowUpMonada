@@ -140,3 +140,8 @@ create policy "Apenas administradores podem deletar resumos"
         )
     );
 
+-- 5. ADICIONAR COLUNAS DE CONFIGURAÇÃO DO WHATSAPP NA TABELA DE PERFIS
+ALTER TABLE public.profiles 
+ADD COLUMN IF NOT EXISTS transcribe_audio BOOLEAN DEFAULT TRUE,
+ADD COLUMN IF NOT EXISTS interpret_images BOOLEAN DEFAULT FALSE;
+
