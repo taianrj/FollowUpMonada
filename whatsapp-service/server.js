@@ -440,7 +440,7 @@ const IMAGE_INTERPRETATION_MAX_BYTES = Math.max(256 * 1024, parseInt(process.env
 const IMAGE_INTERPRETATION_QUEUE_MAX = Math.max(1, parseInt(process.env.IMAGE_INTERPRETATION_QUEUE_MAX || '200', 10));
 const IMAGE_INTERPRETATION_MAX_DIMENSION = Math.max(512, parseInt(process.env.IMAGE_INTERPRETATION_MAX_DIMENSION || '1600', 10));
 const IMAGE_INTERPRETATION_JPEG_QUALITY = Math.min(92, Math.max(35, parseInt(process.env.IMAGE_INTERPRETATION_JPEG_QUALITY || '72', 10)));
-const IMAGE_INTERPRETATION_PROMPT = process.env.IMAGE_INTERPRETATION_PROMPT || 'Analise esta imagem de uma conversa de WhatsApp em portugues do Brasil. Descreva objetivamente o conteudo visual, extraia textos legiveis importantes e explique apenas o contexto util para um resumo de atendimento. Seja conciso.';
+const IMAGE_INTERPRETATION_PROMPT = process.env.IMAGE_INTERPRETATION_PROMPT || 'Analise esta imagem ou figurinha de uma conversa de WhatsApp em portugues do Brasil. Descreva objetivamente o conteudo visual, extraia textos legiveis importantes e explique apenas o contexto util para um resumo de atendimento. Seja conciso.';
 const imageInterpretationQueue = [];
 const queuedImageInterpretationKeys = new Set();
 let imageInterpretationRunning = false;
@@ -1016,7 +1016,8 @@ function isImageInterpretationText(text) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
-  return normalized.startsWith('[imagem interpretada]');
+  return normalized.startsWith('[imagem interpretada]') ||
+    normalized.startsWith('[figurinha interpretada]');
 }
 
 function shouldQueueImageInterpretation(userId, messageObject, savedKeys) {
@@ -1037,7 +1038,7 @@ function queueImageInterpretation(item) {
   if (!dedupeKey || queuedImageInterpretationKeys.has(dedupeKey)) return;
 
   if (imageInterpretationQueue.length >= IMAGE_INTERPRETATION_QUEUE_MAX) {
-    console.warn(`[${item.userId}] Fila de interpretacao de imagem cheia; imagem ${dedupeKey} sera mantida como tag.`);
+    console.warn(`[${item.userId}] Fila de interpretacao visual cheia; midia ${dedupeKey} sera mantida como tag.`);
     return;
   }
 
@@ -1080,7 +1081,7 @@ async function runImageInterpretationQueue() {
       success = await interpretQueuedImage(item);
     } catch (err) {
       errorMessage = err.message || String(err);
-      console.warn(`[${userId}] Falha ao interpretar imagem ${item.dedupeKey}:`, errorMessage);
+      console.warn(`[${userId}] Falha ao interpretar midia visual ${item.dedupeKey}:`, errorMessage);
     } finally {
       queuedImageInterpretationKeys.delete(item.dedupeKey);
       if (instance) {
@@ -1106,11 +1107,13 @@ function formatImageInterpretationMessage(originalText, interpretation) {
   const cleanInterpretation = normalizeDisplayName(interpretation);
   if (!cleanInterpretation) return '';
 
-  const caption = cleanOriginal.replace(/^\[Imagem\]\s*/i, '').trim();
+  const isSticker = normalizedComparableText(cleanOriginal).startsWith('[figurinha]');
+  const tag = isSticker ? 'Figurinha interpretada' : 'Imagem interpretada';
+  const caption = cleanOriginal.replace(/^\[(Imagem|Figurinha)\]\s*/i, '').trim();
   if (caption) {
-    return `[Imagem interpretada] Legenda: ${caption}. Interpretação: ${cleanInterpretation}`;
+    return `[${tag}] Legenda: ${caption}. Interpretacao: ${cleanInterpretation}`;
   }
-  return `[Imagem interpretada] ${cleanInterpretation}`;
+  return `[${tag}] ${cleanInterpretation}`;
 }
 
 async function interpretQueuedImage(item) {
@@ -2539,7 +2542,7 @@ async function connectUserWhatsApp(userId) {
           });
         }
 
-        if (mediaInfo?.kind === 'image') {
+        if (mediaInfo?.kind === 'image' || mediaInfo?.kind === 'sticker') {
           imageInterpretationCandidates.push({
             userId,
             instance,
@@ -2729,7 +2732,8 @@ function getMessageMediaInfo(msg) {
   if (content.stickerMessage) {
     return {
       kind: 'sticker',
-      text: '[Figurinha]'
+      text: '[Figurinha]',
+      mimetype: content.stickerMessage.mimetype || 'image/webp'
     };
   }
 

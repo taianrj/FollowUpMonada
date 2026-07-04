@@ -1283,7 +1283,7 @@ export default function WhatsappSummaryClient({
             </div>
           )}
 
-          {/* Painel de Progresso de Interpretação de Imagens */}
+          {/* Painel de Progresso de Interpretação de Imagens e Figurinhas */}
           {integrationConnected && whatsappStatus === 'connected' && (imageInterpretationRunning || imageInterpretationQueueLength > 0) && (
             <div style={{
               display: 'flex',
@@ -1300,7 +1300,7 @@ export default function WhatsappSummaryClient({
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', fontWeight: 600, color: '#5eead4' }}>
                   <span className="spinner" style={{ display: 'inline-block', width: '12px', height: '12px', border: '2px solid rgba(94, 234, 212, 0.1)', borderTop: '2px solid #5eead4', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
-                  <span>🖼️ Interpretando imagens do WhatsApp...</span>
+                  <span>🖼️ Interpretando imagens e figurinhas do WhatsApp...</span>
                 </div>
                 <span style={{ fontSize: '0.82rem', color: '#5eead4', fontWeight: 'bold' }}>
                   {imageInterpretationCompleted} / {imageInterpretationTotal} concluídas ({imageInterpretationQueueLength} na fila)
@@ -1317,7 +1317,7 @@ export default function WhatsappSummaryClient({
               </div>
 
               <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
-                Você pode gerar o resumo agora, mas imagens que ainda não foram interpretadas serão exibidas apenas como tags genéricas nos relatórios.
+                Você pode gerar o resumo agora, mas imagens e figurinhas que ainda não foram interpretadas serão exibidas apenas como tags genéricas nos relatórios.
               </p>
             </div>
           )}
@@ -1915,7 +1915,7 @@ export default function WhatsappSummaryClient({
                       }}
                       onClick={(e) => e.stopPropagation()}
                     >
-                      Gerar resumo somente após interpretação das imagens.
+                      Gerar resumo somente após interpretação das imagens e figurinhas.
                     </label>
                   </div>
 
