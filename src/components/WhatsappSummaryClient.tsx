@@ -219,7 +219,7 @@ export default function WhatsappSummaryClient({
   const [transcriptionQueueLength, setTranscriptionQueueLength] = useState(0);
   const [transcriptionCompleted, setTranscriptionCompleted] = useState(0);
   const [transcriptionTotal, setTranscriptionTotal] = useState(0);
-  const [waitForTranscriptions, setWaitForTranscriptions] = useState(false);
+  const [waitForTranscriptions, setWaitForTranscriptions] = useState(true);
   const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
   const [qrStatus, setQrStatus] = useState<string>('waiting'); // 'waiting' | 'qrcode' | 'connected'
   const [isMessagesModalOpen, setIsMessagesModalOpen] = useState(false);
@@ -1164,87 +1164,6 @@ export default function WhatsappSummaryClient({
                 🔴 Desconectar Conta
               </button>
             </div>
-          ) : null}
-
-          {/* Painel de Progresso de Transcrição de Áudios */}
-          {integrationConnected && whatsappStatus === 'connected' && (transcriptionRunning || transcriptionQueueLength > 0) && (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.6rem',
-              backgroundColor: 'rgba(168, 85, 247, 0.08)',
-              border: '1px solid rgba(168, 85, 247, 0.2)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '1rem 1.25rem',
-              boxShadow: 'var(--shadow-sm)',
-              marginTop: '0.75rem',
-              animation: 'fadeIn 0.3s ease-out'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', fontWeight: 600, color: '#c084fc' }}>
-                  <span className="spinner" style={{ display: 'inline-block', width: '12px', height: '12px', border: '2px solid rgba(192, 132, 252, 0.1)', borderTop: '2px solid #c084fc', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
-                  <span>🎙️ Transcrevendo áudios do WhatsApp...</span>
-                </div>
-                <span style={{ fontSize: '0.82rem', color: '#c084fc', fontWeight: 'bold' }}>
-                  {transcriptionCompleted} / {transcriptionTotal} concluídos ({transcriptionQueueLength} na fila)
-                </span>
-              </div>
-              
-              <div style={{ width: '100%', height: '4px', backgroundColor: 'rgba(168, 85, 247, 0.15)', borderRadius: '9999px', overflow: 'hidden' }}>
-                <div style={{ 
-                  width: `${transcriptionTotal > 0 ? (transcriptionCompleted / transcriptionTotal) * 100 : 0}%`, 
-                  height: '100%', 
-                  backgroundColor: '#c084fc', 
-                  transition: 'width 0.4s ease' 
-                }}></div>
-              </div>
-              
-              <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
-                Você pode gerar o resumo agora, mas áudios que ainda não foram transcritos serão exibidos apenas como tags genéricas nos relatórios.
-              </p>
-            </div>
-          )}
-
-          {integrationConnected && whatsappStatus === 'qrcode' ? (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.75rem',
-              backgroundColor: 'rgba(245, 158, 11, 0.08)',
-              border: '1px solid rgba(245, 158, 11, 0.2)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '1.25rem 1.5rem',
-              boxShadow: 'var(--shadow-sm)'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.88rem', fontWeight: 600, color: '#f59e0b' }}>
-                <span style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#f59e0b', borderRadius: '50%' }}></span>
-                WhatsApp Desconectado
-              </div>
-              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
-                Para poder ler as mensagens e gerar os resumos automáticos, é necessário parear o seu celular.
-              </p>
-              <div>
-                <button 
-                  type="button"
-                  className="btn btnPrimary"
-                  onClick={handleStartConnection}
-                  style={{
-                    fontSize: '0.82rem',
-                    padding: '0.5rem 1rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                    borderRadius: 'var(--radius-md)',
-                    border: 'none',
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                >
-                  📱 Conectar Celular (Escanear QR Code)
-                </button>
-              </div>
-            </div>
           ) : (
             <div style={{
               display: 'flex',
@@ -1284,6 +1203,45 @@ export default function WhatsappSummaryClient({
                   📱 Conectar Celular (Escanear QR Code)
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Painel de Progresso de Transcrição de Áudios */}
+          {integrationConnected && whatsappStatus === 'connected' && (transcriptionRunning || transcriptionQueueLength > 0) && (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.6rem',
+              backgroundColor: 'rgba(168, 85, 247, 0.08)',
+              border: '1px solid rgba(168, 85, 247, 0.2)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '1rem 1.25rem',
+              boxShadow: 'var(--shadow-sm)',
+              marginTop: '0.75rem',
+              animation: 'fadeIn 0.3s ease-out'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', fontWeight: 600, color: '#c084fc' }}>
+                  <span className="spinner" style={{ display: 'inline-block', width: '12px', height: '12px', border: '2px solid rgba(192, 132, 252, 0.1)', borderTop: '2px solid #c084fc', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
+                  <span>🎙️ Transcrevendo áudios do WhatsApp...</span>
+                </div>
+                <span style={{ fontSize: '0.82rem', color: '#c084fc', fontWeight: 'bold' }}>
+                  {transcriptionCompleted} / {transcriptionTotal} concluídos ({transcriptionQueueLength} na fila)
+                </span>
+              </div>
+              
+              <div style={{ width: '100%', height: '4px', backgroundColor: 'rgba(168, 85, 247, 0.15)', borderRadius: '9999px', overflow: 'hidden' }}>
+                <div style={{ 
+                  width: `${transcriptionTotal > 0 ? (transcriptionCompleted / transcriptionTotal) * 100 : 0}%`, 
+                  height: '100%', 
+                  backgroundColor: '#c084fc', 
+                  transition: 'width 0.4s ease' 
+                }}></div>
+              </div>
+              
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
+                Você pode gerar o resumo agora, mas áudios que ainda não foram transcritos serão exibidos apenas como tags genéricas nos relatórios.
+              </p>
             </div>
           )}
 
