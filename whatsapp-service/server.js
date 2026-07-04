@@ -732,6 +732,8 @@ function queueAudioTranscription(item) {
     if (remainingForUser === 0 && !instance.transcriptionRunning) {
       instance.transcriptionTotal = 0;
       instance.transcriptionCompleted = 0;
+      instance.transcriptionFailed = 0;
+      instance.transcriptionLastError = '';
     }
     instance.transcriptionTotal = (instance.transcriptionTotal || 0) + 1;
   }
@@ -756,14 +758,22 @@ async function runAudioTranscriptionQueue() {
       instance.transcriptionRunning = true;
     }
 
+    let success = false;
+    let errorMessage = '';
     try {
-      await transcribeQueuedAudio(item);
+      success = await transcribeQueuedAudio(item);
     } catch (err) {
-      console.warn(`[${userId}] Falha ao transcrever audio ${item.dedupeKey}:`, err.message || err);
+      errorMessage = err.message || String(err);
+      console.warn(`[${userId}] Falha ao transcrever audio ${item.dedupeKey}:`, errorMessage);
     } finally {
       queuedAudioTranscriptionKeys.delete(item.dedupeKey);
       if (instance) {
-        instance.transcriptionCompleted = (instance.transcriptionCompleted || 0) + 1;
+        if (success) {
+          instance.transcriptionCompleted = (instance.transcriptionCompleted || 0) + 1;
+        } else {
+          instance.transcriptionFailed = (instance.transcriptionFailed || 0) + 1;
+          instance.transcriptionLastError = errorMessage || 'Transcricao nao atualizou a mensagem.';
+        }
         const remainingForUser = audioTranscriptionQueue.filter(x => x.userId === userId).length;
         if (remainingForUser === 0) {
           instance.transcriptionRunning = false;
@@ -776,17 +786,28 @@ async function runAudioTranscriptionQueue() {
 }
 
 async function transcribeQueuedAudio(item) {
-  if (!item?.rawMessage || !item?.messageObject) return;
+  if (!item?.rawMessage || !item?.messageObject) {
+    throw new Error('Mensagem de audio incompleta para transcricao.');
+  }
 
   const updateMediaMessage = item.instance?.sock?.updateMediaMessage;
   const downloadContext = typeof updateMediaMessage === 'function'
     ? { logger, reuploadRequest: updateMediaMessage.bind(item.instance.sock) }
     : { logger };
   const buffer = await downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext);
+  if (!buffer || buffer.length === 0) {
+    throw new Error('Download do audio retornou vazio.');
+  }
   const transcript = await transcribeAudioBuffer(buffer, item.mimetype);
-  if (!transcript) return;
+  if (!transcript) {
+    throw new Error('Servico de transcricao retornou texto vazio.');
+  }
 
-  await updateStoredMessageText(item.userId, item.messageObject, `[Áudio transcrito] ${transcript}`);
+  const updated = await updateStoredMessageText(item.userId, item.messageObject, `[Áudio transcrito] ${transcript}`);
+  if (!updated) {
+    throw new Error('Transcricao gerada, mas a mensagem nao foi atualizada.');
+  }
+  return true;
 }
 
 async function updateStoredMessageText(userId, rawMessage, nextText) {
@@ -833,17 +854,20 @@ async function updateStoredMessageText(userId, rawMessage, nextText) {
     changed = true;
   }
 
-  if (!changed) return false;
+  let localSaved = !changed;
 
-  try {
-    messages.sort(compareMessagesChronologically);
-    fs.writeFileSync(filePath, JSON.stringify(messages, null, JSON_INDENT), 'utf8');
-  } catch (err) {
-    console.warn(`[${userId}] Falha ao gravar transcricao de audio localmente:`, err.message || err);
+  if (changed) {
+    try {
+      messages.sort(compareMessagesChronologically);
+      fs.writeFileSync(filePath, JSON.stringify(messages, null, JSON_INDENT), 'utf8');
+      localSaved = true;
+    } catch (err) {
+      console.warn(`[${userId}] Falha ao gravar mensagem atualizada localmente:`, err.message || err);
+    }
   }
 
   await persistMessagesToSupabase(userId, [normalized]);
-  return true;
+  return localSaved;
 }
 
 function getImageInterpretationConfig() {
@@ -1024,6 +1048,8 @@ function queueImageInterpretation(item) {
     if (remainingForUser === 0 && !instance.imageInterpretationRunning) {
       instance.imageInterpretationTotal = 0;
       instance.imageInterpretationCompleted = 0;
+      instance.imageInterpretationFailed = 0;
+      instance.imageInterpretationLastError = '';
     }
     instance.imageInterpretationTotal = (instance.imageInterpretationTotal || 0) + 1;
   }
@@ -1048,14 +1074,22 @@ async function runImageInterpretationQueue() {
       instance.imageInterpretationRunning = true;
     }
 
+    let success = false;
+    let errorMessage = '';
     try {
-      await interpretQueuedImage(item);
+      success = await interpretQueuedImage(item);
     } catch (err) {
-      console.warn(`[${userId}] Falha ao interpretar imagem ${item.dedupeKey}:`, err.message || err);
+      errorMessage = err.message || String(err);
+      console.warn(`[${userId}] Falha ao interpretar imagem ${item.dedupeKey}:`, errorMessage);
     } finally {
       queuedImageInterpretationKeys.delete(item.dedupeKey);
       if (instance) {
-        instance.imageInterpretationCompleted = (instance.imageInterpretationCompleted || 0) + 1;
+        if (success) {
+          instance.imageInterpretationCompleted = (instance.imageInterpretationCompleted || 0) + 1;
+        } else {
+          instance.imageInterpretationFailed = (instance.imageInterpretationFailed || 0) + 1;
+          instance.imageInterpretationLastError = errorMessage || 'Interpretacao nao atualizou a mensagem.';
+        }
         const remainingForUser = imageInterpretationQueue.filter(x => x.userId === userId).length;
         if (remainingForUser === 0) {
           instance.imageInterpretationRunning = false;
@@ -1080,18 +1114,29 @@ function formatImageInterpretationMessage(originalText, interpretation) {
 }
 
 async function interpretQueuedImage(item) {
-  if (!item?.rawMessage || !item?.messageObject) return;
+  if (!item?.rawMessage || !item?.messageObject) {
+    throw new Error('Mensagem de imagem incompleta para interpretacao.');
+  }
 
   const updateMediaMessage = item.instance?.sock?.updateMediaMessage;
   const downloadContext = typeof updateMediaMessage === 'function'
     ? { logger, reuploadRequest: updateMediaMessage.bind(item.instance.sock) }
     : { logger };
   const buffer = await downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext);
+  if (!buffer || buffer.length === 0) {
+    throw new Error('Download da imagem retornou vazio.');
+  }
   const interpretation = await interpretImageBuffer(buffer);
   const nextText = formatImageInterpretationMessage(item.messageObject.text, interpretation);
-  if (!nextText) return;
+  if (!nextText) {
+    throw new Error('Servico de interpretacao retornou texto vazio.');
+  }
 
-  await updateStoredMessageText(item.userId, item.messageObject, nextText);
+  const updated = await updateStoredMessageText(item.userId, item.messageObject, nextText);
+  if (!updated) {
+    throw new Error('Interpretacao gerada, mas a mensagem nao foi atualizada.');
+  }
+  return true;
 }
 
 function normalizeDisplayName(name) {
@@ -1595,6 +1640,42 @@ function normalizeStoredMessage(message) {
   return normalized;
 }
 
+function normalizedComparableText(text) {
+  return normalizeDisplayName(text)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function mediaTextRank(text) {
+  const cleanText = normalizeDisplayName(text);
+  if (!cleanText) return 0;
+  if (isAudioTranscriptionText(cleanText) || isImageInterpretationText(cleanText)) return 4;
+
+  const normalized = normalizedComparableText(cleanText);
+  if (normalized === '[audio]' || normalized.startsWith('[audio] ')) return 1;
+  if (normalized === '[video]' || normalized.startsWith('[video] ')) return normalized.length > '[video]'.length ? 2 : 1;
+  if (normalized === '[figurinha]' || normalized.startsWith('[figurinha] ')) return 1;
+  if (normalized === '[imagem]' || normalized.startsWith('[imagem] ')) return normalized.length > '[imagem]'.length ? 2 : 1;
+
+  return 3;
+}
+
+function chooseBetterMessageText(existingText, nextText) {
+  const existing = typeof existingText === 'string' ? existingText : '';
+  const next = typeof nextText === 'string' ? nextText : '';
+  if (!next) return existing;
+  if (!existing) return next;
+
+  const existingRank = mediaTextRank(existing);
+  const nextRank = mediaTextRank(next);
+  if (nextRank !== existingRank) {
+    return nextRank > existingRank ? next : existing;
+  }
+
+  return next;
+}
+
 function mergeMessages(localMessages, remoteMessages) {
   const merged = new Map();
 
@@ -1614,7 +1695,7 @@ function mergeMessages(localMessages, remoteMessages) {
       chatName: isBetterContactName(message.chatName, existing.chatName) ? message.chatName : existing.chatName,
       participantAliases: uniqueJids([...(existing.participantAliases || []), ...(message.participantAliases || [])]),
       name: isBetterContactName(message.name, existing.name) ? message.name : existing.name,
-      text: message.text || existing.text
+      text: chooseBetterMessageText(existing.text, message.text)
     });
   }
 
@@ -2971,6 +3052,16 @@ async function getOrCreateInstance(userId) {
     reconnectTimer: null,
     connectionGeneration: 0,
     forceHistorySync: false,
+    transcriptionRunning: false,
+    transcriptionCompleted: 0,
+    transcriptionFailed: 0,
+    transcriptionTotal: 0,
+    transcriptionLastError: '',
+    imageInterpretationRunning: false,
+    imageInterpretationCompleted: 0,
+    imageInterpretationFailed: 0,
+    imageInterpretationTotal: 0,
+    imageInterpretationLastError: '',
     lastStoredMessageContactHydration: 0,
     historySyncStats: {
       batches: 0,
@@ -3817,7 +3908,9 @@ app.get('/status', checkAuth, async (req, res) => {
       queueLength: audioTranscriptionQueue.filter(x => x.userId === userId).length,
       running: !!instance.transcriptionRunning,
       completed: instance.transcriptionCompleted || 0,
-      total: instance.transcriptionTotal || 0
+      failed: instance.transcriptionFailed || 0,
+      total: instance.transcriptionTotal || 0,
+      lastError: instance.transcriptionLastError || null
     },
     imageInterpretation: {
       configured: !!getImageInterpretationConfig(),
@@ -3825,7 +3918,9 @@ app.get('/status', checkAuth, async (req, res) => {
       queueLength: imageInterpretationQueue.filter(x => x.userId === userId).length,
       running: !!instance.imageInterpretationRunning,
       completed: instance.imageInterpretationCompleted || 0,
-      total: instance.imageInterpretationTotal || 0
+      failed: instance.imageInterpretationFailed || 0,
+      total: instance.imageInterpretationTotal || 0,
+      lastError: instance.imageInterpretationLastError || null
     },
     user: instance.sock && instance.sock.user ? {
       id: instance.sock.user.id,
