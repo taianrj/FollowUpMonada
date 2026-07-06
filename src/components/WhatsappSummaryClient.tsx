@@ -290,6 +290,11 @@ export default function WhatsappSummaryClient({
 
   const isWhatsappConnectedPanelVisible = integrationConnected && (whatsappStatus === 'connected' || (whatsappStatus === 'connecting' && !!connectedUser));
   const isWhatsappBusy = isCheckingStatus || (isWhatsappConnectedPanelVisible && (whatsappStatus === 'connecting' || whatsappSyncStatus !== 'completed'));
+  const whatsappInlineStatusLabel = whatsappStatus === 'connecting'
+    ? 'Reconectando...'
+    : whatsappSyncStatus !== 'completed'
+      ? 'Sincronizando...'
+      : '';
   const whatsappStatusPanelClass = `whatsappStatusPanel${isWhatsappBusy ? ' whatsappStatusPanelActive' : ''}`;
 
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -1370,16 +1375,16 @@ export default function WhatsappSummaryClient({
               fontSize: '0.82rem'
             }}>
               {/* Conexão e Usuário */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', fontWeight: 600 }}>
                 <span className="pulseGreen" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#10b981', borderRadius: '50%' }}></span>
                 <span style={{ color: 'var(--text-primary)' }}>
                   WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser ? (connectedUser.name || connectedUser.id.split('@')[0].split(':')[0]) : 'Carregando...'}</strong>
+                  {whatsappInlineStatusLabel && (
+                    <span style={{ color: '#f59e0b', fontSize: '0.78rem', marginLeft: '0.35rem' }}>
+                      ({whatsappInlineStatusLabel})
+                    </span>
+                  )}
                 </span>
-                {(whatsappStatus === 'connecting' || whatsappSyncStatus !== 'completed') && (
-                  <span style={{ color: '#f59e0b', fontSize: '0.78rem', marginLeft: '0.25rem' }}>
-                    {whatsappStatus === 'connecting' ? '(Reconectando...)' : '(Sincronizando...)'}
-                  </span>
-                )}
               </div>
 
               {/* Status de Sincronização e Mídias em Linha */}
