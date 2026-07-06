@@ -888,6 +888,10 @@
 .whatsappStatusPanel {
   position: relative;
   overflow: hidden;
+  flex: 0 0 auto;
+  min-height: 3.25rem;
+  box-sizing: border-box;
+  line-height: 1.35;
 }
 
 .whatsappStatusPanel > * {

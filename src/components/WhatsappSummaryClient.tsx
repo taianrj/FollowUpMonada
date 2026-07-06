@@ -243,6 +243,7 @@ export default function WhatsappSummaryClient({
   
   // Modais de pareamento e visualização de logs
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [isProcessingSettingsModalOpen, setIsProcessingSettingsModalOpen] = useState(false);
   const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
   const [choiceStep, setChoiceStep] = useState<'options' | 'date'>('options');
   const [autoSummaryEnabled, setAutoSummaryEnabled] = useState(false);
@@ -1445,14 +1446,45 @@ export default function WhatsappSummaryClient({
                 )}
               </div>
 
-              {/* Botão Desconectar */}
-              <button 
-                type="button" 
-                onClick={handleDisconnect}
-                style={{ background: 'none', border: 'none', color: '#f87171', fontSize: '0.78rem', cursor: 'pointer', fontWeight: 600, padding: 0 }}
-              >
-                🔴 Desconectar
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <button 
+                  type="button" 
+                  onClick={() => setIsProcessingSettingsModalOpen(true)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-secondary)',
+                    fontSize: '0.9rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '0.2rem',
+                    borderRadius: 'var(--radius-sm)',
+                    transition: 'all 0.2s ease',
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.color = 'var(--text-primary)';
+                    e.currentTarget.style.transform = 'rotate(30deg)';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.color = 'var(--text-secondary)';
+                    e.currentTarget.style.transform = 'rotate(0deg)';
+                  }}
+                  title="Configurações de Processamento"
+                >
+                  ⚙️
+                </button>
+                <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--border-color)' }}></div>
+                {/* Botão Desconectar */}
+                <button 
+                  type="button" 
+                  onClick={handleDisconnect}
+                  style={{ background: 'none', border: 'none', color: '#f87171', fontSize: '0.78rem', cursor: 'pointer', fontWeight: 600, padding: 0 }}
+                >
+                  🔴 Desconectar
+                </button>
+              </div>
             </div>
           ) : (
             /* Barra de Status Única e Compacta (WhatsApp Desconectado) */
@@ -1476,70 +1508,59 @@ export default function WhatsappSummaryClient({
               <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
                 Pareie o celular para ler as mensagens e gerar resumos.
               </span>
-              <button 
-                type="button"
-                className="btn btnPrimary"
-                onClick={handleStartConnection}
-                style={{
-                  fontSize: '0.78rem',
-                  padding: '0.4rem 0.85rem',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.4rem',
-                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                  borderRadius: 'var(--radius-md)',
-                  border: 'none',
-                  fontWeight: 600,
-                  cursor: 'pointer'
-                }}
-              >
-                📱 Conectar Celular
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <button 
+                  type="button" 
+                  onClick={() => setIsProcessingSettingsModalOpen(true)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-secondary)',
+                    fontSize: '0.9rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '0.2rem',
+                    borderRadius: 'var(--radius-sm)',
+                    transition: 'all 0.2s ease',
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.color = 'var(--text-primary)';
+                    e.currentTarget.style.transform = 'rotate(30deg)';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.color = 'var(--text-secondary)';
+                    e.currentTarget.style.transform = 'rotate(0deg)';
+                  }}
+                  title="Configurações de Processamento"
+                >
+                  ⚙️
+                </button>
+                <button 
+                  type="button"
+                  className="btn btnPrimary"
+                  onClick={handleStartConnection}
+                  style={{
+                    fontSize: '0.78rem',
+                    padding: '0.4rem 0.85rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    borderRadius: 'var(--radius-md)',
+                    border: 'none',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  📱 Conectar Celular
+                </button>
+              </div>
             </div>
           )}
 
-          {/* Painel de Configurações de Mídia do WhatsApp (2 Flags) */}
-          <div style={{
-            backgroundColor: 'var(--bg-secondary)',
-            borderRadius: 'var(--radius-lg)',
-            border: '1px solid var(--border-color)',
-            padding: '0.75rem 1.25rem',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: '1rem',
-            boxShadow: 'var(--shadow-sm)',
-            animation: 'fadeIn 0.3s ease-out'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ fontSize: '0.92rem' }}>⚙️</span>
-              <h3 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-                Configurações de Processamento
-              </h3>
-            </div>
-            <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text-secondary)', userSelect: 'none' }}>
-                <input
-                  type="checkbox"
-                  checked={transcribeAudioFlag}
-                  onChange={(e) => handleToggleSetting('transcribeAudio', e.target.checked)}
-                  style={{ width: '15px', height: '15px', accentColor: 'var(--accent-purple)', cursor: 'pointer' }}
-                />
-                Transcrever áudios automaticamente
-              </label>
-              
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text-secondary)', userSelect: 'none' }}>
-                <input
-                  type="checkbox"
-                  checked={interpretImagesFlag}
-                  onChange={(e) => handleToggleSetting('interpretImages', e.target.checked)}
-                  style={{ width: '15px', height: '15px', accentColor: 'var(--accent-purple)', cursor: 'pointer' }}
-                />
-                Interpretar imagens e figurinhas
-              </label>
-            </div>
-          </div>
+          {/* Configurações de processamento movidas para o modal acessível via engrenagem */}
 
           {/* Card de Configuração de Processamento Simples - Sempre visível */}
           {(() => {
@@ -2097,6 +2118,173 @@ export default function WhatsappSummaryClient({
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Configurações de Processamento */}
+      {isProcessingSettingsModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(10, 10, 15, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 9999,
+          animation: 'fadeIn 0.25s ease'
+        }}>
+          <div style={{
+            backgroundColor: 'var(--bg-secondary)',
+            borderRadius: 'var(--radius-lg)',
+            border: '1px solid var(--border-color)',
+            padding: '2.25rem 2rem',
+            width: '450px',
+            maxWidth: '90%',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.5rem',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4)',
+            position: 'relative'
+          }}>
+            <button
+              type="button"
+              onClick={() => setIsProcessingSettingsModalOpen(false)}
+              style={{
+                position: 'absolute',
+                top: '1rem',
+                right: '1rem',
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-muted)',
+                fontSize: '1.35rem',
+                cursor: 'pointer',
+                transition: 'color 0.2s'
+              }}
+              onMouseOver={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
+              onMouseOut={(e) => e.currentTarget.style.color = 'var(--text-muted)'}
+              title="Fechar"
+            >
+              ✕
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <div style={{
+                backgroundColor: 'rgba(168, 85, 247, 0.1)',
+                color: 'var(--accent-purple)',
+                width: '36px',
+                height: '36px',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '1.2rem'
+              }}>
+                ⚙️
+              </div>
+              <div style={{ textAlign: 'left' }}>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                  Configurações de Processamento
+                </h3>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '0.15rem 0 0 0' }}>
+                  Ajuste o comportamento do WhatsApp
+                </p>
+              </div>
+            </div>
+
+            <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)' }}></div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', textAlign: 'left' }}>
+              {/* Opção Transcrever Áudio */}
+              <label style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '0.75rem',
+                cursor: 'pointer',
+                userSelect: 'none',
+                padding: '0.75rem',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid rgba(255, 255, 255, 0.03)',
+                transition: 'background-color 0.2s'
+              }}
+              onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
+              onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.02)'}
+              >
+                <input
+                  type="checkbox"
+                  checked={transcribeAudioFlag}
+                  onChange={(e) => handleToggleSetting('transcribeAudio', e.target.checked)}
+                  style={{ width: '18px', height: '18px', accentColor: 'var(--accent-purple)', cursor: 'pointer', marginTop: '0.1rem' }}
+                />
+                <div>
+                  <span style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>
+                    Transcrever áudios automaticamente
+                  </span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginTop: '0.15rem', lineHeight: 1.4 }}>
+                    Converte as mensagens de voz recebidas em texto para gerar os resumos.
+                  </span>
+                </div>
+              </label>
+
+              {/* Opção Interpretar Imagens */}
+              <label style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '0.75rem',
+                cursor: 'pointer',
+                userSelect: 'none',
+                padding: '0.75rem',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid rgba(255, 255, 255, 0.03)',
+                transition: 'background-color 0.2s'
+              }}
+              onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
+              onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.02)'}
+              >
+                <input
+                  type="checkbox"
+                  checked={interpretImagesFlag}
+                  onChange={(e) => handleToggleSetting('interpretImages', e.target.checked)}
+                  style={{ width: '18px', height: '18px', accentColor: 'var(--accent-purple)', cursor: 'pointer', marginTop: '0.1rem' }}
+                />
+                <div>
+                  <span style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>
+                    Interpretar imagens e figurinhas
+                  </span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginTop: '0.15rem', lineHeight: 1.4 }}>
+                    Usa visão computacional para descrever imagens e figurinhas enviadas pelos clientes.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', marginTop: '0.5rem' }}></div>
+
+            <button
+              type="button"
+              className="btn btnPrimary"
+              onClick={() => setIsProcessingSettingsModalOpen(false)}
+              style={{
+                width: '100%',
+                padding: '0.75rem',
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                borderRadius: 'var(--radius-md)',
+                border: 'none',
+                background: 'linear-gradient(135deg, var(--accent-purple) 0%, #7e22ce 100%)',
+                color: 'white',
+                cursor: 'pointer',
+                boxShadow: '0 4px 6px -1px rgba(168, 85, 247, 0.2)'
+              }}
+            >
+              Confirmar
+            </button>
           </div>
         </div>
       )}
