@@ -1375,7 +1375,11 @@ export default function WhatsappSummaryClient({
                 <span style={{ color: 'var(--text-primary)' }}>
                   WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser ? (connectedUser.name || connectedUser.id.split('@')[0].split(':')[0]) : 'Carregando...'}</strong>
                 </span>
-                {whatsappStatus === 'connecting' && <span style={{ color: '#f59e0b', fontSize: '0.78rem', marginLeft: '0.25rem' }}>(Reconectando...)</span>}
+                {(whatsappStatus === 'connecting' || whatsappSyncStatus !== 'completed') && (
+                  <span style={{ color: '#f59e0b', fontSize: '0.78rem', marginLeft: '0.25rem' }}>
+                    {whatsappStatus === 'connecting' ? '(Reconectando...)' : '(Sincronizando...)'}
+                  </span>
+                )}
               </div>
 
               {/* Status de Sincronização e Mídias em Linha */}
