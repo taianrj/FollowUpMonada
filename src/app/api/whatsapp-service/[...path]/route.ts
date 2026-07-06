@@ -6,7 +6,8 @@ const ALLOWED_PATHS = new Set([
   'settings',
   'qr-code',
   'messages',
-  'logout'
+  'logout',
+  'maintenance/resync'
 ]);
 
 type ProxyContext = {

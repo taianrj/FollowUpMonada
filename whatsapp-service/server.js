@@ -3527,7 +3527,6 @@ async function connectUserWhatsApp(userId) {
   // Escuta novas mensagens (enviadas e recebidas em tempo real)
   sock.ev.on('messages.upsert', async (m) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
-    if (m.type !== 'notify') return;
     await processUserMessages(m.messages);
   });
 

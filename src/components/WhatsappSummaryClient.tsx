@@ -304,6 +304,59 @@ export default function WhatsappSummaryClient({
     const query = searchParams.toString();
     return `/api/whatsapp-service/${path}${query ? `?${query}` : ''}`;
   };
+  const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const fetchWhatsappMessages = (date: string, format: string) => (
+    fetch(buildWhatsappServiceUrl('messages', { date, format }), {
+      headers: whatsappHeaders
+    })
+  );
+  const refreshWhatsappSync = async (date: string, mode: 'soft' | 'force-history') => {
+    const response = await fetch(buildWhatsappServiceUrl('maintenance/resync', { date, mode }), {
+      headers: whatsappHeaders
+    });
+    if (!response.ok) {
+      throw new Error(`Falha ao atualizar sincronizacao: HTTP ${response.status}`);
+    }
+  };
+  const fetchMessagesWithRecovery = async (date: string, format: 'json_grouped' | 'text') => {
+    let response = await fetchWhatsappMessages(date, format);
+    if (!response.ok) return response;
+
+    const responseText = await response.clone().text();
+    const isEmptyJson = format === 'json_grouped' && (() => {
+      try {
+        const data = JSON.parse(responseText);
+        return !Array.isArray(data.conversations) || data.conversations.length === 0;
+      } catch {
+        return false;
+      }
+    })();
+    const isEmptyText = format === 'text' && responseText.trim().length === 0;
+
+    if (!isEmptyJson && !isEmptyText) return response;
+
+    await refreshWhatsappSync(date, 'soft');
+    await wait(4500);
+    response = await fetchWhatsappMessages(date, format);
+    if (!response.ok) return response;
+
+    const retryText = await response.clone().text();
+    const stillEmptyJson = format === 'json_grouped' && (() => {
+      try {
+        const data = JSON.parse(retryText);
+        return !Array.isArray(data.conversations) || data.conversations.length === 0;
+      } catch {
+        return false;
+      }
+    })();
+    const stillEmptyText = format === 'text' && retryText.trim().length === 0;
+
+    if (!stillEmptyJson && !stillEmptyText) return response;
+
+    await refreshWhatsappSync(date, 'force-history');
+    await wait(8000);
+    return fetchWhatsappMessages(date, format);
+  };
 
   // Efeito para fechar o dropdown customizado de responsáveis ao clicar fora
   useEffect(() => {
@@ -699,12 +752,7 @@ export default function WhatsappSummaryClient({
     setSearchQuery('');
 
     try {
-      const response = await fetch(buildWhatsappServiceUrl('messages', {
-        date: summaryDate,
-        format: 'json_grouped'
-      }), {
-        headers: whatsappHeaders
-      });
+      const response = await fetchMessagesWithRecovery(summaryDate, 'json_grouped');
       
       if (response.ok) {
         const contentType = response.headers.get('content-type') || '';
@@ -797,12 +845,7 @@ export default function WhatsappSummaryClient({
     
     try {
       // Passo 1: Busca mensagens do microsserviço
-      const response = await fetch(buildWhatsappServiceUrl('messages', {
-        date: targetDate,
-        format: 'text'
-      }), {
-        headers: whatsappHeaders
-      });
+      const response = await fetchMessagesWithRecovery(targetDate, 'text');
       
       if (!response.ok) {
         if (response.status === 401) {
