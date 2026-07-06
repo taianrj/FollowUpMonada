@@ -16,7 +16,14 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[CRITICAL] Rejeição de Promise Não Capturada no Servidor:', reason);
 });
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  downloadMediaMessage,
+  ALL_WA_PATCH_NAMES
+} = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const QRCode = require('qrcode');
 const fs = require('fs');
@@ -457,12 +464,18 @@ const pendingContactWrites = new Map();
 const pendingContactTimers = new Map();
 const pendingMediaStateTimers = new Map();
 
-const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '2', 10)); // Padrão de 2 dias (48 horas) para sincronização e retenção de histórico
+const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '7', 10)); // Janela padrao de 7 dias para tolerar pausas do servico
 const SUPABASE_TIMEOUT_MS = Math.max(2000, parseInt(process.env.SUPABASE_TIMEOUT_MS || '8000', 10));
 const CONTACT_FLUSH_DELAY_MS = Math.max(250, parseInt(process.env.CONTACT_FLUSH_DELAY_MS || '1200', 10));
 const CONTACT_MESSAGE_HYDRATION_INTERVAL_MS = Math.max(60000, parseInt(process.env.CONTACT_MESSAGE_HYDRATION_INTERVAL_MS || '300000', 10));
 const SYNC_IDLE_COMPLETE_MS = Math.max(5000, parseInt(process.env.SYNC_IDLE_COMPLETE_MS || '90000', 10));
+const RESYNC_POLL_INTERVAL_MS = Math.max(1000, parseInt(process.env.RESYNC_POLL_INTERVAL_MS || '3000', 10));
+const RESYNC_WAIT_TIMEOUT_MS = Math.max(5000, parseInt(process.env.RESYNC_WAIT_TIMEOUT_MS || '30000', 10));
+const FORCE_HISTORY_WAIT_TIMEOUT_MS = Math.max(10000, parseInt(process.env.FORCE_HISTORY_WAIT_TIMEOUT_MS || '60000', 10));
 const JSON_INDENT = process.env.NODE_ENV === 'production' ? 0 : 2;
+const WA_PATCH_NAMES = Array.isArray(ALL_WA_PATCH_NAMES) && ALL_WA_PATCH_NAMES.length > 0
+  ? ALL_WA_PATCH_NAMES
+  : ['critical_block', 'critical_unblock_low', 'regular_high', 'regular_low', 'regular'];
 const AUDIO_TRANSCRIPTION_ENABLED = process.env.AUDIO_TRANSCRIPTION_ENABLED !== 'false';
 const AUDIO_TRANSCRIPTION_MAX_BYTES = Math.max(1024 * 1024, parseInt(process.env.AUDIO_TRANSCRIPTION_MAX_BYTES || String(24 * 1024 * 1024), 10));
 const AUDIO_TRANSCRIPTION_QUEUE_MAX = Math.max(1, parseInt(process.env.AUDIO_TRANSCRIPTION_QUEUE_MAX || '200', 10));
@@ -632,6 +645,21 @@ function mediaProcessingKey(userId, dedupeKey) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function clearAuthStateFilesByPrefix(authStateDir, prefixes) {
+  if (!fs.existsSync(authStateDir)) return 0;
+  let cleared = 0;
+  for (const file of fs.readdirSync(authStateDir)) {
+    if (!prefixes.some(prefix => file.startsWith(`${prefix}-`))) continue;
+    try {
+      fs.unlinkSync(path.join(authStateDir, file));
+      cleared++;
+    } catch (err) {
+      console.warn(`Falha ao limpar estado de auth ${file}:`, err.message || err);
+    }
+  }
+  return cleared;
 }
 
 function parseRetryDelayMs(message) {
@@ -3172,7 +3200,9 @@ async function connectUserWhatsApp(userId) {
       ? state.creds.processedHistoryMessages.length
       : 0;
     state.creds.processedHistoryMessages = [];
+    const clearedAppStateFiles = clearAuthStateFilesByPrefix(userAuthDir, ['app-state-sync-version']);
     instance.forceHistorySync = false;
+    instance.requestAppStateResync = true;
     await saveCreds();
     try {
       if (fs.existsSync(credsFilePath)) {
@@ -3182,7 +3212,7 @@ async function connectUserWhatsApp(userId) {
     } catch (err) {
       console.error(`[${userId}] Erro ao salvar credenciais apos force-history:`, err);
     }
-    console.log(`[${userId}] force-history ativo: ${previousProcessedCount} marcadores de histórico processado foram limpos.`);
+    console.log(`[${userId}] force-history ativo: ${previousProcessedCount} marcadores de historico processado e ${clearedAppStateFiles} versoes de app-state foram limpos.`);
   }
 
   // Busca a versão mais recente do WhatsApp Web para evitar o erro 405 (Method Not Allowed)
@@ -3330,6 +3360,17 @@ async function connectUserWhatsApp(userId) {
       console.log(`[${userId}] WhatsApp conectado com sucesso!`);
       resetUserSyncTimer(userId);
       resumeMediaProcessingForUser(userId);
+      if (instance.requestAppStateResync && typeof sock.resyncAppState === 'function') {
+        instance.requestAppStateResync = false;
+        sock.resyncAppState(WA_PATCH_NAMES, true)
+          .then(() => {
+            console.log(`[${userId}] App-state ressincronizado apos force-history.`);
+            resetUserSyncTimer(userId);
+          })
+          .catch(err => {
+            console.warn(`[${userId}] Falha ao ressincronizar app-state apos force-history:`, err.message || err);
+          });
+      }
       hydrateContactsFromStoredMessages(userId, instance)
         .then(() => refreshGroupMetadataAliases(userId, instance))
         .catch(err => {
@@ -3503,6 +3544,16 @@ async function connectUserWhatsApp(userId) {
     const savedMessages = saveUserMessagesBatch(userId, messageObjects);
     if (savedMessages.length > 0) {
       await persistMessagesToSupabase(userId, savedMessages);
+      const newestSaved = savedMessages.reduce((newest, message) => {
+        if (!newest) return message;
+        return new Date(message.timestamp).getTime() > new Date(newest.timestamp).getTime() ? message : newest;
+      }, null);
+      if (newestSaved) {
+        instance.lastStoredMessageAt = newestSaved.timestamp;
+        instance.lastStoredMessageDate = messageDateStr(new Date(newestSaved.timestamp).getTime());
+      }
+      instance.lastStoredMessagesCount = (instance.lastStoredMessagesCount || 0) + savedMessages.length;
+      console.log(`[${userId}] ${savedMessages.length} mensagens novas salvas. Ultima data: ${instance.lastStoredMessageDate || 'desconhecida'}.`);
     }
 
     if (audioTranscriptionCandidates.length > 0) {
@@ -3527,7 +3578,14 @@ async function connectUserWhatsApp(userId) {
   // Escuta novas mensagens (enviadas e recebidas em tempo real)
   sock.ev.on('messages.upsert', async (m) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
-    await processUserMessages(m.messages);
+    const batchCount = Array.isArray(m?.messages) ? m.messages.length : 0;
+    instance.lastIncomingBatchAt = new Date().toISOString();
+    instance.lastIncomingBatchType = m?.type || 'unknown';
+    instance.lastIncomingBatchCount = batchCount;
+    if (batchCount > 0) {
+      console.log(`[${userId}] messages.upsert recebido: type=${instance.lastIncomingBatchType} count=${batchCount}`);
+    }
+    await processUserMessages(m?.messages || []);
   });
 
   sock.ev.on('contacts.upsert', async (contacts) => {
@@ -4000,6 +4058,16 @@ async function getOrCreateInstance(userId) {
     reconnectTimer: null,
     connectionGeneration: 0,
     forceHistorySync: false,
+    requestAppStateResync: false,
+    lastIncomingBatchAt: null,
+    lastIncomingBatchType: null,
+    lastIncomingBatchCount: 0,
+    lastStoredMessageAt: null,
+    lastStoredMessageDate: null,
+    lastStoredMessagesCount: 0,
+    lastRecoveryAttemptAt: null,
+    lastRecoveryMode: null,
+    lastRecoveryRequestedDate: null,
     transcriptionRunning: false,
     transcriptionCompleted: 0,
     transcriptionFailed: 0,
@@ -4064,6 +4132,16 @@ app.use((req, res, next) => {
     return res.sendStatus(200);
   }
   next();
+});
+
+app.get('/healthz', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'whatsapp-service',
+    uptimeSeconds: Math.floor(process.uptime()),
+    activeInstances: Object.keys(instances).length,
+    generatedAt: new Date().toISOString()
+  });
 });
 
 // Helper para extrair cookies do cabeçalho HTTP
@@ -4156,6 +4234,36 @@ function readLocalMessagesForDate(userId, dateStr) {
   }
 }
 
+async function loadMergedMessagesForDate(userId, dateStr) {
+  const localMessages = readLocalMessagesForDate(userId, dateStr);
+  const remoteMessages = await loadMessagesFromSupabase(userId, dateStr);
+  return {
+    localMessages,
+    remoteMessages,
+    messages: mergeMessages(localMessages, remoteMessages)
+  };
+}
+
+async function waitForMessagesForDate(userId, dateStr, timeoutMs) {
+  const startedAt = Date.now();
+  let snapshot = await loadMergedMessagesForDate(userId, dateStr);
+
+  while (snapshot.messages.length === 0 && Date.now() - startedAt < timeoutMs) {
+    await sleep(RESYNC_POLL_INTERVAL_MS);
+    snapshot = await loadMergedMessagesForDate(userId, dateStr);
+  }
+
+  return {
+    found: snapshot.messages.length > 0,
+    waitedMs: Date.now() - startedAt,
+    localCount: snapshot.localMessages.length,
+    remoteCount: snapshot.remoteMessages.length,
+    mergedCount: snapshot.messages.length,
+    firstTimestamp: snapshot.messages[0]?.timestamp || null,
+    lastTimestamp: snapshot.messages[snapshot.messages.length - 1]?.timestamp || null
+  };
+}
+
 function listLocalMessageFiles(userId) {
   const userMsgDir = path.join(dataDir, 'messages', userId);
   if (!fs.existsSync(userMsgDir)) return [];
@@ -4223,9 +4331,7 @@ async function buildDiagnostics(userId, dateStr) {
   const dateStats = [];
 
   for (const date of dates) {
-    const localMessages = readLocalMessagesForDate(userId, date);
-    const remoteMessages = await loadMessagesFromSupabase(userId, date);
-    const mergedMessages = mergeMessages(localMessages, remoteMessages);
+    const { localMessages, remoteMessages, messages: mergedMessages } = await loadMergedMessagesForDate(userId, date);
     if (instance) {
       instance.contactsCache = mergeContactCaches(contacts, instance.contactsCache || {});
       await hydrateContactsFromStoredMessages(userId, instance, mergedMessages, date);
@@ -4287,8 +4393,13 @@ async function handleMaintenanceResync(req, res) {
   let clearedMessageFiles = 0;
   let clearedContacts = false;
   const forcedHistory = mode === 'force-history';
+  const shouldWait = ['1', 'true', 'yes'].includes(String(req.query.wait || '').toLowerCase());
+  const requestedWaitMs = parseInt(String(req.query.waitMs || ''), 10);
+  const defaultWaitMs = forcedHistory ? FORCE_HISTORY_WAIT_TIMEOUT_MS : RESYNC_WAIT_TIMEOUT_MS;
+  const waitTimeoutMs = Math.min(90000, Math.max(0, Number.isFinite(requestedWaitMs) ? requestedWaitMs : defaultWaitMs));
 
   let instance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
+  console.log(`[${cleanUserId}] Ressincronizacao solicitada: mode=${mode} date=${dateStr || 'sem-data'} wait=${shouldWait ? waitTimeoutMs : 0}ms`);
 
   if (mode === 'desync-local') {
     clearedMessageFiles = clearLocalMessageFiles(cleanUserId, dateStr);
@@ -4314,6 +4425,9 @@ async function handleMaintenanceResync(req, res) {
     instance.contactsCache = contacts;
     instance.syncStatus = 'syncing';
     instance.messagesProcessedCount = 0;
+    instance.lastRecoveryAttemptAt = new Date().toISOString();
+    instance.lastRecoveryMode = mode;
+    instance.lastRecoveryRequestedDate = dateStr;
     instance.historySyncStats = {
       batches: 0,
       contacts: 0,
@@ -4331,6 +4445,9 @@ async function handleMaintenanceResync(req, res) {
     connectUserWhatsApp(cleanUserId);
   }
 
+  const waitResult = shouldWait && dateStr
+    ? await waitForMessagesForDate(cleanUserId, dateStr, waitTimeoutMs)
+    : null;
   const diagnostics = await buildDiagnostics(cleanUserId, dateStr || undefined);
   return res.json({
     ok: true,
@@ -4339,6 +4456,7 @@ async function handleMaintenanceResync(req, res) {
     clearedMessageFiles,
     clearedContacts,
     restarted: !!instance,
+    waitResult,
     diagnostics
   });
 }
@@ -4865,6 +4983,15 @@ app.get('/status', checkAuth, async (req, res) => {
     contactsCount: Object.keys(instance.contactsCache || {}).length,
     historySyncStats: instance.historySyncStats || null,
     lastSyncActivity: instance.lastSyncActivity ? new Date(instance.lastSyncActivity).toISOString() : null,
+    lastIncomingBatchAt: instance.lastIncomingBatchAt || null,
+    lastIncomingBatchType: instance.lastIncomingBatchType || null,
+    lastIncomingBatchCount: instance.lastIncomingBatchCount || 0,
+    lastStoredMessageAt: instance.lastStoredMessageAt || null,
+    lastStoredMessageDate: instance.lastStoredMessageDate || null,
+    lastStoredMessagesCount: instance.lastStoredMessagesCount || 0,
+    lastRecoveryAttemptAt: instance.lastRecoveryAttemptAt || null,
+    lastRecoveryMode: instance.lastRecoveryMode || null,
+    lastRecoveryRequestedDate: instance.lastRecoveryRequestedDate || null,
     retentionDays: MESSAGE_RETENTION_DAYS,
     persistence: {
       supabaseConfigured: !!getSupabaseConfig(),
@@ -5200,13 +5327,7 @@ app.get('/messages', checkAuth, async (req, res) => {
   const filePath = path.join(userMsgDir, `messages-${dateStr}.json`);
 
   try {
-    let localMessages = [];
-    if (fs.existsSync(filePath)) {
-      const rawData = fs.readFileSync(filePath, 'utf8');
-      localMessages = JSON.parse(rawData);
-    }
-    const remoteMessages = await loadMessagesFromSupabase(cleanUserId, dateStr);
-    const messages = mergeMessages(localMessages, remoteMessages);
+    const { localMessages, remoteMessages, messages } = await loadMergedMessagesForDate(cleanUserId, dateStr);
     let activeInstance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
     if (activeInstance) {
       applyOwnerNameHint(cleanUserId, activeInstance, readOwnerNameHint(req));

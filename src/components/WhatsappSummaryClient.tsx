@@ -305,7 +305,7 @@ export default function WhatsappSummaryClient({
     return `/api/whatsapp-service/${path}${query ? `?${query}` : ''}`;
   };
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-  const fetchWhatsappMessages = (date: string, format: string) => (
+  const fetchWhatsappMessages = (date: string, format: 'json_grouped' | 'text') => (
     fetch(buildWhatsappServiceUrl('messages', { date, format }), {
       headers: whatsappHeaders
     })
@@ -318,12 +318,11 @@ export default function WhatsappSummaryClient({
       throw new Error(`Falha ao atualizar sincronizacao: HTTP ${response.status}`);
     }
   };
-  const fetchMessagesWithRecovery = async (date: string, format: 'json_grouped' | 'text') => {
-    let response = await fetchWhatsappMessages(date, format);
-    if (!response.ok) return response;
-
+  const isEmptyMessagesResponse = async (response: Response, format: 'json_grouped' | 'text') => {
+    if (!response.ok) return false;
     const responseText = await response.clone().text();
-    const isEmptyJson = format === 'json_grouped' && (() => {
+    if (format === 'text') return responseText.trim().length === 0;
+    return (() => {
       try {
         const data = JSON.parse(responseText);
         return !Array.isArray(data.conversations) || data.conversations.length === 0;
@@ -331,31 +330,45 @@ export default function WhatsappSummaryClient({
         return false;
       }
     })();
-    const isEmptyText = format === 'text' && responseText.trim().length === 0;
+  };
 
-    if (!isEmptyJson && !isEmptyText) return response;
+  const pollWhatsappMessages = async (
+    date: string,
+    format: 'json_grouped' | 'text',
+    timeoutMs: number,
+    intervalMs: number
+  ) => {
+    const startedAt = Date.now();
+    let latestResponse = await fetchWhatsappMessages(date, format);
 
+    while (
+      latestResponse.ok &&
+      await isEmptyMessagesResponse(latestResponse, format) &&
+      Date.now() - startedAt < timeoutMs
+    ) {
+      await wait(Math.min(intervalMs, Math.max(0, timeoutMs - (Date.now() - startedAt))));
+      latestResponse = await fetchWhatsappMessages(date, format);
+    }
+
+    return latestResponse;
+  };
+
+  const fetchMessagesWithRecovery = async (
+    date: string,
+    format: 'json_grouped' | 'text',
+    onProgress?: (message: string) => void
+  ) => {
+    let response = await fetchWhatsappMessages(date, format);
+    if (!response.ok || !(await isEmptyMessagesResponse(response, format))) return response;
+
+    onProgress?.('Nenhuma mensagem apareceu ainda. Tentando reconectar e puxar eventos pendentes do WhatsApp...');
     await refreshWhatsappSync(date, 'soft');
-    await wait(4500);
-    response = await fetchWhatsappMessages(date, format);
-    if (!response.ok) return response;
+    response = await pollWhatsappMessages(date, format, 30000, 3000);
+    if (!response.ok || !(await isEmptyMessagesResponse(response, format))) return response;
 
-    const retryText = await response.clone().text();
-    const stillEmptyJson = format === 'json_grouped' && (() => {
-      try {
-        const data = JSON.parse(retryText);
-        return !Array.isArray(data.conversations) || data.conversations.length === 0;
-      } catch {
-        return false;
-      }
-    })();
-    const stillEmptyText = format === 'text' && retryText.trim().length === 0;
-
-    if (!stillEmptyJson && !stillEmptyText) return response;
-
+    onProgress?.('Ainda nao chegou nada para esta data. Forcando uma releitura mais profunda do historico...');
     await refreshWhatsappSync(date, 'force-history');
-    await wait(8000);
-    return fetchWhatsappMessages(date, format);
+    return pollWhatsappMessages(date, format, 60000, 4000);
   };
 
   // Efeito para fechar o dropdown customizado de responsáveis ao clicar fora
@@ -752,7 +765,11 @@ export default function WhatsappSummaryClient({
     setSearchQuery('');
 
     try {
-      const response = await fetchMessagesWithRecovery(summaryDate, 'json_grouped');
+      let recoveryMessage = '';
+      const response = await fetchMessagesWithRecovery(summaryDate, 'json_grouped', (message) => {
+        recoveryMessage = message;
+        setModalMessagesText(message);
+      });
       
       if (response.ok) {
         const contentType = response.headers.get('content-type') || '';
@@ -762,8 +779,12 @@ export default function WhatsappSummaryClient({
             setChatConversations(data.conversations);
             if (data.conversations.length > 0) {
               setSelectedChatKey(data.conversations[0].chatKey);
+              setModalMessagesText('');
+            } else {
+              setModalMessagesText(recoveryMessage
+                ? 'A ressincronizacao terminou, mas nenhuma mensagem chegou para esta data. Se houve conversas hoje, mantenha o WhatsApp conectado por alguns minutos ou reconecte o QR para forcar uma sincronizacao inicial nova.'
+                : 'Nenhuma mensagem de clientes registrada para a data selecionada.');
             }
-            setModalMessagesText('');
             return;
           }
         }
@@ -845,7 +866,13 @@ export default function WhatsappSummaryClient({
     
     try {
       // Passo 1: Busca mensagens do microsserviço
-      const response = await fetchMessagesWithRecovery(targetDate, 'text');
+      let showedRecoveryToast = false;
+      const response = await fetchMessagesWithRecovery(targetDate, 'text', () => {
+        if (!showedRecoveryToast) {
+          showToast('Nao encontrei mensagens ainda. Tentando ressincronizar o WhatsApp...', 'info');
+          showedRecoveryToast = true;
+        }
+      });
       
       if (!response.ok) {
         if (response.status === 401) {
@@ -2240,7 +2267,7 @@ export default function WhatsappSummaryClient({
               {isLoadingModalMessages ? (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '0.75rem', color: 'var(--text-muted)' }}>
                   <div className="spinner" style={{ width: '32px', height: '32px', border: '3px solid rgba(168, 85, 247, 0.1)', borderTop: '3px solid var(--accent-purple)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
-                  <span style={{ fontSize: '0.85rem' }}>Buscando logs de mensagens...</span>
+                  <span style={{ fontSize: '0.85rem' }}>{modalMessagesText || 'Buscando logs de mensagens...'}</span>
                 </div>
               ) : chatConversations.length === 0 ? (
                 <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '2rem', color: 'var(--text-muted)', textAlign: 'center' }}>
