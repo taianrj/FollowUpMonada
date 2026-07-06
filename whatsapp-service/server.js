@@ -106,7 +106,12 @@ try {
       'MEDIA_LONG_TERM_RETRY_STEP_MS',
       'MEDIA_LONG_TERM_RETRY_MAX_MS',
       'MEDIA_MAX_LONG_TERM_ATTEMPTS',
-      'MEDIA_STATE_PERSIST_DELAY_MS'
+      'MEDIA_STATE_PERSIST_DELAY_MS',
+      'AUTH_STATE_PERSIST_DELAY_MS',
+      'AUTH_STATE_MAX_FILE_BYTES',
+      'RESYNC_POLL_INTERVAL_MS',
+      'RESYNC_WAIT_TIMEOUT_MS',
+      'FORCE_HISTORY_WAIT_TIMEOUT_MS'
     ]);
     dotenvContent.split('\n').forEach(line => {
       const parts = line.split('=');
@@ -322,7 +327,9 @@ async function clearAllUserData(userId) {
       `${dbSessionId}:local:contacts:*`,
       `${cleanUserId}:local:contacts:*`,
       `${dbSessionId}:media-processing:*`,
-      `${cleanUserId}:media-processing:*`
+      `${cleanUserId}:media-processing:*`,
+      `${dbSessionId}:auth-state:*`,
+      `${cleanUserId}:auth-state:*`
     ];
     for (const pattern of [...new Set(statePatterns)]) {
       try {
@@ -463,6 +470,7 @@ const supabaseDisabledTables = new Set();
 const pendingContactWrites = new Map();
 const pendingContactTimers = new Map();
 const pendingMediaStateTimers = new Map();
+const pendingAuthStateTimers = new Map();
 
 const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '2', 10)); // Padrao de 2 dias (48 horas) para sincronizacao e retencao de historico
 const SUPABASE_TIMEOUT_MS = Math.max(2000, parseInt(process.env.SUPABASE_TIMEOUT_MS || '8000', 10));
@@ -472,6 +480,8 @@ const SYNC_IDLE_COMPLETE_MS = Math.max(5000, parseInt(process.env.SYNC_IDLE_COMP
 const RESYNC_POLL_INTERVAL_MS = Math.max(1000, parseInt(process.env.RESYNC_POLL_INTERVAL_MS || '3000', 10));
 const RESYNC_WAIT_TIMEOUT_MS = Math.max(5000, parseInt(process.env.RESYNC_WAIT_TIMEOUT_MS || '30000', 10));
 const FORCE_HISTORY_WAIT_TIMEOUT_MS = Math.max(10000, parseInt(process.env.FORCE_HISTORY_WAIT_TIMEOUT_MS || '60000', 10));
+const AUTH_STATE_PERSIST_DELAY_MS = Math.max(1000, parseInt(process.env.AUTH_STATE_PERSIST_DELAY_MS || '3000', 10));
+const AUTH_STATE_MAX_FILE_BYTES = Math.max(1024, parseInt(process.env.AUTH_STATE_MAX_FILE_BYTES || '2000000', 10));
 const JSON_INDENT = process.env.NODE_ENV === 'production' ? 0 : 2;
 const WA_PATCH_NAMES = Array.isArray(ALL_WA_PATCH_NAMES) && ALL_WA_PATCH_NAMES.length > 0
   ? ALL_WA_PATCH_NAMES
@@ -587,44 +597,59 @@ async function saveStateBlobToSupabase(userId, kind, key, payload) {
 }
 
 async function loadStateBlobFromSupabase(userId, kind, key = 'default') {
-  const id = stateBlobId(userId, kind, key);
-  const response = await supabaseRest(
-    'whatsapp_sessions',
-    `?id=eq.${supabaseEq(id)}&select=creds&limit=1`
-  );
-  if (!response) return null;
+  const ids = [...new Set([
+    stateBlobId(userId, kind, key),
+    `${userId}:${kind}:${key}`
+  ])];
 
-  try {
-    const rows = await response.json();
-    const raw = rows?.[0]?.creds;
-    if (!raw) return null;
-    return typeof raw === 'string' ? JSON.parse(raw) : raw;
-  } catch (err) {
-    console.warn(`[${userId}] Falha ao carregar snapshot ${kind}/${key}:`, err.message || err);
-    return null;
+  for (const id of ids) {
+    const response = await supabaseRest(
+      'whatsapp_sessions',
+      `?id=eq.${supabaseEq(id)}&select=creds&limit=1`
+    );
+    if (!response) continue;
+
+    try {
+      const rows = await response.json();
+      const raw = rows?.[0]?.creds;
+      if (!raw) continue;
+      return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch (err) {
+      console.warn(`[${userId}] Falha ao carregar snapshot ${kind}/${key}:`, err.message || err);
+    }
   }
+
+  return null;
 }
 
 async function listStateBlobKeysFromSupabase(userId, kind) {
-  const prefix = `${userId}:${kind}:`;
-  const response = await supabaseRest(
-    'whatsapp_sessions',
-    `?id=like.${supabaseEq(`${prefix}*`)}&select=id&limit=1000`
-  );
-  if (!response) return [];
+  const prefixes = [...new Set([
+    `${getDbSessionId(userId)}:${kind}:`,
+    `${userId}:${kind}:`
+  ])];
+  const keys = new Set();
 
-  try {
-    const rows = await response.json();
-    return rows
-      .map(row => String(row.id || ''))
-      .filter(id => id.startsWith(prefix))
-      .map(id => id.slice(prefix.length))
-      .filter(Boolean)
-      .sort();
-  } catch (err) {
-    console.warn(`[${userId}] Falha ao listar snapshots ${kind}:`, err.message || err);
-    return [];
+  for (const prefix of prefixes) {
+    const response = await supabaseRest(
+      'whatsapp_sessions',
+      `?id=like.${supabaseEq(`${prefix}*`)}&select=id&limit=5000`
+    );
+    if (!response) continue;
+
+    try {
+      const rows = await response.json();
+      rows
+        .map(row => String(row.id || ''))
+        .filter(id => id.startsWith(prefix))
+        .map(id => id.slice(prefix.length))
+        .filter(Boolean)
+        .forEach(key => keys.add(key));
+    } catch (err) {
+      console.warn(`[${userId}] Falha ao listar snapshots ${kind}:`, err.message || err);
+    }
   }
+
+  return Array.from(keys).sort();
 }
 
 function supabaseEq(value) {
@@ -660,6 +685,137 @@ function clearAuthStateFilesByPrefix(authStateDir, prefixes) {
     }
   }
   return cleared;
+}
+
+function isSafeAuthStateFile(file) {
+  return typeof file === 'string'
+    && file.endsWith('.json')
+    && file.length <= 240
+    && !file.includes('/')
+    && !file.includes('\\')
+    && file !== '.'
+    && file !== '..';
+}
+
+function readAuthStateFiles(authStateDir) {
+  if (!fs.existsSync(authStateDir)) return [];
+  const files = [];
+
+  for (const file of fs.readdirSync(authStateDir)) {
+    if (!isSafeAuthStateFile(file)) continue;
+    const filePath = path.join(authStateDir, file);
+    try {
+      const stats = fs.statSync(filePath);
+      if (!stats.isFile() || stats.size > AUTH_STATE_MAX_FILE_BYTES) continue;
+      const content = fs.readFileSync(filePath, 'utf8');
+      JSON.parse(content);
+      files.push({
+        file,
+        content
+      });
+    } catch (err) {
+      console.warn(`Falha ao ler arquivo de auth-state ${file}:`, err.message || err);
+    }
+  }
+
+  return files;
+}
+
+async function deleteStateBlobFromSupabase(userId, kind, key) {
+  const ids = [...new Set([
+    stateBlobId(userId, kind, key),
+    `${userId}:${kind}:${key}`
+  ])];
+
+  for (const id of ids) {
+    await supabaseRest(
+      'whatsapp_sessions',
+      `?id=eq.${supabaseEq(id)}`,
+      { method: 'DELETE' }
+    );
+  }
+}
+
+async function persistAuthStateSnapshot(userId, authStateDir) {
+  const files = readAuthStateFiles(authStateDir);
+  if (files.length === 0) return 0;
+
+  const localKeys = new Set(files.map(item => item.file));
+  for (const chunk of chunkArray(files, 20)) {
+    await Promise.all(chunk.map(item => saveStateBlobToSupabase(userId, 'auth-state', item.file, {
+      file: item.file,
+      content: item.content,
+      savedAt: new Date().toISOString()
+    })));
+  }
+
+  const remoteKeys = await listStateBlobKeysFromSupabase(userId, 'auth-state');
+  for (const key of remoteKeys) {
+    if (isSafeAuthStateFile(key) && !localKeys.has(key)) {
+      await deleteStateBlobFromSupabase(userId, 'auth-state', key);
+    }
+  }
+
+  const instance = instances[userId];
+  if (instance) {
+    instance.authStateFilesBackedUp = files.length;
+    instance.lastAuthStateBackupAt = new Date().toISOString();
+  }
+  console.log(`[${userId}] Snapshot de auth-state salvo no Supabase com ${files.length} arquivos.`);
+  return files.length;
+}
+
+function scheduleAuthStateSnapshot(userId, authStateDir, delayMs = AUTH_STATE_PERSIST_DELAY_MS) {
+  const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
+  if (!cleanUserId || !authStateDir) return;
+  if (pendingAuthStateTimers.has(cleanUserId)) {
+    clearTimeout(pendingAuthStateTimers.get(cleanUserId));
+  }
+
+  pendingAuthStateTimers.set(cleanUserId, setTimeout(async () => {
+    pendingAuthStateTimers.delete(cleanUserId);
+    try {
+      await persistAuthStateSnapshot(cleanUserId, authStateDir);
+    } catch (err) {
+      console.warn(`[${cleanUserId}] Falha ao persistir snapshot de auth-state:`, err.message || err);
+    }
+  }, delayMs));
+}
+
+async function restoreAuthStateSnapshot(userId, authStateDir, { overwrite = false } = {}) {
+  const keys = await listStateBlobKeysFromSupabase(userId, 'auth-state');
+  if (keys.length === 0) return 0;
+
+  fs.mkdirSync(authStateDir, { recursive: true });
+  let restored = 0;
+
+  for (const key of keys) {
+    if (!isSafeAuthStateFile(key)) continue;
+    const filePath = path.join(authStateDir, key);
+    if (!overwrite && fs.existsSync(filePath)) continue;
+
+    const payload = await loadStateBlobFromSupabase(userId, 'auth-state', key);
+    const content = typeof payload?.content === 'string' ? payload.content : null;
+    if (!content) continue;
+
+    try {
+      JSON.parse(content);
+      fs.writeFileSync(filePath, content, 'utf8');
+      restored++;
+    } catch (err) {
+      console.warn(`[${userId}] Falha ao restaurar auth-state ${key}:`, err.message || err);
+    }
+  }
+
+  if (restored > 0) {
+    const instance = instances[userId];
+    if (instance) {
+      instance.authStateFilesRestored = restored;
+      instance.lastAuthStateRestoreAt = new Date().toISOString();
+    }
+    console.log(`[${userId}] Restaurados ${restored} arquivos de auth-state do Supabase.`);
+  }
+  return restored;
 }
 
 function parseRetryDelayMs(message) {
@@ -3176,7 +3332,9 @@ async function connectUserWhatsApp(userId) {
   const userAuthDir = path.join(dataDir, 'auth', userId);
   fs.mkdirSync(userAuthDir, { recursive: true });
 
-  // Restaura creds.json do Supabase se não existir localmente no container
+  await restoreAuthStateSnapshot(userId, userAuthDir);
+
+  // Restaura creds.json legado do Supabase se não existir localmente no container
   const credsFilePath = path.join(userAuthDir, 'creds.json');
   if (!fs.existsSync(credsFilePath)) {
     console.log(`[${userId}] creds.json não encontrado localmente. Tentando restaurar do Supabase...`);
@@ -3212,6 +3370,7 @@ async function connectUserWhatsApp(userId) {
     } catch (err) {
       console.error(`[${userId}] Erro ao salvar credenciais apos force-history:`, err);
     }
+    scheduleAuthStateSnapshot(userId, userAuthDir, 0);
     console.log(`[${userId}] force-history ativo: ${previousProcessedCount} marcadores de historico processado e ${clearedAppStateFiles} versoes de app-state foram limpos.`);
   }
 
@@ -3274,6 +3433,7 @@ async function connectUserWhatsApp(userId) {
     } catch (err) {
       console.error(`[${userId}] Erro ao fazer backup do creds.json para o Supabase:`, err);
     }
+    scheduleAuthStateSnapshot(userId, userAuthDir);
   });
 
   // Monitora alterações na conexão
@@ -3360,12 +3520,14 @@ async function connectUserWhatsApp(userId) {
       console.log(`[${userId}] WhatsApp conectado com sucesso!`);
       resetUserSyncTimer(userId);
       resumeMediaProcessingForUser(userId);
+      scheduleAuthStateSnapshot(userId, userAuthDir);
       if (instance.requestAppStateResync && typeof sock.resyncAppState === 'function') {
         instance.requestAppStateResync = false;
         sock.resyncAppState(WA_PATCH_NAMES, true)
           .then(() => {
             console.log(`[${userId}] App-state ressincronizado apos force-history.`);
             resetUserSyncTimer(userId);
+            scheduleAuthStateSnapshot(userId, userAuthDir);
           })
           .catch(err => {
             console.warn(`[${userId}] Falha ao ressincronizar app-state apos force-history:`, err.message || err);
@@ -3586,6 +3748,7 @@ async function connectUserWhatsApp(userId) {
       console.log(`[${userId}] messages.upsert recebido: type=${instance.lastIncomingBatchType} count=${batchCount}`);
     }
     await processUserMessages(m?.messages || []);
+    scheduleAuthStateSnapshot(userId, userAuthDir);
   });
 
   sock.ev.on('contacts.upsert', async (contacts) => {
@@ -3691,6 +3854,7 @@ async function connectUserWhatsApp(userId) {
     }
     
     await persistContactsCacheNow(userId, instance);
+    scheduleAuthStateSnapshot(userId, userAuthDir);
     console.log(`[${userId}] Carga de histórico finalizada. Total de mensagens processadas: ${totalMessages}`);
   });
 }
@@ -4068,6 +4232,10 @@ async function getOrCreateInstance(userId) {
     lastRecoveryAttemptAt: null,
     lastRecoveryMode: null,
     lastRecoveryRequestedDate: null,
+    authStateFilesBackedUp: 0,
+    lastAuthStateBackupAt: null,
+    authStateFilesRestored: 0,
+    lastAuthStateRestoreAt: null,
     transcriptionRunning: false,
     transcriptionCompleted: 0,
     transcriptionFailed: 0,
@@ -4992,6 +5160,10 @@ app.get('/status', checkAuth, async (req, res) => {
     lastRecoveryAttemptAt: instance.lastRecoveryAttemptAt || null,
     lastRecoveryMode: instance.lastRecoveryMode || null,
     lastRecoveryRequestedDate: instance.lastRecoveryRequestedDate || null,
+    authStateFilesBackedUp: instance.authStateFilesBackedUp || 0,
+    lastAuthStateBackupAt: instance.lastAuthStateBackupAt || null,
+    authStateFilesRestored: instance.authStateFilesRestored || 0,
+    lastAuthStateRestoreAt: instance.lastAuthStateRestoreAt || null,
     retentionDays: MESSAGE_RETENTION_DAYS,
     persistence: {
       supabaseConfigured: !!getSupabaseConfig(),
