@@ -51,6 +51,7 @@ export default async function WhatsappSummaryPage() {
     const { data: summariesData, error: summariesErr } = await supabase
       .from('whatsapp_summaries')
       .select('*')
+      .eq('created_by', user.id)
       .order('summary_date', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(30);

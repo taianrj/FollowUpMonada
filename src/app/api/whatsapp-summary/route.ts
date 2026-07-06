@@ -12,7 +12,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
     }
 
-    const { text, date, saveToDb, userId } = await request.json();
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role, is_active')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile || profile.is_active === false || profile.role !== 'admin') {
+      return NextResponse.json({ error: 'Acesso negado' }, { status: 403 });
+    }
+
+    const { text, date, saveToDb } = await request.json();
 
     if (!text || !text.trim()) {
       return NextResponse.json({ error: 'Texto das mensagens não fornecido' }, { status: 400 });
@@ -159,7 +169,7 @@ Retorne estritamente um JSON no formato especificado abaixo, sem textos adiciona
           summary_date: dbDate,
           raw_text: text,
           summary_data: parsedData,
-          created_by: userId || user.id
+          created_by: user.id
         })
         .select()
         .single();

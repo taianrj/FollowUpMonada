@@ -115,33 +115,28 @@ create table if not exists public.whatsapp_summaries (
 alter table public.whatsapp_summaries enable row level security;
 
 -- Políticas para WHATSAPP_SUMMARIES
-create policy "Qualquer usuário autenticado pode ver resumos"
+create policy "Usuarios podem ler apenas seus resumos whatsapp"
     on public.whatsapp_summaries for select
     to authenticated
-    using (true);
+    using (created_by = auth.uid());
 
-create policy "Qualquer usuário autenticado pode cadastrar resumos"
+create policy "Usuarios podem cadastrar apenas seus resumos whatsapp"
     on public.whatsapp_summaries for insert
     to authenticated
-    with check (true);
+    with check (created_by = auth.uid());
 
-create policy "Qualquer usuário autenticado pode atualizar resumos"
+create policy "Usuarios podem atualizar apenas seus resumos whatsapp"
     on public.whatsapp_summaries for update
     to authenticated
-    using (true);
+    using (created_by = auth.uid())
+    with check (created_by = auth.uid());
 
-create policy "Apenas administradores podem deletar resumos"
+create policy "Usuarios podem deletar apenas seus resumos whatsapp"
     on public.whatsapp_summaries for delete
     to authenticated
-    using (
-        exists (
-            select 1 from public.profiles
-            where id = auth.uid() and role = 'admin'
-        )
-    );
+    using (created_by = auth.uid());
 
 -- 5. ADICIONAR COLUNAS DE CONFIGURAÇÃO DO WHATSAPP NA TABELA DE PERFIS
 ALTER TABLE public.profiles 
 ADD COLUMN IF NOT EXISTS transcribe_audio BOOLEAN DEFAULT TRUE,
 ADD COLUMN IF NOT EXISTS interpret_images BOOLEAN DEFAULT FALSE;
-

@@ -237,7 +237,6 @@ export default function WhatsappSummaryClient({
   const [dragOver, setDragOver] = useState(false);
 
   // Estados da integração do WhatsApp
-  const [apiUrl, setApiUrl] = useState(process.env.NEXT_PUBLIC_WHATSAPP_SERVICE_URL || 'https://followupmonada.onrender.com');
   const [apiToken, setApiToken] = useState('');
   const [integrationConnected, setIntegrationConnected] = useState(false);
   const [whatsappStatus, setWhatsappStatus] = useState<string>('disconnected');
@@ -293,10 +292,17 @@ export default function WhatsappSummaryClient({
   const hasShownSuccessToastRef = useRef(false);
 
   const whatsappOwnerName = (profile?.name || profile?.email?.split('@')[0] || '').trim();
-  const ownerNameQuery = whatsappOwnerName ? `&ownerName=${encodeURIComponent(whatsappOwnerName)}` : '';
   const whatsappHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(whatsappOwnerName ? { 'x-owner-name': whatsappOwnerName } : {})
+  };
+  const buildWhatsappServiceUrl = (path: string, params?: Record<string, string>) => {
+    const searchParams = new URLSearchParams(params || {});
+    if (whatsappOwnerName) {
+      searchParams.set('ownerName', whatsappOwnerName);
+    }
+    const query = searchParams.toString();
+    return `/api/whatsapp-service/${path}${query ? `?${query}` : ''}`;
   };
 
   // Efeito para fechar o dropdown customizado de responsáveis ao clicar fora
@@ -424,7 +430,7 @@ export default function WhatsappSummaryClient({
   useEffect(() => {
     if (profile?.id) {
       setApiToken(profile.id);
-      checkConnectionStatus(apiUrl, profile.id);
+      checkConnectionStatus();
     }
   }, [profile]);
 
@@ -432,15 +438,15 @@ export default function WhatsappSummaryClient({
   useEffect(() => {
     if (!apiToken) return;
     
-    checkConnectionStatus(apiUrl, apiToken);
+    checkConnectionStatus();
     
     // Polling a cada 3 segundos na fase de inicialização ou sincronização para atualizar rápido, e a cada 15 segundos depois
     const interval = setInterval(() => {
-      checkConnectionStatus(apiUrl, apiToken);
+      checkConnectionStatus();
     }, (isCheckingStatus || whatsappSyncStatus !== 'completed') ? 3000 : 15000);
     
     return () => clearInterval(interval);
-  }, [apiToken, isCheckingStatus, whatsappSyncStatus, apiUrl]);
+  }, [apiToken, isCheckingStatus, whatsappSyncStatus, whatsappOwnerName]);
 
   // Efeito de gatilho de autogeração de resumo pós-sincronização
   useEffect(() => {
@@ -524,17 +530,14 @@ export default function WhatsappSummaryClient({
 
       if (error) throw error;
 
-      if (apiToken && apiUrl) {
-        const normalizedUrl = apiUrl.replace(/\/$/, '');
+      if (apiToken) {
         const body = key === 'transcribeAudio'
           ? { transcribe_audio: val }
           : { interpret_images: val };
 
-        await fetch(`${normalizedUrl}/settings?key=${apiToken}`, {
+        await fetch(buildWhatsappServiceUrl('settings'), {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: whatsappHeaders,
           body: JSON.stringify(body)
         });
       }
@@ -545,14 +548,10 @@ export default function WhatsappSummaryClient({
   };
 
   // Função auxiliar para testar conexão com o WhatsApp
-  const checkConnectionStatus = async (url: string, token: string) => {
-    const normalizedUrl = url.replace(/\/$/, '');
+  const checkConnectionStatus = async () => {
     try {
-      const headers: Record<string, string> = { ...whatsappHeaders };
-      headers['x-api-key'] = token;
-      
-      const response = await fetch(`${normalizedUrl}/status?key=${token}${ownerNameQuery}`, {
-        headers: headers
+      const response = await fetch(buildWhatsappServiceUrl('status'), {
+        headers: whatsappHeaders
       });
       
       if (response.ok) {
@@ -650,8 +649,7 @@ export default function WhatsappSummaryClient({
       if (!isQrModalOpen || !apiToken) return;
       
       try {
-        const normalizedUrl = apiUrl.replace(/\/$/, '');
-        const response = await fetch(`${normalizedUrl}/qr-code?key=${apiToken}${ownerNameQuery}`, {
+        const response = await fetch(buildWhatsappServiceUrl('qr-code'), {
           headers: whatsappHeaders
         });
         if (response.ok) {
@@ -689,7 +687,7 @@ export default function WhatsappSummaryClient({
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [isQrModalOpen, apiToken, apiUrl]);
+  }, [isQrModalOpen, apiToken, whatsappOwnerName]);
 
   // Função para abrir o modal de conversas coletadas
   const handleOpenMessagesModal = async () => {
@@ -700,9 +698,11 @@ export default function WhatsappSummaryClient({
     setSelectedChatKey(null);
     setSearchQuery('');
 
-    const normalizedUrl = apiUrl.replace(/\/$/, '');
     try {
-      const response = await fetch(`${normalizedUrl}/messages?date=${summaryDate}&format=json_grouped&key=${apiToken}${ownerNameQuery}`, {
+      const response = await fetch(buildWhatsappServiceUrl('messages', {
+        date: summaryDate,
+        format: 'json_grouped'
+      }), {
         headers: whatsappHeaders
       });
       
@@ -768,9 +768,8 @@ export default function WhatsappSummaryClient({
     const confirmed = await showCustomConfirm('Desconectar WhatsApp', 'Deseja realmente desconectar o seu WhatsApp do servidor?');
     if (!confirmed) return;
     
-    const normalizedUrl = apiUrl.replace(/\/$/, '');
     try {
-      const response = await fetch(`${normalizedUrl}/logout?key=${apiToken}${ownerNameQuery}`, {
+      const response = await fetch(buildWhatsappServiceUrl('logout'), {
         headers: whatsappHeaders
       });
       if (response.ok) {
@@ -794,12 +793,14 @@ export default function WhatsappSummaryClient({
 
     setIsLoading(true);
     setLoadingStep(0);
-    const normalizedUrl = apiUrl.replace(/\/$/, '');
     const targetDate = customDate || summaryDate;
     
     try {
       // Passo 1: Busca mensagens do microsserviço
-      const response = await fetch(`${normalizedUrl}/messages?date=${targetDate}&format=text&key=${apiToken}${ownerNameQuery}`, {
+      const response = await fetch(buildWhatsappServiceUrl('messages', {
+        date: targetDate,
+        format: 'text'
+      }), {
         headers: whatsappHeaders
       });
       
@@ -899,8 +900,7 @@ export default function WhatsappSummaryClient({
         body: JSON.stringify({
           text: textToProcess,
           date: targetDate,
-          saveToDb,
-          userId: profile?.id
+          saveToDb
         })
       });
 
@@ -1122,7 +1122,8 @@ export default function WhatsappSummaryClient({
       const { error } = await supabase
         .from('whatsapp_summaries')
         .delete()
-        .eq('id', summaryId);
+        .eq('id', summaryId)
+        .eq('created_by', profile.id);
 
       if (error) {
         throw error;

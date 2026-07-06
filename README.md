@@ -54,7 +54,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=sua_chave_anon_do_supabase
 SUPABASE_SERVICE_ROLE_KEY=sua_chave_service_role_do_supabase
 GEMINI_API_KEY=sua_chave_api_do_gemini
 GROQ_API_KEY=sua_chave_api_do_groq
+WHATSAPP_SERVICE_URL=http://localhost:8080
+WHATSAPP_SERVICE_SECRET=gere_um_segredo_forte_e_use_o_mesmo_no_microsservico
 ```
+
+Em producao, configure o mesmo `WHATSAPP_SERVICE_SECRET` no app Next.js e no `whatsapp-service`. O microsservico falha fechado sem esse segredo, para evitar acesso direto por UUID de usuario.
 
 ### Passo 3: Executar o servidor de desenvolvimento
 ```bash

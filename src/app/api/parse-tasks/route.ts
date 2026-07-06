@@ -12,7 +12,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
     }
 
-    const { text, userId } = await request.json();
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role, is_active')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile || profile.is_active === false || profile.role !== 'admin') {
+      return NextResponse.json({ error: 'Acesso negado' }, { status: 403 });
+    }
+
+    const { text } = await request.json();
 
     if (!text || !text.trim()) {
       return NextResponse.json({ error: 'Texto não fornecido' }, { status: 400 });
@@ -219,7 +229,7 @@ Seu retorno DEVE ser estritamente um objeto JSON válido, sem comentários adici
           status: status,
           observations: taskItem.observations?.trim() || '',
           is_archived: false,
-          created_by: userId || user.id
+          created_by: user.id
         })
         .select('id')
         .single();
@@ -232,7 +242,7 @@ Seu retorno DEVE ser estritamente um objeto JSON válido, sem comentários adici
           .from('task_history')
           .insert({
             task_id: newDbTask.id,
-            changed_by: userId || user.id,
+            changed_by: user.id,
             action: 'create',
             created_by_ai: true,
             ai_provider: successProvider === 'gemini' ? 'gemini-2.5-flash' : 'llama-3.3-70b-versatile (Groq)'

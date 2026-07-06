@@ -394,7 +394,7 @@ export default function DashboardClient({
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ text: aiText, userId: profile?.id })
+        body: JSON.stringify({ text: aiText })
       });
 
       const result = await response.json();

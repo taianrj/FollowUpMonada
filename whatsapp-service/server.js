@@ -4080,11 +4080,23 @@ function parseCookies(cookieHeader) {
   return list;
 }
 
-// Middleware de verificação de API Key para segurança de dados
+// Middleware de verificacao de API Key para seguranca de dados
 const API_KEY = process.env.WHATSAPP_API_KEY;
+const SERVICE_TOKEN = process.env.WHATSAPP_SERVICE_SECRET || process.env.WHATSAPP_SERVICE_TOKEN;
+const ALLOW_LEGACY_UUID_AUTH = process.env.WHATSAPP_ALLOW_LEGACY_UUID_AUTH === 'true';
+const REQUIRE_SERVICE_TOKEN = process.env.WHATSAPP_REQUIRE_SERVICE_TOKEN === 'true'
+  || (process.env.NODE_ENV === 'production' && !ALLOW_LEGACY_UUID_AUTH);
 
 function checkAuth(req, res, next) {
   const cookies = parseCookies(req.headers.cookie);
+
+  if (REQUIRE_SERVICE_TOKEN && !SERVICE_TOKEN) {
+    return denyAccess(req, res);
+  }
+
+  if (SERVICE_TOKEN && req.headers['x-service-token'] !== SERVICE_TOKEN) {
+    return denyAccess(req, res);
+  }
   
   // Lê a chave de API do Header, da Query string, ou do Cookie persistente
   const token = req.headers['x-api-key'] || req.query.key || cookies['whatsapp_api_key'];
