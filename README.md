@@ -60,7 +60,7 @@ WHATSAPP_SERVICE_SECRET=gere_um_segredo_forte_e_use_o_mesmo_no_microsservico
 
 Em producao, configure o mesmo `WHATSAPP_SERVICE_SECRET` no app Next.js e no `whatsapp-service`. O microsservico falha fechado sem esse segredo, para evitar acesso direto por UUID de usuario.
 
-O `whatsapp-service` mantem por padrao uma janela de 7 dias de mensagens (`MESSAGE_RETENTION_DAYS=7`) e expoe `GET /healthz` para monitoramento simples sem dados de usuarios.
+O `whatsapp-service` mantem por padrao uma janela de 48 horas de mensagens (`MESSAGE_RETENTION_DAYS=2`) e expoe `GET /healthz` para monitoramento simples sem dados de usuarios.
 
 ### Passo 3: Executar o servidor de desenvolvimento
 ```bash
