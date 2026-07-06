@@ -288,6 +288,9 @@ export default function WhatsappSummaryClient({
     taskIndex: number
   } | null>(null);
 
+  const isWhatsappBusy = isCheckingStatus || whatsappStatus === 'connecting' || whatsappSyncStatus !== 'completed';
+  const whatsappStatusPanelClass = `whatsappStatusPanel${isWhatsappBusy ? ' whatsappStatusPanelActive' : ''}`;
+
   const dropdownRef = useRef<HTMLDivElement>(null);
   const hasShownSuccessToastRef = useRef(false);
 
@@ -1333,7 +1336,7 @@ export default function WhatsappSummaryClient({
 
           {/* Painel de Status Único e Compacto (Celular) */}
           {isCheckingStatus ? (
-            <div style={{
+            <div className={whatsappStatusPanelClass} style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -1352,7 +1355,7 @@ export default function WhatsappSummaryClient({
             </div>
           ) : integrationConnected && (whatsappStatus === 'connected' || (whatsappStatus === 'connecting' && connectedUser)) ? (
             /* Barra de Status Única e Compacta (WhatsApp Conectado) */
-            <div style={{
+            <div className={whatsappStatusPanelClass} style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
@@ -1443,7 +1446,7 @@ export default function WhatsappSummaryClient({
             </div>
           ) : (
             /* Barra de Status Única e Compacta (WhatsApp Desconectado) */
-            <div style={{
+            <div className={whatsappStatusPanelClass} style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
