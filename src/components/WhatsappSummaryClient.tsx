@@ -288,7 +288,8 @@ export default function WhatsappSummaryClient({
     taskIndex: number
   } | null>(null);
 
-  const isWhatsappBusy = isCheckingStatus || whatsappStatus === 'connecting' || whatsappSyncStatus !== 'completed';
+  const isWhatsappConnectedPanelVisible = integrationConnected && (whatsappStatus === 'connected' || (whatsappStatus === 'connecting' && !!connectedUser));
+  const isWhatsappBusy = isCheckingStatus || (isWhatsappConnectedPanelVisible && (whatsappStatus === 'connecting' || whatsappSyncStatus !== 'completed'));
   const whatsappStatusPanelClass = `whatsappStatusPanel${isWhatsappBusy ? ' whatsappStatusPanelActive' : ''}`;
 
   const dropdownRef = useRef<HTMLDivElement>(null);

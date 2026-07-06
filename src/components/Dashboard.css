@@ -915,8 +915,8 @@
 }
 
 @keyframes whatsappStatusSweep {
-  from { background-position: -140% 0; }
-  to { background-position: 140% 0; }
+  from { background-position: 140% 0; }
+  to { background-position: -140% 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
