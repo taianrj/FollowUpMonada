@@ -5795,6 +5795,8 @@ async function autoReconnectAllUsers() {
       console.log(`Encontradas ${rows.length} sessões ativas no Supabase. Inicializando...`);
       for (const row of rows) {
         const userId = row.id;
+        if (userId.includes(':')) continue; // Ignora blobs de estado e arquivos
+        
         console.log(`Reconectando sessão para usuário: ${userId}...`);
         getOrCreateInstance(userId).then(instance => {
           if (instance) {
