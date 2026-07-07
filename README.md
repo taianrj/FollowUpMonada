@@ -1,197 +1,106 @@
 # FollowUp Mônada — Gerenciador Inteligente de Demandas
 
-O **FollowUp Mônada** é um sistema web corporativo de alta performance e produtividade desenvolvido para a gestão inteligente de demandas, controle de prazos e acompanhamento de colaborações de equipes. O sistema possui integração nativa com modelos de inteligência artificial (Gemini e Groq) para extração automatizada de demandas, controle de acessos (RLS) via Supabase e histórico de auditoria completo.
+O **FollowUp Mônada** é um ecossistema corporativo de alta performance desenvolvido para a gestão inteligente de demandas, controle de prazos e acompanhamento de colaborações de equipes. O sistema conta com inteligência artificial para extração semântica de demandas a partir de mensagens de chat e um microsserviço integrado com o WhatsApp Web (via protocolo Baileys) para coleta em tempo real de briefings.
+
+---
+
+## 🌐 Ambientes e Links do Projeto
+
+O ecossistema está implantado e integrado na nuvem nos seguintes endereços:
+
+* **Frontend (Aplicação Web)**: [Vercel](https://vercel.com) — [https://followupmonada.vercel.app/](https://followupmonada.vercel.app/)
+* **Banco de Dados & Auth**: [Supabase](https://supabase.com) — [https://seu-projeto.supabase.co](https://seu-projeto.supabase.co)
+* **Microsserviço de WhatsApp**: [Render](https://render.com) — [https://followupmonada.onrender.com](https://followupmonada.onrender.com)
+* **Keep-Alive (Cron-Job)**: [Cron-job.org](https://cron-job.org/) configurado para pingar `https://followupmonada.onrender.com/healthz` a cada **10 minutos** para contornar a limitação de sleep do Render gratuito e manter o WhatsApp conectado 24/7.
 
 ---
 
 ## 🛠️ Tecnologias Utilizadas
 
-- **Frontend & Routing**: [Next.js (App Router)](https://nextjs.org/) + React 19 + TypeScript
-- **Estilização**: Vanilla CSS (Premium Slate Theme com foco em design responsivo)
-- **Banco de Dados & Autenticação**: [Supabase](https://supabase.com/) (PostgreSQL, Auth com e-mails transacionais e Row Level Security)
-- **Inteligência Artificial**: API do Gemini (`gemini-2.5-flash`) e Groq API (`llama-3.3-70b-versatile`) para extração inteligente
+### Core & Frontend
+- **Framework**: [Next.js (App Router)](https://nextjs.org/) + React 19 + TypeScript
+- **Estilização**: Vanilla CSS (Premium Dark Slate Theme)
+- **Segurança**: Row Level Security (RLS) nativa no Supabase
+
+### Microsserviço de Integração (WhatsApp)
+- **Motor de Conexão**: `@whiskeysockets/baileys` (Multi-device API do WhatsApp Web)
+- **Servidor HTTP**: Node.js + Express
+- **Persistência**: SQLite (Local em container) + Supabase (Remote blobs e tabelas relacionais)
+
+### Inteligência Artificial
+- **Extração Semântica**: API do Gemini (`gemini-2.5-flash`) e Groq API (`llama-3.3-70b-versatile`) como provedor de fallback.
 
 ---
 
-## 🌟 Funcionalidades Principais
+## 🤖 Guia Técnico para IAs Agênticas e Desenvolvedores
 
-1. **Gestão Inteligente de Demandas (Kanban & Lista)**:
-   - Visualização unificada de demandas em layouts de tabela ou cartões responsivos.
-   - Filtros rápidos por clientes, responsáveis (colaboradores) e status.
-2. **Processamento Inteligente por IA**:
-   - Extração automática de tarefas a partir de mensagens brutas de texto ou briefings copiados.
-   - Prevenção ativa de duplicidade semântica utilizando coeficientes de Jaccard e sobreposição de termos.
-3. **Histórico de Auditoria Completo**:
-   - Rastreamento em tempo real de cada modificação (criação, edição de campos, arquivamento e restauração).
-   - Cálculo automático de *diff* no frontend exibindo as mudanças no formato *De ➔ Para*.
-   - Timeline visual e intuitiva no modal de cada demanda.
-4. **Controle de Acessos e Usuários (Usuários e Acessos)**:
-   - Cadastro controlado por convite enviado por e-mail a partir de administradores.
-   - Redefinição de senha segura para primeiro acesso e redefinições futuras.
-   - Controle de ativação/status da conta (`Ativo` / `Inativo`).
-   - Bloqueio de auto-desativação e auto-despromovimento do próprio administrador logado.
+### 1. Arquitetura de Comunicação e Segurança
+
+O frontend Next.js não acessa o microsserviço de WhatsApp diretamente no cliente. Ele utiliza uma rota de proxy dinâmico para blindagem de chaves e controle de sessão:
+* **Rota Proxy**: `/api/whatsapp-service/[...path]` mapeada internamente no Next.js para repassar chamadas para `https://followupmonada.onrender.com`.
+* **Segurança de Serviço**: Toda chamada do proxy para o microsserviço anexa o header `x-service-token` (segredo `WHATSAPP_SERVICE_SECRET` do `.env.local`) e `x-api-key` (UUID do usuário Supabase logado). O microsserviço rejeita conexões que não possuam ambos os cabeçalhos.
+
+### 2. Endpoints do Microsserviço de WhatsApp (Permitidos no Proxy)
+
+* `GET /status`: Retorna o status de conexão (`connected`, `connecting`, `qrcode`, `disconnected`), contagem de contatos e mensagens da sessão atual, além de diagnósticos em tempo real do último lote de mensagens recebido do WhatsApp.
+* `GET /qr-code`: Retorna a imagem do QR Code em formato Base64 para pareamento quando o status é `qrcode`.
+* `GET /messages?date=YYYY-MM-DD&format=json_grouped`: Carrega e agrupa mensagens da data selecionada, organizadas em conversas individuais para exibição ou consumo da IA. Suporta formatos `json_grouped`, `text` e `markdown`.
+* `POST /settings`: Atualiza as preferências do usuário (ex: transcrever áudio automaticamente, interpretar imagens).
+* `POST /maintenance/resync?mode=soft|force-history`: Aciona a sincronização do histórico do celular.
+* `POST /logout`: Desconecta a conta do WhatsApp do usuário e limpa fisicamente todos os dados de credenciais, contatos e mensagens associados ao UUID.
+
+### 3. Modelo de Persistência Híbrido de Mensagens
+
+Para otimização de rede e contingência a falhas de banco de dados, o microsserviço usa um algoritmo híbrido ao salvar mensagens recebidas do WhatsApp:
+1. **Tabela Relacional**: Tenta salvar na tabela `whatsapp_messages` do Supabase via REST API.
+2. **Fallback por Blobs**: Se a tabela relacional falhar (ex: migração ausente ou timeout), o microsserviço comprime o lote de mensagens do dia em um JSON compactado e salva como um único registro de blob na tabela `whatsapp_sessions` sob o ID `${userId}:messages:${dateStr}`.
+3. **Persistência Local**: Salva uma cópia na pasta `/data/messages/${userId}/messages-${dateStr}.json` no contêiner local para respostas rápidas de leitura.
+
+### 4. Conectividade Permanente e Boot
+
+* **Reconexão Automática**: No boot do microsserviço (`app.listen`), a função `autoReconnectAllUsers()` busca todas as chaves na tabela `whatsapp_sessions` do Supabase, ignora blobs temporários (filtrando IDs que contêm `:`) e restabelece a conexão do socket de cada usuário cadastrado em segundo plano.
+* **Recuperação de Histórico (`force-history`)**: Limpa localmente e no Supabase o array de marcadores `creds.processedHistoryMessages` no `creds.json`, deleta arquivos de versão do `app-state-sync` e reinicia o socket com `syncFullHistory: true` e `sock.resyncAppState()`. Isso faz com que o Baileys aceite processar pacotes antigos enviados pelo celular.
 
 ---
 
 ## 🚀 Como Executar o Projeto Localmente
 
-### Pré-requisitos
-- Node.js instalado (versão 18 ou superior)
-- Conta criada no [Supabase](https://supabase.com)
-- Chave de API do [Google AI Studio (Gemini)](https://aistudio.google.com/) ou [Groq Console](https://console.groq.com/) (opcionais)
-
-### Passo 1: Clonar e instalar dependências
+### Passo 1: Instalar dependências
 ```bash
-# Instale as dependências do projeto
 npm install
 ```
 
-### Passo 2: Configurar variáveis de ambiente
-Crie um arquivo `.env.local` na raiz do projeto e adicione as seguintes variáveis:
+### Passo 2: Configurar variáveis no `.env.local`
+Crie o arquivo na raiz do projeto e configure as seguintes variáveis:
 ```env
-NEXT_PUBLIC_SUPABASE_URL=seu_url_do_supabase
-NEXT_PUBLIC_SUPABASE_ANON_KEY=sua_chave_anon_do_supabase
-SUPABASE_SERVICE_ROLE_KEY=sua_chave_service_role_do_supabase
-GEMINI_API_KEY=sua_chave_api_do_gemini
-GROQ_API_KEY=sua_chave_api_do_groq
-WHATSAPP_SERVICE_URL=http://localhost:8080
-WHATSAPP_SERVICE_SECRET=gere_um_segredo_forte_e_use_o_mesmo_no_microsservico
+NEXT_PUBLIC_SUPABASE_URL=https://seu-projeto.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=sua_chave_anonima_supabase
+SUPABASE_SERVICE_ROLE_KEY=sua_service_role_key_supabase
+GEMINI_API_KEY=sua_gemini_api_key
+GROQ_API_KEY=sua_groq_api_key
+NEXT_PUBLIC_WHATSAPP_SERVICE_URL=http://localhost:8080
+WHATSAPP_SERVICE_SECRET=lO4cSR+2oCRgytcF3stQp7FYagmcds5eMgaqJbSAonE=
 ```
 
-Em producao, configure o mesmo `WHATSAPP_SERVICE_SECRET` no app Next.js e no `whatsapp-service`. O microsservico falha fechado sem esse segredo, para evitar acesso direto por UUID de usuario.
-
-O `whatsapp-service` mantem por padrao uma janela de 48 horas de mensagens (`MESSAGE_RETENTION_DAYS=2`) e expoe `GET /healthz` para monitoramento simples sem dados de usuarios.
-
-### Passo 3: Executar o servidor de desenvolvimento
+### Passo 3: Rodar o Frontend Next.js
 ```bash
 npm run dev
 ```
-Acesse o sistema em [http://localhost:3000](http://localhost:3000).
+Acesse a aplicação em `http://localhost:3000`.
+
+### Passo 4: Rodar o Microsserviço de WhatsApp (Opcional para testar localmente)
+```bash
+cd whatsapp-service
+npm install
+npm start
+```
+O serviço iniciará escutando na porta `8080`.
 
 ---
 
 ## 🗄️ Estrutura do Banco de Dados (Supabase)
 
-Para o correto funcionamento do sistema, execute os seguintes scripts SQL no console do seu projeto Supabase (**SQL Editor**):
-
-### 1. Estrutura Inicial do Banco
-```sql
--- TABELA DE PERFIS DE USUÁRIOS
-create table public.profiles (
-    id uuid references auth.users on delete cascade primary key,
-    email text not null,
-    role text not null check (role in ('admin', 'collaborator')),
-    name text,
-    is_active boolean default true not null,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- TABELA DE CLIENTES
-create table public.clients (
-    id uuid default gen_random_uuid() primary key,
-    name text not null unique,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- TABELA DE COLABORADORES
-create table public.collaborators (
-    id uuid default gen_random_uuid() primary key,
-    name text not null unique,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- TABELA DE STATUS
-create table public.statuses (
-    id text primary key,
-    name text not null unique,
-    color text default '#8b5cf6' not null,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- Popular status padrões iniciais
-insert into public.statuses (id, name, color) values
-('aguardando cliente', 'Aguardando Cliente', '#f59e0b'),
-('aguardando texto', 'Aguardando Texto', '#f97316'),
-('ajuste', 'Ajuste', '#06b6d4'),
-('aguardando aprovação', 'Aguardando Aprovação', '#8b5cf6'),
-('resolvido', 'Resolvido', '#10b981')
-on conflict (id) do nothing;
-
--- TABELA DE TAREFAS / DEMANDAS
-create table public.tasks (
-    id uuid default gen_random_uuid() primary key,
-    client_id uuid references public.clients(id) on delete cascade not null,
-    description text not null,
-    responsibles text[] default '{}'::text[] not null,
-    status text not null references public.statuses(id) on update cascade,
-    observations text default '' not null,
-    created_by uuid references public.profiles(id) on delete set null,
-    is_archived boolean default false not null,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-```
-
-### 2. Histórico de Auditoria e Logs
-```sql
-create table if not exists public.task_history (
-    id uuid default gen_random_uuid() primary key,
-    task_id uuid references public.tasks(id) on delete cascade not null,
-    changed_by uuid references public.profiles(id) on delete set null,
-    changed_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    action text not null check (action in ('create', 'update', 'archive', 'restore')),
-    changes jsonb default '{}'::jsonb not null,
-    created_by_ai boolean default false not null,
-    ai_provider text
-);
-
-alter table public.task_history enable row level security;
-create policy "Qualquer usuário autenticado pode ler o histórico" on public.task_history for select to authenticated using (true);
-create policy "Qualquer usuário autenticado pode registrar no histórico" on public.task_history for insert to authenticated with check (true);
-create index if not exists idx_task_history_task_id on public.task_history(task_id);
-```
-
-### 3. Triggers de Criação e Atualização
-```sql
--- Trigger para atualizar timestamp de modificação
-create or replace function public.update_updated_at_column()
-returns trigger as $$
-begin
-    new.updated_at = now();
-    return new;
-end;
-$$ language plpgsql;
-
-create or replace trigger update_tasks_updated_at
-    before update on public.tasks
-    for each row execute procedure public.update_updated_at_column();
-
--- Trigger para sincronizar criação do usuário Auth com a tabela de profiles
-create or replace function public.handle_new_user()
-returns trigger as $$
-declare
-    user_count integer;
-    assigned_role text;
-    user_name text;
-begin
-    select count(*) into user_count from public.profiles;
-    
-    if user_count = 0 then
-        assigned_role := 'admin';
-    else
-        assigned_role := coalesce(new.raw_user_meta_data->>'role', 'collaborator');
-    end if;
-
-    user_name := coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1));
-
-    insert into public.profiles (id, email, role, name, is_active)
-    values (new.id, new.email, assigned_role, user_name, true);
-    
-    return new;
-end;
-$$ language plpgsql security definer;
-
-create or replace trigger on_auth_user_created
-    after insert on auth.users
-    for each row execute procedure public.handle_new_user();
-```
+Para o correto funcionamento do ecossistema, o banco de dados do Supabase conta com a estrutura descrita nos arquivos:
+* `supabase_schema.sql` — Tabelas de perfis, clientes, colaboradores, tarefas e histórico de auditoria (Kanban).
+* `supabase_whatsapp_persistence.sql` — Tabelas de armazenamento de contatos, mensagens e sessões/blobs do WhatsApp.
+* `supabase_security_isolation.sql` — Políticas de segurança RLS (Row Level Security) aplicadas a perfis e acessos corporativos.
