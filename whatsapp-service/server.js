@@ -5781,6 +5781,39 @@ app.get('/logout', checkAuth, async (req, res) => {
   }
 });
 
+// Reconecta automaticamente todas as sessões ativas do WhatsApp no boot
+async function autoReconnectAllUsers() {
+  console.log('Iniciando reconexão automática das sessões de WhatsApp salvas no Supabase...');
+  try {
+    const response = await supabaseRest('whatsapp_sessions', '?select=id');
+    if (!response) {
+      console.log('Supabase não configurado ou inativo. Pulando reconexão automática.');
+      return;
+    }
+    const rows = await response.json();
+    if (Array.isArray(rows) && rows.length > 0) {
+      console.log(`Encontradas ${rows.length} sessões ativas no Supabase. Inicializando...`);
+      for (const row of rows) {
+        const userId = row.id;
+        console.log(`Reconectando sessão para usuário: ${userId}...`);
+        getOrCreateInstance(userId).then(instance => {
+          if (instance) {
+            connectUserWhatsApp(userId).catch(err => {
+              console.error(`Erro ao conectar WhatsApp para usuário ${userId} no boot:`, err.message || err);
+            });
+          }
+        }).catch(err => {
+          console.error(`Erro ao criar instância para usuário ${userId} no boot:`, err.message || err);
+        });
+      }
+    } else {
+      console.log('Nenhuma sessão anterior ativa encontrada no Supabase.');
+    }
+  } catch (err) {
+    console.error('Erro na reconexão automática das sessões no boot:', err.message || err);
+  }
+}
+
 app.listen(port, '0.0.0.0', () => {
   console.log(`WhatsApp Gateway ativo na porta ${port}`);
   console.log(`Pasta de dados configurada em: ${dataDir}`);

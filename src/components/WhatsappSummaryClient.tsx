@@ -272,6 +272,11 @@ export default function WhatsappSummaryClient({
   const [whatsappSyncStatus, setWhatsappSyncStatus] = useState<string>('completed'); // 'pending' | 'syncing' | 'completed'
   const [whatsappMessagesCount, setWhatsappMessagesCount] = useState<number>(0);
   const [whatsappContactsCount, setWhatsappContactsCount] = useState<number>(0);
+  const [whatsappLastIncomingBatchAt, setWhatsappLastIncomingBatchAt] = useState<string | null>(null);
+  const [whatsappLastIncomingBatchCount, setWhatsappLastIncomingBatchCount] = useState<number>(0);
+  const [whatsappLastStoredMessageAt, setWhatsappLastStoredMessageAt] = useState<string | null>(null);
+  const [whatsappLastStoredMessagesCount, setWhatsappLastStoredMessagesCount] = useState<number>(0);
+  const [isResyncing, setIsResyncing] = useState<'soft' | 'force-history' | null>(null);
 
   // Estados para o Modal de Criação de Demanda preenchido
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
@@ -637,6 +642,10 @@ export default function WhatsappSummaryClient({
         setWhatsappSyncStatus(data.syncStatus || 'completed');
         setWhatsappMessagesCount(data.messagesCount || 0);
         setWhatsappContactsCount(data.contactsCount || 0);
+        setWhatsappLastIncomingBatchAt(data.lastIncomingBatchAt || null);
+        setWhatsappLastIncomingBatchCount(data.lastIncomingBatchCount || 0);
+        setWhatsappLastStoredMessageAt(data.lastStoredMessageAt || null);
+        setWhatsappLastStoredMessagesCount(data.lastStoredMessagesCount || 0);
         
         if (data.settings) {
           setTranscribeAudioFlag(data.settings.transcribeAudio);
@@ -715,6 +724,37 @@ export default function WhatsappSummaryClient({
       }
       return next;
     });
+  };
+
+  const handleManualResync = async (mode: 'soft' | 'force-history') => {
+    if (!apiToken) return;
+    setIsResyncing(mode);
+    try {
+      showToast(
+        mode === 'soft'
+          ? 'Iniciando sincronização rápida de mensagens offline...'
+          : 'Iniciando leitura profunda das últimas 48h de mensagens...',
+        'info'
+      );
+      
+      setWhatsappSyncStatus('syncing');
+
+      const response = await fetch(buildWhatsappServiceUrl('maintenance/resync', { date: summaryDate, mode }), {
+        headers: whatsappHeaders
+      });
+
+      if (!response.ok) {
+        throw new Error(`Erro HTTP ${response.status}`);
+      }
+
+      showToast('Sincronização acionada com sucesso! Aguarde a conclusão da leitura.', 'success');
+      checkConnectionStatus();
+    } catch (err: any) {
+      showToast(`Falha ao ressincronizar: ${err.message}`, 'error');
+      checkConnectionStatus();
+    } finally {
+      setIsResyncing(null);
+    }
   };
 
   // Polling para obter o QR Code dinâmico quando o modal está aberto
@@ -2262,6 +2302,111 @@ export default function WhatsappSummaryClient({
                   </span>
                 </div>
               </label>
+            </div>
+
+            {/* Seção de Sincronização do WhatsApp */}
+            <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', margin: '0.5rem 0' }}></div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', textAlign: 'left' }}>
+              <div>
+                <h4 style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 0.25rem 0' }}>
+                  Sincronização de Mensagens
+                </h4>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.4 }}>
+                  Se você notar que faltam mensagens no dia, tente forçar a busca de mensagens do WhatsApp.
+                </p>
+              </div>
+
+              {/* Status Diagnóstico Rápido */}
+              <div style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.01)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 'var(--radius-md)',
+                padding: '0.65rem 0.85rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.4rem',
+                fontSize: '0.75rem',
+                color: 'var(--text-secondary)'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Status da Conexão:</span>
+                  <strong style={{ color: whatsappStatus === 'connected' ? '#10b981' : '#f59e0b' }}>
+                    {whatsappStatus === 'connected' ? 'Conectado' : whatsappStatus === 'connecting' ? 'Conectando...' : 'Desconectado'}
+                  </strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Sincronização:</span>
+                  <strong style={{ color: whatsappSyncStatus === 'completed' ? '#10b981' : '#f59e0b' }}>
+                    {whatsappSyncStatus === 'completed' ? 'Sincronizado' : 'Sincronizando...'}
+                  </strong>
+                </div>
+                {whatsappLastIncomingBatchAt && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed var(--border-color)', paddingTop: '0.4rem', marginTop: '0.1rem' }}>
+                    <span>Último lote recebido:</span>
+                    <span style={{ color: 'var(--text-primary)' }}>
+                      {new Date(whatsappLastIncomingBatchAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} ({whatsappLastIncomingBatchCount} msgs)
+                    </span>
+                  </div>
+                )}
+                {whatsappLastStoredMessageAt && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Última mensagem gravada:</span>
+                    <span style={{ color: 'var(--text-primary)' }}>
+                      {new Date(whatsappLastStoredMessageAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Botões de Ação */}
+              <div style={{ display: 'flex', gap: '0.6rem', marginTop: '0.25rem' }}>
+                <button
+                  type="button"
+                  className="btn btnSecondary"
+                  disabled={whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing}
+                  onClick={() => handleManualResync('soft')}
+                  style={{
+                    flex: 1,
+                    padding: '0.5rem',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.3rem',
+                    cursor: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 'not-allowed' : 'pointer',
+                    opacity: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 0.5 : 1
+                  }}
+                  title="Busca mensagens offline que o WhatsApp possa não ter entregue recentemente."
+                >
+                  {isResyncing === 'soft' ? '⌛ Buscando...' : '🔄 Sincronizar Recentes'}
+                </button>
+                
+                <button
+                  type="button"
+                  className="btn btnSecondary"
+                  disabled={whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing}
+                  onClick={() => handleManualResync('force-history')}
+                  style={{
+                    flex: 1,
+                    padding: '0.5rem',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.3rem',
+                    border: '1px solid rgba(168, 85, 247, 0.3)',
+                    color: 'var(--accent-purple)',
+                    cursor: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 'not-allowed' : 'pointer',
+                    opacity: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 0.5 : 1
+                  }}
+                  title="Força a releitura completa do histórico de mensagens das últimas 48 horas a partir do celular."
+                >
+                  {isResyncing === 'force-history' ? '⌛ Lendo...' : '⚡ Forçar 48 Horas'}
+                </button>
+              </div>
             </div>
 
             <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', marginTop: '0.5rem' }}></div>
