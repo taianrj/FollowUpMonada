@@ -1,3 +1,4 @@
+// Trigger Render deploy
 const express = require('express');
 // Polyfill para garantir que a Web Crypto API esteja no escopo global (necessário para versões do Node < 19)
 if (!global.crypto) {
