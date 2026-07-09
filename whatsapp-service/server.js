@@ -2714,6 +2714,16 @@ function inferParticipantJidFromMessage(message) {
   return `${message.participant}@s.whatsapp.net`;
 }
 
+function normalizeBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value > 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+  return false;
+}
+
 function normalizeStoredMessage(message) {
   const chatJid = inferChatJidFromMessage(message);
   const participantJid = inferParticipantJidFromMessage(message);
@@ -2734,7 +2744,13 @@ function normalizeStoredMessage(message) {
     name: normalizeDisplayName(message.name || message.display_name || ''),
     text: typeof message.text === 'string' ? message.text : '',
     fromMe: Boolean(message.fromMe ?? message.from_me),
-    timestamp: message.timestamp || message.message_timestamp || new Date().toISOString()
+    timestamp: message.timestamp || message.message_timestamp || new Date().toISOString(),
+    isForwarded: normalizeBoolean(message.isForwarded ?? message.is_forwarded),
+    quotedMessageId: normalizeDisplayName(message.quotedMessageId || message.quoted_message_id || ''),
+    quotedMessageSender: cleanJid(message.quotedMessageSender || message.quoted_message_sender || ''),
+    quotedMessageText: typeof (message.quotedMessageText ?? message.quoted_message_text) === 'string'
+      ? normalizeDisplayName(message.quotedMessageText ?? message.quoted_message_text)
+      : ''
   };
   const mediaKind = normalizeDisplayName(message.mediaKind || message.media_kind || '');
   const mediaMimetype = normalizeDisplayName(message.mediaMimetype || message.media_mimetype || '');
@@ -2801,7 +2817,11 @@ function mergeMessages(localMessages, remoteMessages) {
       chatName: isBetterContactName(message.chatName, existing.chatName) ? message.chatName : existing.chatName,
       participantAliases: uniqueJids([...(existing.participantAliases || []), ...(message.participantAliases || [])]),
       name: isBetterContactName(message.name, existing.name) ? message.name : existing.name,
-      text: chooseBetterMessageText(existing.text, message.text)
+      text: chooseBetterMessageText(existing.text, message.text),
+      isForwarded: existing.isForwarded || message.isForwarded,
+      quotedMessageId: message.quotedMessageId || existing.quotedMessageId,
+      quotedMessageSender: message.quotedMessageSender || existing.quotedMessageSender,
+      quotedMessageText: message.quotedMessageText || existing.quotedMessageText
     });
   }
 
@@ -2897,6 +2917,101 @@ function resolveMessageSenderName(message, contactsCache, isGroup, myPushName, m
   if (phoneFallback) return phoneFallback;
   if (cachedName) return cachedName;
   return message.participant || message.sender || jidNumber(participantJid);
+}
+
+function jidNumberPart(value) {
+  if (!value || typeof value !== 'string') return '';
+  return cleanJid(value).split('@')[0].split(':')[0];
+}
+
+function ownSenderNumbers(activeInstance) {
+  return new Set([
+    activeInstance?.myJid,
+    activeInstance?.myLid,
+    activeInstance?.sock?.user?.id,
+    activeInstance?.sock?.user?.lid
+  ].map(value => jidNumberPart(String(value || ''))).filter(Boolean));
+}
+
+function aliasesFromRawSender(rawSender) {
+  const cleanSender = cleanJid(String(rawSender || '').trim());
+  if (!cleanSender) return [];
+  if (cleanSender.includes('@')) return uniqueJids([cleanSender]);
+  if (!/^\d+$/.test(cleanSender)) return [];
+  return uniqueJids([
+    ensureUserJid(cleanSender, cleanSender.length >= 14 ? 'lid' : 's.whatsapp.net'),
+    `${cleanSender}@s.whatsapp.net`
+  ]);
+}
+
+function resolveQuotedMessageSenderName(rawSender, contactsCache, activeInstance) {
+  const baseAliases = aliasesFromRawSender(rawSender);
+  const aliases = uniqueJids([
+    ...baseAliases,
+    ...relatedAliasesFromCache(baseAliases, contactsCache)
+  ]);
+  if (aliases.length === 0) return normalizeDisplayName(rawSender || '');
+
+  const ownNumbers = ownSenderNumbers(activeInstance);
+  if (aliases.some(alias => ownNumbers.has(jidNumberPart(alias)))) {
+    const ownerName = normalizeDisplayName(activeInstance?.myPushName || '');
+    return ownerName && !isSelfNamePlaceholder(ownerName) ? ownerName : 'Voce';
+  }
+
+  const cachedName = bestNameFromAliases(aliases, contactsCache);
+  if (cachedName && !looksLikeTechnicalName(cachedName)) return cachedName;
+  const phoneFallback = phoneFallbackFromAliases(aliases, contactsCache);
+  if (phoneFallback) return phoneFallback;
+  if (cachedName) return cachedName;
+  return jidNumberPart(aliases[0]) || normalizeDisplayName(rawSender || '');
+}
+
+function resolveQuotedMessageDetails(message, chatMessages, contactsCache, isGroup, activeInstance) {
+  const quotedId = normalizeDisplayName(message.quotedMessageId || '');
+  const quotedFromHistory = quotedId
+    ? (chatMessages || []).find(candidate => candidate.id === quotedId || candidate.message_id === quotedId)
+    : null;
+  const quotedSenderJid = message.quotedMessageSender ||
+    quotedFromHistory?.participantJid ||
+    quotedFromHistory?.participant ||
+    '';
+  const quotedSenderName = quotedFromHistory
+    ? resolveMessageSenderName(
+        quotedFromHistory,
+        contactsCache,
+        isGroup,
+        activeInstance?.myPushName,
+        activeInstance?.myPushNameSource
+      )
+    : resolveQuotedMessageSenderName(quotedSenderJid, contactsCache, activeInstance);
+  const quotedText = normalizeDisplayName(message.quotedMessageText || quotedFromHistory?.text || '');
+
+  return {
+    id: quotedId,
+    senderJid: quotedSenderJid,
+    senderName: quotedSenderName,
+    text: quotedText
+  };
+}
+
+function quotedPrefixText(value) {
+  return normalizeDisplayName(value);
+}
+
+function formatMessageContextPrefixes(message, chatMessages, contactsCache, isGroup, activeInstance, escapeValue = value => value) {
+  const prefixes = [];
+  if (message.isForwarded) {
+    prefixes.push('*[Encaminhada]*');
+  }
+
+  if (message.quotedMessageId || message.quotedMessageText || message.quotedMessageSender) {
+    const quoted = resolveQuotedMessageDetails(message, chatMessages, contactsCache, isGroup, activeInstance);
+    const sender = quoted.senderName || 'mensagem';
+    const text = quoted.text || 'sem texto';
+    prefixes.push(`*[Em resposta a ${escapeValue(sender)}: "${escapeValue(quotedPrefixText(text))}"]*`);
+  }
+
+  return prefixes.length > 0 ? `${prefixes.join(' ')} ` : '';
 }
 
 function isValidConversationDisplayName(name) {
@@ -3025,7 +3140,14 @@ function formatMessagesAsText(conversations, contactsCache, activeInstance) {
         activeInstance?.myPushName,
         activeInstance?.myPushNameSource
       );
-      return `  [${dateTimeStr}] ${senderName}: ${message.text}`;
+      const contextPrefix = formatMessageContextPrefixes(
+        message,
+        chat.messages,
+        contactsCache,
+        chat.isGroup,
+        activeInstance
+      );
+      return `  [${dateTimeStr}] ${senderName}: ${contextPrefix}${message.text}`;
     }).join('\n');
 
     return `--- Conversa com: ${chat.displayName} (${chat.chatKey}) ---\n${chatMessagesText}`;
@@ -3060,7 +3182,15 @@ function formatMessagesAsMarkdown(conversations, contactsCache, activeInstance, 
         activeInstance?.myPushName,
         activeInstance?.myPushNameSource
       );
-      lines.push(`- **${escapeMarkdown(dateTimeStr)}** · **${escapeMarkdown(senderName)}:** ${escapeMarkdown(message.text)}`);
+      const contextPrefix = formatMessageContextPrefixes(
+        message,
+        chat.messages,
+        contactsCache,
+        chat.isGroup,
+        activeInstance,
+        escapeMarkdown
+      );
+      lines.push(`- **${escapeMarkdown(dateTimeStr)}** · **${escapeMarkdown(senderName)}:** ${contextPrefix}${escapeMarkdown(message.text)}`);
     }
   }
 
@@ -3651,6 +3781,7 @@ async function connectUserWhatsApp(userId) {
 
         const mediaInfo = getMessageMediaInfo(msg);
         const text = getMessageText(msg);
+        const contextMetadata = getMessageContextMetadata(msg, chatJid);
 
         // Ignora se não houver texto legível (ex: figurinhas, reações, chamadas de áudio)
         if (!text.trim()) continue;
@@ -3668,7 +3799,11 @@ async function connectUserWhatsApp(userId) {
           name: pushName,
           text: text,
           fromMe: fromMe,
-          timestamp: timestamp.toISOString()
+          timestamp: timestamp.toISOString(),
+          isForwarded: contextMetadata.isForwarded,
+          quotedMessageId: contextMetadata.quotedMessageId,
+          quotedMessageSender: contextMetadata.quotedMessageSender,
+          quotedMessageText: contextMetadata.quotedMessageText
         };
         if (mediaInfo) {
           messageObject.mediaKind = mediaInfo.kind;
@@ -3950,6 +4085,49 @@ function getMessageText(msg) {
   return '';
 }
 
+function getMessageContextInfo(msg) {
+  if (!msg?.message) return {};
+  const content = unwrapMessageContent(msg.message);
+  if (content.contextInfo && typeof content.contextInfo === 'object') return content.contextInfo;
+
+  for (const value of Object.values(content)) {
+    if (value?.contextInfo && typeof value.contextInfo === 'object') {
+      return value.contextInfo;
+    }
+  }
+
+  return {};
+}
+
+function normalizeContextParticipantJid(value) {
+  if (!value || typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (trimmed.includes('@')) return cleanJid(trimmed);
+  return ensureUserJid(trimmed, /^\d{14,}$/.test(trimmed) ? 'lid' : 's.whatsapp.net');
+}
+
+function getMessageContextMetadata(msg, chatJid = '') {
+  const contextInfo = getMessageContextInfo(msg);
+  const forwardingScore = Number(contextInfo.forwardingScore || 0);
+  const quotedMessage = contextInfo.quotedMessage && typeof contextInfo.quotedMessage === 'object'
+    ? contextInfo.quotedMessage
+    : null;
+  const quotedRemoteJid = normalizeContextParticipantJid(contextInfo.remoteJid || '');
+  const quotedSender = normalizeContextParticipantJid(contextInfo.participant || '') ||
+    (!isGroupJid(quotedRemoteJid) && !isGroupJid(chatJid) ? quotedRemoteJid : '');
+  const quotedText = quotedMessage
+    ? getMessageText({ message: quotedMessage })
+    : '';
+
+  return {
+    isForwarded: Boolean(contextInfo.isForwarded) || forwardingScore > 0,
+    quotedMessageId: normalizeDisplayName(contextInfo.stanzaId || ''),
+    quotedMessageSender: quotedSender,
+    quotedMessageText: normalizeDisplayName(quotedText)
+  };
+}
+
 function unwrapMessageContent(content) {
   let current = content || {};
   const visited = new Set();
@@ -4066,6 +4244,10 @@ async function persistMessagesToSupabase(userId, messages) {
       display_name: normalized.name || null,
       text: normalized.text,
       from_me: normalized.fromMe,
+      is_forwarded: normalized.isForwarded,
+      quoted_message_id: normalized.quotedMessageId || null,
+      quoted_message_sender: normalized.quotedMessageSender || null,
+      quoted_message_text: normalized.quotedMessageText || null,
       message_timestamp: normalized.timestamp,
       message_date: messageDateStr(new Date(normalized.timestamp).getTime()),
       updated_at: new Date().toISOString()
@@ -4074,7 +4256,7 @@ async function persistMessagesToSupabase(userId, messages) {
 
   let persisted = 0;
   for (const chunk of chunkArray(rows, 250)) {
-    const response = await supabaseRest(
+    let response = await supabaseRest(
       'whatsapp_messages',
       '?on_conflict=user_id,dedupe_key',
       {
@@ -4086,6 +4268,31 @@ async function persistMessagesToSupabase(userId, messages) {
         body: JSON.stringify(chunk)
       }
     );
+    if (!response) {
+      const fallbackChunk = chunk.map(row => {
+        const fallbackRow = { ...row };
+        delete fallbackRow.is_forwarded;
+        delete fallbackRow.quoted_message_id;
+        delete fallbackRow.quoted_message_sender;
+        delete fallbackRow.quoted_message_text;
+        return fallbackRow;
+      });
+      response = await supabaseRest(
+        'whatsapp_messages',
+        '?on_conflict=user_id,dedupe_key',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-dupes,return=minimal'
+          },
+          body: JSON.stringify(fallbackChunk)
+        }
+      );
+      if (response) {
+        console.warn(`[${userId}] Mensagens persistidas no Supabase sem metadados de encaminhamento/resposta. Execute a migracao para habilitar as novas colunas.`);
+      }
+    }
     if (response) persisted += chunk.length;
   }
 
@@ -4108,10 +4315,18 @@ async function persistMessagesToSupabase(userId, messages) {
 }
 
 async function loadMessagesFromSupabase(userId, dateStr) {
-  const response = await supabaseRest(
+  const baseSelect = 'dedupe_key,message_id,chat_jid,chat_number,chat_name,participant_jid,participant_number,participant_aliases,display_name,text,from_me,message_timestamp';
+  const contextSelect = `${baseSelect},is_forwarded,quoted_message_id,quoted_message_sender,quoted_message_text`;
+  let response = await supabaseRest(
     'whatsapp_messages',
-    `?user_id=eq.${supabaseEq(userId)}&message_date=eq.${supabaseEq(dateStr)}&select=dedupe_key,message_id,chat_jid,chat_number,chat_name,participant_jid,participant_number,participant_aliases,display_name,text,from_me,message_timestamp&order=message_timestamp.asc&limit=20000`
+    `?user_id=eq.${supabaseEq(userId)}&message_date=eq.${supabaseEq(dateStr)}&select=${contextSelect}&order=message_timestamp.asc&limit=20000`
   );
+  if (!response) {
+    response = await supabaseRest(
+      'whatsapp_messages',
+      `?user_id=eq.${supabaseEq(userId)}&message_date=eq.${supabaseEq(dateStr)}&select=${baseSelect}&order=message_timestamp.asc&limit=20000`
+    );
+  }
   if (!response) {
     const fallbackMessages = await loadStateBlobFromSupabase(userId, 'messages', dateStr);
     return Array.isArray(fallbackMessages) ? fallbackMessages.map(normalizeStoredMessage) : [];
@@ -4131,6 +4346,10 @@ async function loadMessagesFromSupabase(userId, dateStr) {
       display_name: row.display_name,
       text: row.text,
       from_me: row.from_me,
+      is_forwarded: row.is_forwarded,
+      quoted_message_id: row.quoted_message_id,
+      quoted_message_sender: row.quoted_message_sender,
+      quoted_message_text: row.quoted_message_text,
       message_timestamp: row.message_timestamp
     }));
   } catch (err) {
@@ -5553,13 +5772,25 @@ app.get('/messages', checkAuth, async (req, res) => {
               activeInstance?.myPushName,
               activeInstance?.myPushNameSource
             );
+            const quoted = resolveQuotedMessageDetails(
+              m,
+              chat.messages,
+              contactsCache,
+              chat.isGroup,
+              activeInstance
+            );
             return {
               id: m.id,
               sender: m.sender,
               senderName: senderName,
               text: m.text || '',
               fromMe: !!m.fromMe,
-              timestamp: m.timestamp
+              timestamp: m.timestamp,
+              isForwarded: !!m.isForwarded,
+              quotedMessageId: quoted.id || '',
+              quotedMessageSender: quoted.senderName || '',
+              quotedMessageSenderJid: quoted.senderJid || '',
+              quotedMessageText: quoted.text || ''
             };
           })
         };

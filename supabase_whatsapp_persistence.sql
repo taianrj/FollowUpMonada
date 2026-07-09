@@ -32,6 +32,10 @@ create table if not exists public.whatsapp_messages (
     display_name text,
     text text not null,
     from_me boolean default false not null,
+    is_forwarded boolean default false not null,
+    quoted_message_id text,
+    quoted_message_sender text,
+    quoted_message_text text,
     message_timestamp timestamp with time zone not null,
     message_date date not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
@@ -40,6 +44,12 @@ create table if not exists public.whatsapp_messages (
 
 alter table public.whatsapp_messages
     add column if not exists participant_aliases jsonb default '[]'::jsonb not null;
+
+alter table public.whatsapp_messages
+    add column if not exists is_forwarded boolean default false not null,
+    add column if not exists quoted_message_id text,
+    add column if not exists quoted_message_sender text,
+    add column if not exists quoted_message_text text;
 
 create index if not exists idx_whatsapp_contacts_user_type
     on public.whatsapp_contacts (user_id, type);

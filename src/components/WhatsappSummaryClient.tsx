@@ -859,7 +859,12 @@ export default function WhatsappSummaryClient({
                 senderName: m.sender,
                 text: m.text,
                 fromMe: m.sender.toLowerCase() === 'você' || m.sender.toLowerCase() === 'voce',
-                timestamp: m.time
+                timestamp: m.time,
+                isForwarded: false,
+                quotedMessageId: '',
+                quotedMessageSender: '',
+                quotedMessageSenderJid: '',
+                quotedMessageText: ''
               }))
             };
           });
@@ -2724,10 +2729,28 @@ export default function WhatsappSummaryClient({
                                     className={`chatMessageRow ${message.fromMe ? 'outgoing' : 'incoming'}`}
                                   >
                                     <div className="chatMessageBubble">
+                                      {message.isForwarded && (
+                                        <span className="chatForwardedLabel" aria-label="Mensagem encaminhada">
+                                          Encaminhada
+                                        </span>
+                                      )}
                                       {activeChat.isGroup && !message.fromMe && (
                                         <span className="chatMessageSenderName">
                                           {message.senderName || message.sender}
                                         </span>
+                                      )}
+                                      {(message.quotedMessageId || message.quotedMessageText || message.quotedMessageSender) && (
+                                        <div
+                                          className="chatQuotedMessage"
+                                          aria-label={`Mensagem em resposta a ${message.quotedMessageSender || 'autor desconhecido'}`}
+                                        >
+                                          <span className="chatQuotedSender">
+                                            {message.quotedMessageSender || 'Mensagem respondida'}
+                                          </span>
+                                          <span className="chatQuotedText">
+                                            {message.quotedMessageText || 'Mensagem citada sem texto'}
+                                          </span>
+                                        </div>
                                       )}
                                       <p className="chatMessageText">
                                         <MessageBody text={message.text} />
@@ -3096,6 +3119,53 @@ export default function WhatsappSummaryClient({
           font-weight: 700;
           color: #fbbf24;
           margin-bottom: 0.1rem;
+        }
+        .chatForwardedLabel {
+          align-self: flex-start;
+          color: rgba(226, 232, 240, 0.82);
+          font-size: 0.68rem;
+          font-weight: 700;
+          line-height: 1.2;
+        }
+        .outgoing .chatForwardedLabel {
+          color: rgba(255, 255, 255, 0.9);
+        }
+        .chatQuotedMessage {
+          display: flex;
+          flex-direction: column;
+          gap: 0.14rem;
+          max-width: 100%;
+          padding: 0.42rem 0.55rem;
+          margin: 0.06rem 0 0.12rem;
+          border-left: 3px solid #38bdf8;
+          border-radius: 6px;
+          background: rgba(15, 23, 42, 0.58);
+          color: #e5e7eb;
+        }
+        .outgoing .chatQuotedMessage {
+          border-left-color: #fbbf24;
+          background: rgba(255, 255, 255, 0.16);
+          color: #ffffff;
+        }
+        .chatQuotedSender {
+          color: #7dd3fc;
+          font-size: 0.72rem;
+          font-weight: 800;
+          line-height: 1.25;
+          word-break: break-word;
+        }
+        .outgoing .chatQuotedSender {
+          color: #fbbf24;
+        }
+        .chatQuotedText {
+          color: rgba(241, 245, 249, 0.94);
+          font-size: 0.76rem;
+          line-height: 1.35;
+          word-break: break-word;
+          white-space: pre-wrap;
+        }
+        .outgoing .chatQuotedText {
+          color: #ffffff;
         }
         .chatMessageText {
           margin: 0;
