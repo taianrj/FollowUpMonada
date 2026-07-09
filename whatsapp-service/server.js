@@ -2900,7 +2900,7 @@ async function ensureOwnerDisplayName(userId, instance) {
   return 'Você';
 }
 
-function resolveMessageSenderName(message, contactsCache, isGroup, myPushName, myPushNameSource = '') {
+function resolveMessageSenderName(message, contactsCache, isGroup, myPushName, myPushNameSource = '', activeInstance = null) {
   if (message.fromMe) {
     if (myPushNameSource === 'whatsapp' && myPushName && !isSelfNamePlaceholder(myPushName)) return myPushName;
     if (message.name && !isSelfNamePlaceholder(message.name)) return message.name;
@@ -2910,12 +2910,12 @@ function resolveMessageSenderName(message, contactsCache, isGroup, myPushName, m
   const participantJid = message.participantJid || inferParticipantJidFromMessage(message);
   const aliases = uniqueJids([participantJid, ...(message.participantAliases || [])]);
   const cachedName = bestNameFromAliases(aliases, contactsCache);
-  if (cachedName && !looksLikeTechnicalName(cachedName)) return cachedName;
-  if (message.name && !looksLikeTechnicalName(message.name)) return message.name;
+  if (cachedName && !looksLikeTechnicalName(cachedName) && !shouldSuppressOwnerNameForIncomingAlias(aliases, cachedName, activeInstance)) return cachedName;
+  if (message.name && !looksLikeTechnicalName(message.name) && !shouldSuppressOwnerNameForIncomingAlias(aliases, message.name, activeInstance)) return message.name;
   if (!isGroup && message.chatName && !looksLikeTechnicalName(message.chatName)) return message.chatName;
   const phoneFallback = phoneFallbackFromAliases(aliases, contactsCache);
   if (phoneFallback) return phoneFallback;
-  if (cachedName) return cachedName;
+  if (cachedName && !shouldSuppressOwnerNameForIncomingAlias(aliases, cachedName, activeInstance)) return cachedName;
   return message.participant || message.sender || jidNumber(participantJid);
 }
 
@@ -2931,6 +2931,30 @@ function ownSenderNumbers(activeInstance) {
     activeInstance?.sock?.user?.id,
     activeInstance?.sock?.user?.lid
   ].map(value => jidNumberPart(String(value || ''))).filter(Boolean));
+}
+
+function comparablePersonName(value) {
+  return normalizeDisplayName(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function isOwnerDisplayName(candidateName, activeInstance) {
+  const candidate = comparablePersonName(candidateName);
+  const owner = comparablePersonName(activeInstance?.myPushName || '');
+  if (!candidate || !owner) return false;
+  return candidate === owner;
+}
+
+function aliasesBelongToOwner(aliasJids, activeInstance) {
+  const ownerNumbers = ownSenderNumbers(activeInstance);
+  if (ownerNumbers.size === 0) return false;
+  return (aliasJids || []).some(alias => ownerNumbers.has(jidNumberPart(alias)));
+}
+
+function shouldSuppressOwnerNameForIncomingAlias(aliasJids, candidateName, activeInstance) {
+  return isOwnerDisplayName(candidateName, activeInstance) && !aliasesBelongToOwner(aliasJids, activeInstance);
 }
 
 function aliasesFromRawSender(rawSender) {
@@ -2981,7 +3005,8 @@ function resolveQuotedMessageDetails(message, chatMessages, contactsCache, isGro
         contactsCache,
         isGroup,
         activeInstance?.myPushName,
-        activeInstance?.myPushNameSource
+        activeInstance?.myPushNameSource,
+        activeInstance
       )
     : resolveQuotedMessageSenderName(quotedSenderJid, contactsCache, activeInstance);
   const quotedText = normalizeDisplayName(message.quotedMessageText || quotedFromHistory?.text || '');
@@ -3138,7 +3163,8 @@ function formatMessagesAsText(conversations, contactsCache, activeInstance) {
         contactsCache,
         chat.isGroup,
         activeInstance?.myPushName,
-        activeInstance?.myPushNameSource
+        activeInstance?.myPushNameSource,
+        activeInstance
       );
       const contextPrefix = formatMessageContextPrefixes(
         message,
@@ -3180,7 +3206,8 @@ function formatMessagesAsMarkdown(conversations, contactsCache, activeInstance, 
         contactsCache,
         chat.isGroup,
         activeInstance?.myPushName,
-        activeInstance?.myPushNameSource
+        activeInstance?.myPushNameSource,
+        activeInstance
       );
       const contextPrefix = formatMessageContextPrefixes(
         message,
@@ -3381,6 +3408,10 @@ function hydrateContactsFromMessages(userId, instance, messages, source = 'messa
     const aliases = isGroup
       ? uniqueJids([message.participantJid, ...(message.participantAliases || [])])
       : uniqueJids([message.chatJid, message.participantJid, ...(message.participantAliases || [])]);
+
+    if (!message.fromMe && shouldSuppressOwnerNameForIncomingAlias(aliases, name, instance)) {
+      continue;
+    }
 
     for (const alias of aliases) {
       if (addContactToCache(userId, instance, alias, name, source, false)) changed++;
@@ -3761,12 +3792,18 @@ async function connectUserWhatsApp(userId) {
         
         let pushName = '';
         if (!fromMe) {
-          const savedName = bestNameFromAliases(participantAliases, instance.contactsCache);
-          const messagePushName = normalizeDisplayName(msg.pushName);
+          const savedNameCandidate = bestNameFromAliases(participantAliases, instance.contactsCache);
+          const savedName = shouldSuppressOwnerNameForIncomingAlias(participantAliases, savedNameCandidate, instance)
+            ? ''
+            : savedNameCandidate;
+          const messagePushNameCandidate = normalizeDisplayName(msg.pushName);
+          const messagePushName = shouldSuppressOwnerNameForIncomingAlias(participantAliases, messagePushNameCandidate, instance)
+            ? ''
+            : messagePushNameCandidate;
           pushName = savedName || messagePushName || jidNumber(participantJid);
-          if (msg.pushName) {
+          if (messagePushName) {
             for (const alias of participantAliases) {
-              addContactToCache(userId, instance, alias, msg.pushName, 'message.pushName');
+              addContactToCache(userId, instance, alias, messagePushName, 'message.pushName');
             }
           }
         } else {
@@ -5770,7 +5807,8 @@ app.get('/messages', checkAuth, async (req, res) => {
               contactsCache,
               chat.isGroup,
               activeInstance?.myPushName,
-              activeInstance?.myPushNameSource
+              activeInstance?.myPushNameSource,
+              activeInstance
             );
             const quoted = resolveQuotedMessageDetails(
               m,
@@ -5928,7 +5966,8 @@ app.get('/messages', checkAuth, async (req, res) => {
             contactsCache,
             chat.isGroup,
             activeInstance?.myPushName,
-            activeInstance?.myPushNameSource
+            activeInstance?.myPushNameSource,
+            activeInstance
           );
           return `  [${dateTimeStr}] ${senderName}: ${m.text}`;
         }).join('\n');
