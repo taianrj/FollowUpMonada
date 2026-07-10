@@ -721,11 +721,7 @@ export default function WhatsappSummaryClient({
     setSearchQuery('');
 
     try {
-      let recoveryMessage = '';
-      const response = await fetchMessagesWithRecovery(summaryDate, 'json_grouped', (message) => {
-        recoveryMessage = message;
-        setModalMessagesText(message);
-      });
+      const response = await fetchWhatsappMessages(summaryDate, 'json_grouped');
       
       if (response.ok) {
         const contentType = response.headers.get('content-type') || '';
@@ -737,9 +733,7 @@ export default function WhatsappSummaryClient({
               setSelectedChatKey(data.conversations[0].chatKey);
               setModalMessagesText('');
             } else {
-              setModalMessagesText(recoveryMessage
-                ? 'A ressincronizacao terminou, mas nenhuma mensagem chegou para esta data. Se houve conversas hoje, mantenha o WhatsApp conectado por alguns minutos ou reconecte o QR para forcar uma sincronizacao inicial nova.'
-                : 'Nenhuma mensagem de clientes registrada para a data selecionada.');
+              setModalMessagesText('Nenhuma mensagem de clientes registrada para a data selecionada.');
             }
             return;
           }
@@ -770,8 +764,8 @@ export default function WhatsappSummaryClient({
     } finally {
       setIsLoadingModalMessages(false);
     }
-  };
-
+  };
+
   // Envia logout para o servidor e zera estados locais
   const handleDisconnect = async () => {
     const confirmed = await showCustomConfirm('Desconectar WhatsApp', 'Deseja realmente desconectar o seu WhatsApp do servidor?');
