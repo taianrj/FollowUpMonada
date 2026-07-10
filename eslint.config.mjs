@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // O microsserviço possui package.json e runtime CommonJS próprios.
+    "whatsapp-service/**",
   ]),
 ]);
 

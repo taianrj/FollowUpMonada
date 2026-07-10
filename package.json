@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "npm run test:web && npm run test:whatsapp-service",
+    "test:web": "vitest run",
+    "test:whatsapp-service": "npm --prefix whatsapp-service test"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
@@ -22,6 +25,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   }
 }

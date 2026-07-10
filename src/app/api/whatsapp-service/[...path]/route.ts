@@ -1,14 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { buildWhatsappUpstreamUrl, getWhatsappProxyAllowedMethods } from '@/lib/whatsapp/proxy';
 
-const ALLOWED_PATHS = new Set([
-  'status',
-  'settings',
-  'qr-code',
-  'messages',
-  'logout',
-  'maintenance/resync'
-]);
+const UPSTREAM_TIMEOUT_MS = 30_000;
 
 type ProxyContext = {
   params: Promise<{
@@ -38,11 +32,12 @@ async function getCurrentAdmin() {
 }
 
 function getWhatsappServiceBaseUrl() {
-  return (
+  const configuredUrl = (
     process.env.WHATSAPP_SERVICE_URL ||
     process.env.NEXT_PUBLIC_WHATSAPP_SERVICE_URL ||
-    'https://followupmonada.onrender.com'
-  ).replace(/\/$/, '');
+    ''
+  ).trim();
+  return configuredUrl ? configuredUrl.replace(/\/$/, '') : null;
 }
 
 async function proxyWhatsappRequest(request: NextRequest, context: ProxyContext) {
@@ -51,24 +46,27 @@ async function proxyWhatsappRequest(request: NextRequest, context: ProxyContext)
 
   const { path } = await context.params;
   const servicePath = path.join('/');
-  if (!ALLOWED_PATHS.has(servicePath)) {
+  const allowedMethods = getWhatsappProxyAllowedMethods(servicePath);
+  if (!allowedMethods) {
     return NextResponse.json({ error: 'Endpoint do WhatsApp nao permitido' }, { status: 404 });
   }
-
-  const incomingUrl = new URL(request.url);
-  const targetUrl = new URL(`${getWhatsappServiceBaseUrl()}/${servicePath}`);
-
-  incomingUrl.searchParams.forEach((value, key) => {
-    if (key !== 'key') {
-      targetUrl.searchParams.set(key, value);
-    }
-  });
-  targetUrl.searchParams.set('key', user.id);
+  if (!allowedMethods.has(request.method)) {
+    return NextResponse.json(
+      { error: 'Metodo nao permitido para este endpoint do WhatsApp' },
+      { status: 405, headers: { Allow: [...(allowedMethods || [])].join(', ') } }
+    );
+  }
 
   const ownerName = String(profile.name || profile.email?.split('@')[0] || '').trim();
-  if (ownerName && !targetUrl.searchParams.has('ownerName')) {
-    targetUrl.searchParams.set('ownerName', ownerName);
+  const serviceBaseUrl = getWhatsappServiceBaseUrl();
+  if (!serviceBaseUrl) {
+    return NextResponse.json({ error: 'URL do servico do WhatsApp nao configurada' }, { status: 503 });
   }
+  const targetUrl = buildWhatsappUpstreamUrl({
+    baseUrl: serviceBaseUrl,
+    servicePath,
+    incomingUrl: request.url
+  });
 
   const headers = new Headers();
   const contentType = request.headers.get('content-type');
@@ -77,16 +75,27 @@ async function proxyWhatsappRequest(request: NextRequest, context: ProxyContext)
   if (ownerName) headers.set('x-owner-name', ownerName);
 
   const serviceToken = process.env.WHATSAPP_SERVICE_SECRET || process.env.WHATSAPP_SERVICE_TOKEN;
-  if (serviceToken) {
-    headers.set('x-service-token', serviceToken);
+  if (!serviceToken) {
+    return NextResponse.json({ error: 'Integracao do WhatsApp nao configurada' }, { status: 503 });
   }
+  headers.set('x-service-token', serviceToken);
 
-  const upstream = await fetch(targetUrl, {
-    method: request.method,
-    headers,
-    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text(),
-    cache: 'no-store'
-  });
+  let upstream: Response;
+  try {
+    upstream = await fetch(targetUrl, {
+      method: request.method,
+      headers,
+      body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text(),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+    return NextResponse.json(
+      { error: timedOut ? 'O servico do WhatsApp demorou para responder' : 'Servico do WhatsApp indisponivel' },
+      { status: timedOut ? 504 : 502 }
+    );
+  }
 
   const responseHeaders = new Headers();
   const upstreamContentType = upstream.headers.get('content-type');

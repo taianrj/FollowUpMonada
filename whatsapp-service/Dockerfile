@@ -7,13 +7,14 @@ WORKDIR /app
 RUN apk add --no-cache git
 
 # Copia os arquivos de dependências
-COPY package.json ./
+COPY package.json package-lock.json ./
 
 # Instala apenas as dependências de produção de forma limpa
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 
 # Copia o código da aplicação
 COPY server.js ./
+COPY lib ./lib
 
 # Configurações de ambiente padrão
 ENV PORT=8080

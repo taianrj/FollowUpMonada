@@ -1,4 +1,4 @@
-// Trigger Render deploy
+// WhatsApp Gateway do FollowUp Mônada
 const express = require('express');
 // Polyfill para garantir que a Web Crypto API esteja no escopo global (necessário para versões do Node < 19)
 if (!global.crypto) {
@@ -17,14 +17,24 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[CRITICAL] Rejeição de Promise Não Capturada no Servidor:', reason);
 });
 
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  downloadMediaMessage,
-  ALL_WA_PATCH_NAMES
-} = require('@whiskeysockets/baileys');
+const messageDomain = require('./lib/message-domain');
+let makeWASocket;
+let useMultiFileAuthState;
+let DisconnectReason;
+let fetchLatestBaileysVersion;
+let downloadMediaMessage;
+let ALL_WA_PATCH_NAMES;
+
+async function loadBaileys() {
+  if (makeWASocket) return;
+  const baileys = await import('baileys');
+  makeWASocket = baileys.default || baileys.makeWASocket;
+  useMultiFileAuthState = baileys.useMultiFileAuthState;
+  DisconnectReason = baileys.DisconnectReason;
+  fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
+  downloadMediaMessage = baileys.downloadMediaMessage;
+  ALL_WA_PATCH_NAMES = baileys.ALL_WA_PATCH_NAMES;
+}
 const pino = require('pino');
 const QRCode = require('qrcode');
 const fs = require('fs');
@@ -254,9 +264,19 @@ async function deleteCredsFromSupabase(userId) {
   }
 }
 
+async function flushMessageBackfillsForUser(userId) {
+  const prefix = `${userId}:`;
+  const pending = Array.from(pendingMessageBackfills.entries())
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, promise]) => promise);
+  if (pending.length > 0) await Promise.allSettled(pending);
+}
+
 // Exclui todas as mensagens e contatos locais e do Supabase associados ao usuário de forma permanente na desconexão
 async function clearAllUserData(userId) {
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  await flushMessageBackfillsForUser(cleanUserId);
+  await flushContactPersist(cleanUserId);
   const dbSessionId = getDbSessionId(cleanUserId);
   console.log(`[${cleanUserId}] Iniciando limpeza completa de dados pós-desconexão...`);
 
@@ -285,8 +305,15 @@ async function clearAllUserData(userId) {
   // Limpa o cache de contatos na memória se a instância existir
   const instance = instances[cleanUserId];
   if (instance) {
+    if (instance.contactsSaveTimer) {
+      clearTimeout(instance.contactsSaveTimer);
+      instance.contactsSaveTimer = null;
+    }
     instance.contactsCache = {};
   }
+  const authTimer = pendingAuthStateTimers.get(cleanUserId);
+  if (authTimer) clearTimeout(authTimer);
+  pendingAuthStateTimers.delete(cleanUserId);
   await clearMediaProcessingState(cleanUserId);
 
   // 3. Limpa mensagens do Supabase
@@ -348,6 +375,7 @@ async function clearAllUserData(userId) {
 
 async function clearUserMessagesData(userId) {
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  await flushMessageBackfillsForUser(cleanUserId);
   const dbSessionId = getDbSessionId(cleanUserId);
   const result = {
     localFiles: 0,
@@ -467,14 +495,16 @@ let connectionStatus = 'connecting'; // 'connecting' | 'qrcode' | 'connected' | 
 let syncStatus = 'pending'; // 'pending' | 'syncing' | 'completed'
 let messagesProcessedCount = 0;
 const contactsCache = {};
-const supabaseDisabledTables = new Set();
+const supabaseDisabledTables = new Map();
 const pendingContactWrites = new Map();
 const pendingContactTimers = new Map();
+const pendingMessageBackfills = new Map();
 const pendingMediaStateTimers = new Map();
 const pendingAuthStateTimers = new Map();
 
 const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '2', 10)); // Padrao de 2 dias (48 horas) para sincronizacao e retencao de historico
 const SUPABASE_TIMEOUT_MS = Math.max(2000, parseInt(process.env.SUPABASE_TIMEOUT_MS || '8000', 10));
+const SUPABASE_TABLE_RETRY_MS = Math.max(30000, parseInt(process.env.SUPABASE_TABLE_RETRY_MS || '300000', 10));
 const CONTACT_FLUSH_DELAY_MS = Math.max(250, parseInt(process.env.CONTACT_FLUSH_DELAY_MS || '1200', 10));
 const CONTACT_MESSAGE_HYDRATION_INTERVAL_MS = Math.max(60000, parseInt(process.env.CONTACT_MESSAGE_HYDRATION_INTERVAL_MS || '300000', 10));
 const SYNC_IDLE_COMPLETE_MS = Math.max(5000, parseInt(process.env.SYNC_IDLE_COMPLETE_MS || '90000', 10));
@@ -530,7 +560,9 @@ function getSupabaseConfig() {
 }
 
 async function supabaseRest(table, query = '', options = {}) {
-  if (supabaseDisabledTables.has(table)) return null;
+  const disabledAt = supabaseDisabledTables.get(table);
+  if (disabledAt && Date.now() - disabledAt < SUPABASE_TABLE_RETRY_MS) return null;
+  if (disabledAt) supabaseDisabledTables.delete(table);
 
   const config = getSupabaseConfig();
   if (!config) return null;
@@ -555,7 +587,7 @@ async function supabaseRest(table, query = '', options = {}) {
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
       if (response.status === 404 || errText.includes('PGRST205') || errText.includes('does not exist')) {
-        supabaseDisabledTables.add(table);
+        supabaseDisabledTables.set(table, Date.now());
         console.warn(`[supabase] Tabela ${table} indisponivel. Usando cache local ate a migracao ser aplicada.`);
         return null;
       }
@@ -738,6 +770,7 @@ async function deleteStateBlobFromSupabase(userId, kind, key) {
 }
 
 async function persistAuthStateSnapshot(userId, authStateDir) {
+  if (instances[userId]?.intentionalLogout) return 0;
   const files = readAuthStateFiles(authStateDir);
   if (files.length === 0) return 0;
 
@@ -769,6 +802,7 @@ async function persistAuthStateSnapshot(userId, authStateDir) {
 function scheduleAuthStateSnapshot(userId, authStateDir, delayMs = AUTH_STATE_PERSIST_DELAY_MS) {
   const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
   if (!cleanUserId || !authStateDir) return;
+  if (instances[cleanUserId]?.intentionalLogout) return;
   if (pendingAuthStateTimers.has(cleanUserId)) {
     clearTimeout(pendingAuthStateTimers.get(cleanUserId));
   }
@@ -962,7 +996,12 @@ function scheduleLongTermMediaRetry(item, errorMessage) {
 
 function isPermanentMediaError(errorMessage = '') {
   const err = String(errorMessage).toLowerCase();
-  return err.includes('status code 403') || err.includes('forbidden') || err.includes('404') || err.includes('status code 404');
+  return err.includes('status code 403') ||
+    err.includes('forbidden') ||
+    err.includes('404') ||
+    err.includes('not found') ||
+    err.includes('media is missing') ||
+    err.includes('media expired');
 }
 
 function mediaStateFilePath(userId) {
@@ -1410,6 +1449,10 @@ function extractTranscriptionText(data) {
   if (Array.isArray(data.segments)) {
     return normalizeDisplayName(data.segments.map(segment => segment.text || '').join(' '));
   }
+  const choiceContent = data.choices?.[0]?.message?.content;
+  if (typeof choiceContent === 'string') return normalizeDisplayName(choiceContent);
+  const candidateText = data.candidates?.[0]?.content?.parts?.map(part => part?.text || '').join(' ');
+  if (candidateText) return normalizeDisplayName(candidateText);
   return '';
 }
 
@@ -1757,7 +1800,7 @@ async function updateStoredMessageText(userId, rawMessage, nextText) {
     ...rawMessage,
     text: nextText
   });
-  normalized.dedupeKey = normalized.dedupeKey || createDedupeKey(normalized);
+  normalized.dedupeKey = createDedupeKey(normalized);
 
   const timestampMs = new Date(normalized.timestamp).getTime();
   const dateStr = messageDateStr(Number.isFinite(timestampMs) ? timestampMs : Date.now());
@@ -1846,6 +1889,8 @@ function extractVisionResponseText(data) {
   }
 
   if (typeof data.text === 'string') return normalizeDisplayName(data.text);
+  const candidateText = data.candidates?.[0]?.content?.parts?.map(part => part?.text || '').join(' ');
+  if (candidateText) return normalizeDisplayName(candidateText);
   return '';
 }
 
@@ -2440,17 +2485,72 @@ function messageParticipantAliases(msg, fallbackJid) {
   return uniqueJids([
     fallbackJid,
     key.participant,
+    key.participantAlt,
     msg?.participant,
+    msg?.participantAlt,
     key.participantPn,
     key.participantLid,
     key.senderPn,
-    key.senderLid
+    key.senderLid,
+    msg?.participantPn,
+    msg?.participantLid,
+    msg?.senderPn,
+    msg?.senderLid
   ].map(value => {
     if (!value || typeof value !== 'string') return '';
     if (value.includes('@')) return value;
     if (/^\d{14,}$/.test(value)) return `${value}@lid`;
     return `${value}@s.whatsapp.net`;
   }));
+}
+
+function cacheJidAliasPair(instance, aliases) {
+  if (!instance) return;
+  if (!instance.jidAliasCache) instance.jidAliasCache = {};
+  const normalized = uniqueJids(aliases);
+  const pn = normalized.find(jid => jid.endsWith('@s.whatsapp.net'));
+  const lid = normalized.find(jid => jid.endsWith('@lid'));
+  if (!pn || !lid) return;
+  instance.jidAliasCache[pn] = lid;
+  instance.jidAliasCache[lid] = pn;
+}
+
+async function expandJidAliases(aliasJids, instance) {
+  const aliases = uniqueJids(aliasJids || []);
+  const expanded = [...aliases];
+
+  for (const jid of aliases) {
+    const cached = instance?.jidAliasCache?.[jid];
+    if (cached) expanded.push(cached);
+
+    if (jid.endsWith('@lid') && instance?.sock?.signalRepository?.lidMapping?.getPNForLID) {
+      try {
+        const pn = await instance.sock.signalRepository.lidMapping.getPNForLID(jid);
+        if (pn) {
+          expanded.push(pn);
+          cacheJidAliasPair(instance, [jid, pn]);
+        }
+      } catch (err) {
+        console.warn(`[jid-mapping] Falha ao resolver ${jid}:`, err.message || err);
+      }
+    }
+  }
+
+  return uniqueJids(expanded);
+}
+
+async function resolveIncomingMessageRoute(msg, instance) {
+  const ownerJids = await expandJidAliases(messageDomain.ownerJidsFromInstance(instance), instance);
+  const [chatAliases, participantAliases] = await Promise.all([
+    expandJidAliases(messageDomain.messageChatAliases(msg), instance),
+    expandJidAliases(messageDomain.messageParticipantAliases(msg), instance)
+  ]);
+
+  return messageDomain.resolveMessageRoute(msg, {
+    ownerJids,
+    chatAliases,
+    participantAliases
+  });
 }
 
 function relatedAliasesFromCache(aliasJids, contactsCache) {
@@ -2550,6 +2650,7 @@ function scheduleContactsFileSave(userId, instance) {
 }
 
 function queueContactPersist(userId, jid, name, source = 'sync') {
+  if (instances[userId]?.intentionalLogout) return;
   const cleanId = cleanJid(jid);
   const cleanName = normalizeDisplayName(name);
   if (!cleanId || !cleanName) return;
@@ -2690,10 +2791,12 @@ function messageDateStr(timestamp) {
 }
 
 function createDedupeKey(messageObject) {
+  const id = String(messageObject.id || messageObject.message_id || '').trim();
+  if (id) return `id:${id}`;
   const chat = messageObject.chatJid || `${messageObject.sender || ''}@unknown`;
   const participant = messageObject.participantJid || messageObject.participant || '';
-  const id = messageObject.id || '';
-  return `${chat}|${participant}|${id}`;
+  const timestamp = messageObject.timestamp || messageObject.message_timestamp || '';
+  return `${chat}|${participant}|${timestamp}|${messageObject.text || ''}`;
 }
 
 function inferChatJidFromMessage(message) {
@@ -2732,19 +2835,27 @@ function normalizeStoredMessage(message) {
     ...(Array.isArray(message.participantAliases) ? message.participantAliases : []),
     ...(Array.isArray(message.participant_aliases) ? message.participant_aliases : [])
   ]);
+  const chatAliases = uniqueJids([
+    chatJid,
+    ...(Array.isArray(message.chatAliases) ? message.chatAliases : []),
+    ...(Array.isArray(message.chat_aliases) ? message.chat_aliases : [])
+  ]);
   const normalized = {
     id: message.id || message.message_id || '',
     dedupeKey: message.dedupeKey || message.dedupe_key || '',
     sender: message.sender || message.chat_number || jidNumber(chatJid),
     chatJid,
+    chatAliases,
     chatName: normalizeDisplayName(message.chatName || message.chat_name || ''),
     participant: message.participant || message.participant_number || jidNumber(participantJid),
     participantJid,
     participantAliases,
     name: normalizeDisplayName(message.name || message.display_name || ''),
     text: typeof message.text === 'string' ? message.text : '',
-    fromMe: Boolean(message.fromMe ?? message.from_me),
+    fromMe: normalizeBoolean(message.fromMe ?? message.from_me),
     timestamp: message.timestamp || message.message_timestamp || new Date().toISOString(),
+    routingStatus: normalizeDisplayName(message.routingStatus || message.routing_status || 'legacy'),
+    routingIssue: normalizeDisplayName(message.routingIssue || message.routing_issue || ''),
     isForwarded: normalizeBoolean(message.isForwarded ?? message.is_forwarded),
     quotedMessageId: normalizeDisplayName(message.quotedMessageId || message.quoted_message_id || ''),
     quotedMessageSender: cleanJid(message.quotedMessageSender || message.quoted_message_sender || ''),
@@ -2804,25 +2915,33 @@ function mergeMessages(localMessages, remoteMessages) {
   for (const raw of [...(localMessages || []), ...(remoteMessages || [])]) {
     const message = normalizeStoredMessage(raw);
     if (!message.id && !message.text) continue;
-    const key = message.dedupeKey || createDedupeKey(message);
+    const key = messageDomain.messageIdentityKey(message);
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, message);
       continue;
     }
 
-    merged.set(key, {
-      ...existing,
-      ...message,
-      chatName: isBetterContactName(message.chatName, existing.chatName) ? message.chatName : existing.chatName,
-      participantAliases: uniqueJids([...(existing.participantAliases || []), ...(message.participantAliases || [])]),
-      name: isBetterContactName(message.name, existing.name) ? message.name : existing.name,
+    const preferredRoute = messageDomain.preferMessageRoute(existing, message);
+    const secondary = preferredRoute === message ? existing : message;
+    const preferredAliases = uniqueJids([preferredRoute.chatJid, ...(preferredRoute.chatAliases || [])]);
+    const secondaryAliases = uniqueJids([secondary.chatJid, ...(secondary.chatAliases || [])]);
+    const sameConversation = preferredAliases.some(alias => secondaryAliases.includes(alias));
+    const mergedMessage = {
+      ...secondary,
+      ...preferredRoute,
+      dedupeKey: createDedupeKey(preferredRoute),
+      chatAliases: uniqueJids([...preferredAliases, ...(sameConversation ? secondaryAliases : [])]),
+      chatName: preferredRoute.chatName || (sameConversation ? secondary.chatName : ''),
+      participantAliases: uniqueJids([...(secondary.participantAliases || []), ...(preferredRoute.participantAliases || [])]),
+      name: preferredRoute.name || (sameConversation ? secondary.name : ''),
       text: chooseBetterMessageText(existing.text, message.text),
       isForwarded: existing.isForwarded || message.isForwarded,
       quotedMessageId: message.quotedMessageId || existing.quotedMessageId,
       quotedMessageSender: message.quotedMessageSender || existing.quotedMessageSender,
       quotedMessageText: message.quotedMessageText || existing.quotedMessageText
-    });
+    };
+    merged.set(key, mergedMessage);
   }
 
   return Array.from(merged.values()).sort(compareMessagesChronologically);
@@ -2906,6 +3025,9 @@ function resolveMessageSenderName(message, contactsCache, isGroup, myPushName, m
     if (message.name && !isSelfNamePlaceholder(message.name)) return message.name;
     if (myPushName && !isSelfNamePlaceholder(myPushName)) return myPushName;
     return 'Você';
+  }
+  if (message.routingStatus === 'ambiguous-self') {
+    return 'Remetente não identificado';
   }
   const participantJid = message.participantJid || inferParticipantJidFromMessage(message);
   const aliases = uniqueJids([participantJid, ...(message.participantAliases || [])]);
@@ -3048,52 +3170,62 @@ function isValidConversationDisplayName(name) {
 }
 
 function buildMessageConversations(messages, contactsCache, ownerJid = '', ownerLid = '', ownerPushName = 'Você') {
-  const grouped = {};
+  const normalizedMessages = (messages || []).map(normalizeStoredMessage);
+  const ownerJids = uniqueJids([
+    ensureUserJid(String(ownerJid || ''), 's.whatsapp.net'),
+    ensureUserJid(String(ownerLid || ''), 'lid')
+  ]);
+  const ownerSet = new Set(ownerJids);
+  const corruptedOwnerConversation = normalizedMessages.some(message => (
+    messageDomain.isAmbiguousOwnerMessage(message, ownerJids)
+  ));
+  const grouped = new Map();
 
-  messages.forEach(rawMessage => {
-    const normalized = normalizeStoredMessage(rawMessage);
-    let chatKey = normalized.sender;
-    if (!chatKey || chatKey === 'undefined' || chatKey.trim() === '') return;
+  for (const message of normalizedMessages) {
+    const aliases = uniqueJids([message.chatJid, ...(message.chatAliases || [])]);
+    const isOwnerChat = aliases.some(alias => ownerSet.has(alias));
+    const unresolved = corruptedOwnerConversation && isOwnerChat;
+    const canonicalJid = unresolved
+      ? 'unresolved-direct@lid'
+      : (messageDomain.chooseCanonicalJid(aliases) || message.chatJid);
+    if (!canonicalJid) continue;
+    const groupKey = unresolved ? 'unresolved-direct' : canonicalJid;
 
-    // Unifica a conversa do próprio usuário consigo mesmo (LID + JID)
-    if (ownerJid) {
-      const cleanOwnerJid = ownerJid.split('@')[0].split(':')[0];
-      const cleanOwnerLid = ownerLid ? ownerLid.split('@')[0].split(':')[0] : '';
-      const cleanChatKey = chatKey.split('@')[0].split(':')[0];
-
-      if (cleanChatKey === cleanOwnerJid || (cleanOwnerLid && cleanChatKey === cleanOwnerLid)) {
-        chatKey = cleanOwnerJid;
-        normalized.sender = cleanOwnerJid;
-        normalized.chatJid = `${cleanOwnerJid}@s.whatsapp.net`;
-      }
-    }
-
-    if (!grouped[chatKey]) {
-      grouped[chatKey] = {
-        name: normalized.chatName || normalized.name || normalized.sender,
-        chatJid: normalized.chatJid,
+    if (!grouped.has(groupKey)) {
+      grouped.set(groupKey, {
+        chatJid: canonicalJid,
+        chatAliases: aliases,
+        unresolved,
         messages: []
-      };
-    }
-    grouped[chatKey].messages.push(normalized);
-  });
-
-  const resolvedChats = [];
-  for (const chatKey in grouped) {
-    const chat = grouped[chatKey];
-    const isGroup = isGroupJid(chat.chatJid) || chat.messages.some(m => m.participant && m.participant !== m.sender);
-    const jid = chat.chatJid || (isGroup ? `${chatKey}@g.us` : `${chatKey}@s.whatsapp.net`);
-    let displayName = contactsCache[jid] || chat.messages.find(m => m.chatName)?.chatName;
-
-    if (!displayName && !isGroup) {
-      const nonMeMessage = chat.messages.find(m => !m.fromMe);
-      if (nonMeMessage) displayName = nonMeMessage.name;
+      });
     }
 
-    if (ownerJid) {
-      const cleanOwnerJid = ownerJid.split('@')[0].split(':')[0];
-      if (chatKey === cleanOwnerJid) {
-        displayName = ownerPushName || 'Você';
+    const chat = grouped.get(groupKey);
+    chat.chatAliases = uniqueJids([...chat.chatAliases, ...aliases]);
+    chat.messages.push(unresolved && !message.fromMe
+      ? { ...message, routingStatus: 'ambiguous-self', routingIssue: message.routingIssue || 'Interlocutor ausente nos dados de origem.' }
+      : message);
+  }
+
+  return Array.from(grouped.values()).map(chat => {
+    chat.messages.sort(compareMessagesChronologically);
+    const isGroup = isGroupJid(chat.chatJid);
+    const isOwnerChat = chat.chatAliases.some(alias => ownerSet.has(alias));
+    const chatKey = chat.unresolved
+      ? 'nao-identificada'
+      : (jidNumber(chat.chatJid) || chat.chatJid);
+    let displayName = '';
+
+    if (chat.unresolved) {
+      displayName = 'Conversa não identificada';
+    } else if (isOwnerChat) {
+      displayName = ownerPushName || 'Você';
+    } else {
+      displayName = bestNameFromAliases(chat.chatAliases, contactsCache) ||
+        chat.messages.find(message => isValidConversationDisplayName(message.chatName))?.chatName || '';
+
+      if (!displayName && !isGroup) {
+        displayName = chat.messages.find(message => !message.fromMe && isValidConversationDisplayName(message.name))?.name || '';
       }
     }
 
@@ -3101,43 +3233,17 @@ function buildMessageConversations(messages, contactsCache, ownerJid = '', owner
       displayName = chatKey;
     }
 
-    resolvedChats.push({
+    return {
       chatKey,
       chatJid: chat.chatJid,
+      chatAliases: chat.chatAliases,
       isGroup,
       displayName,
+      routingWarning: chat.unresolved
+        ? 'O WhatsApp não informou o interlocutor desta conversa. Uma ressincronização profunda pode reparar os dados.'
+        : '',
       messages: chat.messages
-    });
-  }
-
-  const unifiedGrouped = {};
-  resolvedChats.forEach(chat => {
-    const isNameValid = isValidConversationDisplayName(chat.displayName);
-    const unifiedKey = isNameValid ? chat.displayName.trim().toLowerCase() : chat.chatKey;
-
-    if (!unifiedGrouped[unifiedKey]) {
-      unifiedGrouped[unifiedKey] = {
-        displayName: chat.displayName,
-        chatKey: chat.chatKey,
-        chatJid: chat.chatJid,
-        isGroup: chat.isGroup,
-        messages: [...chat.messages]
-      };
-      return;
-    }
-
-    const currentIsLid = chat.chatKey.length > 15;
-    const existingIsLid = unifiedGrouped[unifiedKey].chatKey.length > 15;
-    if (existingIsLid && !currentIsLid) {
-      unifiedGrouped[unifiedKey].chatKey = chat.chatKey;
-      unifiedGrouped[unifiedKey].chatJid = chat.chatJid;
-    }
-    unifiedGrouped[unifiedKey].messages.push(...chat.messages);
-  });
-
-  return Object.values(unifiedGrouped).map(chat => {
-    chat.messages.sort(compareMessagesChronologically);
-    return chat;
+    };
   });
 }
 
@@ -3176,7 +3282,8 @@ function formatMessagesAsText(conversations, contactsCache, activeInstance) {
       return `  [${dateTimeStr}] ${senderName}: ${contextPrefix}${message.text}`;
     }).join('\n');
 
-    return `--- Conversa com: ${chat.displayName} (${chat.chatKey}) ---\n${chatMessagesText}`;
+    const routingWarning = chat.routingWarning ? `  [AVISO] ${chat.routingWarning}\n` : '';
+    return `--- Conversa com: ${chat.displayName} (${chat.chatKey}) ---\n${routingWarning}${chatMessagesText}`;
   }).join('\n\n');
 }
 
@@ -3198,6 +3305,9 @@ function formatMessagesAsMarkdown(conversations, contactsCache, activeInstance, 
 
   for (const chat of conversations) {
     lines.push('', `## ${escapeMarkdown(chat.displayName)}`, `_Identificador: \`${escapeMarkdown(chat.chatKey)}\`_`, '');
+    if (chat.routingWarning) {
+      lines.push(`> ${escapeMarkdown(chat.routingWarning)}`, '');
+    }
 
     for (const message of chat.messages) {
       const dateTimeStr = dateTimeFormatter.format(new Date(message.timestamp)).replace(',', '');
@@ -3285,6 +3395,7 @@ function addContactToCache(userId, instance, id, name, source = 'sync', updateFi
 function addContactRecordToCache(userId, instance, contact, source = 'sync') {
   if (!contact || !instance) return false;
   const baseAliases = contactAliasJids(contact);
+  cacheJidAliasPair(instance, baseAliases);
   const aliases = uniqueJids([
     ...baseAliases,
     ...relatedAliasesFromCache(baseAliases, instance.contactsCache)
@@ -3422,7 +3533,7 @@ function hydrateContactsFromMessages(userId, instance, messages, source = 'messa
 }
 
 function isRetainedDate(dateStr) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr))) return false;
+  if (!messageDomain.isValidDate(dateStr)) return false;
   const endOfDay = new Date(`${dateStr}T23:59:59.999Z`).getTime();
   return Number.isFinite(endOfDay) && endOfDay >= Date.now() - (MESSAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
 }
@@ -3514,6 +3625,10 @@ async function connectUserWhatsApp(userId) {
   }
 
   const { state, saveCreds } = await useMultiFileAuthState(userAuthDir);
+  if (state?.creds?.me) {
+    instance.myJid = jidNumber(state.creds.me.id || '');
+    instance.myLid = jidNumber(state.creds.me.lid || '');
+  }
 
   if (instance.forceHistorySync) {
     const previousProcessedCount = Array.isArray(state.creds.processedHistoryMessages)
@@ -3554,7 +3669,7 @@ async function connectUserWhatsApp(userId) {
     logger: logger,
     browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
     markOnlineOnConnect: false, // Mantém as notificações push funcionando no celular do usuário
-    keepAliveIntervalMs: 15000, // Envia pings de keep-alive a cada 15 segundos para evitar que o proxy do Render encerre a conexão por ociosidade
+    keepAliveIntervalMs: 15000, // Envia pings de keep-alive para detectar conexões ociosas rapidamente
     connectTimeoutMs: 60000, // Tolera até 60 segundos para conexão inicial
     retryRequestDelayMs: 2000, // Dá 2 segundos de folga para a rede se estabilizar em retentativas falhas
     defaultQueryTimeoutMs: 60000, // Evita queries presas em background
@@ -3563,17 +3678,13 @@ async function connectUserWhatsApp(userId) {
     },
     getMessage: async (key) => {
       try {
-        const dateStr = new Date().toISOString().split('T')[0];
-        const filePath = path.join(dataDir, 'messages', userId, `messages-${dateStr}.json`);
-        if (fs.existsSync(filePath)) {
+        const dates = listLocalMessageFiles(userId).slice(-MESSAGE_RETENTION_DAYS).reverse();
+        for (const dateStr of dates) {
+          const filePath = path.join(dataDir, 'messages', userId, `messages-${dateStr}.json`);
           const rawData = fs.readFileSync(filePath, 'utf8');
           const messages = JSON.parse(rawData);
           const found = messages.find(m => m.id === key.id);
-          if (found) {
-            return {
-              conversation: found.text
-            };
-          }
+          if (found) return { conversation: found.text };
         }
       } catch (err) {
         console.warn(`[${userId}] Falha ao buscar mensagem para getMessage retry:`, err.message);
@@ -3620,6 +3731,10 @@ async function connectUserWhatsApp(userId) {
       instance.currentQr = null;
       instance.syncStatus = 'pending';
       instance.messagesProcessedCount = 0;
+      if (instance.intentionalLogout) {
+        instance.connectionStatus = 'disconnected';
+        return;
+      }
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       console.log(`[${userId}] Conexão fechada devido a:`, lastDisconnect?.error || 'motivo desconhecido');
       
@@ -3629,7 +3744,9 @@ async function connectUserWhatsApp(userId) {
         if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
         instance.reconnectTimer = setTimeout(() => {
           instance.reconnectTimer = null;
-          connectUserWhatsApp(userId);
+          connectUserWhatsApp(userId).catch(err => {
+            console.error(`[${userId}] Falha na reconexao automatica:`, err.message || err);
+          });
         }, 5000);
       } else {
         console.log(`[${userId}] Desconectado permanentemente (Sessão encerrada pelo celular). Excluindo credenciais...`);
@@ -3651,7 +3768,9 @@ async function connectUserWhatsApp(userId) {
         if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
         instance.reconnectTimer = setTimeout(() => {
           instance.reconnectTimer = null;
-          connectUserWhatsApp(userId);
+          connectUserWhatsApp(userId).catch(err => {
+            console.error(`[${userId}] Falha ao reiniciar para novo QR Code:`, err.message || err);
+          });
         }, 3000);
       }
     } else if (connection === 'open') {
@@ -3721,7 +3840,7 @@ async function connectUserWhatsApp(userId) {
   sock.ev.on('groups.update', async ([event]) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     try {
-      if (sock && event.id && instance.groupMetadataCache) {
+      if (sock && event?.id && instance.groupMetadataCache) {
         const metadata = await sock.groupMetadata(event.id);
         instance.groupMetadataCache[event.id] = metadata;
         addGroupMetadataToCache(userId, instance, metadata, 'groups.update');
@@ -3740,6 +3859,8 @@ async function connectUserWhatsApp(userId) {
         const metadata = await sock.groupMetadata(event.id);
         instance.groupMetadataCache[event.id] = metadata;
         addGroupMetadataToCache(userId, instance, metadata, 'group-participants.update');
+        await persistContactsCacheNow(userId, instance);
+        resetUserSyncTimer(userId);
       }
     } catch (err) {
       console.warn(`[${userId}] Falha ao atualizar cache de grupo no group-participants.update:`, err.message);
@@ -3748,9 +3869,10 @@ async function connectUserWhatsApp(userId) {
 
   // Função auxiliar para processar e salvar um lote de mensagens
   async function processUserMessages(messagesList) {
+    if (instance.intentionalLogout) return;
     if (!messagesList || messagesList.length === 0) return;
 
-    // Retem apenas uma janela configuravel para evitar que o Render gratuito cresca sem limite.
+    // Retém apenas uma janela configurável para limitar disco, memória e tempo de sincronização.
     const retentionThreshold = Date.now() - (MESSAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
     const filteredList = messagesList.filter(msg => {
       if (!msg) return false;
@@ -3771,20 +3893,22 @@ async function connectUserWhatsApp(userId) {
 
     for (const msg of filteredList) {
       try {
-        if (!msg.key || !msg.key.remoteJid) continue;
+        if (!msg.key || (!msg.key.remoteJid && !msg.key.remoteJidAlt)) continue;
+
+        const route = await resolveIncomingMessageRoute(msg, instance);
+        const chatJid = cleanJid(route.chatJid);
         
-        const chatJid = cleanJid(msg.key.remoteJid);
-        
-        // Mantém chats privados (@s.whatsapp.net) e grupos (@g.us).
+        // Mantém chats privados (PN ou LID) e grupos.
         if (!isSupportedChatJid(chatJid)) continue;
 
-        const fromMe = msg.key.fromMe;
+        const fromMe = route.fromMe;
         const isGroup = isGroupJid(chatJid);
         
         // Determina o remetente individual e todos os aliases conhecidos (LID + telefone).
-        const rawParticipant = msg.key.participant || msg.participant || (isGroup && fromMe && instance.sock?.user?.id) || chatJid;
-        const participantJid = ensureUserJid(rawParticipant, /^\d{14,}$/.test(String(rawParticipant || '')) ? 'lid' : 's.whatsapp.net');
-        const directParticipantAliases = messageParticipantAliases(msg, participantJid);
+        const participantJid = route.participantJid || (fromMe
+          ? messageDomain.chooseCanonicalJid(messageDomain.ownerJidsFromInstance(instance))
+          : chatJid);
+        const directParticipantAliases = uniqueJids([participantJid, ...(route.participantAliases || [])]);
         const participantAliases = uniqueJids([
           ...directParticipantAliases,
           ...relatedAliasesFromCache(directParticipantAliases, instance.contactsCache)
@@ -3811,9 +3935,18 @@ async function connectUserWhatsApp(userId) {
           pushName = ownerDisplayName;
         }
 
-        const chatName = instance.contactsCache[chatJid] || (!isGroup && !fromMe ? pushName : '');
+        const chatAliases = uniqueJids([chatJid, ...(route.chatAliases || [])]);
+        const chatName = bestNameFromAliases(chatAliases, instance.contactsCache) || (!isGroup && !fromMe ? pushName : '');
         if (!isGroup && !fromMe && pushName) {
-          addContactToCache(userId, instance, chatJid, pushName, 'message.chat');
+          for (const alias of chatAliases) {
+            addContactToCache(userId, instance, alias, pushName, 'message.chat');
+          }
+        }
+
+        if (route.routingStatus === 'ambiguous-self') {
+          instance.ambiguousRoutingCount = (instance.ambiguousRoutingCount || 0) + 1;
+          instance.lastAmbiguousRoutingAt = new Date().toISOString();
+          console.warn(`[${userId}] Mensagem ${msg.key.id || 'sem-id'} com rota direta ambigua; preservada para reparo por ressincronizacao.`);
         }
 
         const mediaInfo = getMessageMediaInfo(msg);
@@ -3829,6 +3962,7 @@ async function connectUserWhatsApp(userId) {
           id: msg.key.id,
           sender: jidNumber(chatJid),
           chatJid,
+          chatAliases,
           chatName,
           participant: jidNumber(participantJid), // Identifica quem de fato enviou sem sufixo de dispositivo para compatibilidade retroativa
           participantJid,
@@ -3836,6 +3970,8 @@ async function connectUserWhatsApp(userId) {
           name: pushName,
           text: text,
           fromMe: fromMe,
+          routingStatus: route.routingStatus,
+          routingIssue: route.routingIssue,
           timestamp: timestamp.toISOString(),
           isForwarded: contextMetadata.isForwarded,
           quotedMessageId: contextMetadata.quotedMessageId,
@@ -3924,6 +4060,20 @@ async function connectUserWhatsApp(userId) {
     scheduleAuthStateSnapshot(userId, userAuthDir);
   });
 
+  sock.ev.on('messages.update', async (updates) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
+    const editedMessages = (updates || [])
+      .filter(item => item?.update?.message)
+      .map(item => ({
+        ...item.update,
+        key: { ...item.key, ...(item.update.key || {}) }
+      }));
+    if (editedMessages.length > 0) {
+      await processUserMessages(editedMessages);
+      scheduleAuthStateSnapshot(userId, userAuthDir);
+    }
+  });
+
   sock.ev.on('contacts.upsert', async (contacts) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     const changed = await processContactRecords(userId, instance, contacts, 'contacts.upsert');
@@ -3943,7 +4093,7 @@ async function connectUserWhatsApp(userId) {
   sock.ev.on('chats.phoneNumberShare', async ({ lid, jid }) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     if (!lid || !jid) return;
-    const changed = addContactRecordToCache(userId, instance, { id: lid, lid, jid }, 'chats.phoneNumberShare');
+    const changed = addContactRecordToCache(userId, instance, { id: lid, lid, jid, phoneNumber: jid }, 'chats.phoneNumberShare');
     if (changed) {
       await persistContactsCacheNow(userId, instance);
       resetUserSyncTimer(userId);
@@ -3989,7 +4139,7 @@ async function connectUserWhatsApp(userId) {
       for (const chat of historyChats) {
         if (addContactRecordToCache(userId, instance, chat, 'history.chats')) {
           changedChats++;
-          if (chat.id.endsWith('@g.us')) {
+          if (chat.id?.endsWith('@g.us')) {
             syncGroupNamesCount++;
           }
         }
@@ -4172,6 +4322,10 @@ function unwrapMessageContent(content) {
   while (current && typeof current === 'object' && !visited.has(current)) {
     visited.add(current);
 
+    if (current.deviceSentMessage?.message) {
+      current = current.deviceSentMessage.message;
+      continue;
+    }
     if (current.ephemeralMessage?.message) {
       current = current.ephemeralMessage.message;
       continue;
@@ -4237,14 +4391,27 @@ function saveUserMessagesBatch(userId, messageObjects) {
       console.error(`Erro ao ler mensagens de ${dateStr} do usuário ${userId}:`, e);
     }
 
-    const seen = new Set(messages.map(m => m.dedupeKey || createDedupeKey(m)));
+    const messageIndexes = new Map(messages.map((message, index) => [
+      messageDomain.messageIdentityKey(message),
+      index
+    ]));
     let changed = false;
 
     for (const messageObject of dateMessages) {
-      const dedupeKey = messageObject.dedupeKey || createDedupeKey(messageObject);
-      if (seen.has(dedupeKey)) continue;
-      messageObject.dedupeKey = dedupeKey;
-      seen.add(dedupeKey);
+      const identityKey = messageDomain.messageIdentityKey(messageObject);
+      const existingIndex = messageIndexes.get(identityKey);
+      if (existingIndex !== undefined) {
+        const mergedMessage = mergeMessages([messages[existingIndex]], [messageObject])[0];
+        if (JSON.stringify(messages[existingIndex]) !== JSON.stringify(mergedMessage)) {
+          messages[existingIndex] = mergedMessage;
+          savedMessages.push(mergedMessage);
+          changed = true;
+        }
+        continue;
+      }
+
+      messageObject.dedupeKey = createDedupeKey(messageObject);
+      messageIndexes.set(identityKey, messages.length);
       messages.push(messageObject);
       savedMessages.push(messageObject);
       changed = true;
@@ -4264,6 +4431,7 @@ function saveUserMessagesBatch(userId, messageObjects) {
 }
 
 async function persistMessagesToSupabase(userId, messages) {
+  if (instances[userId]?.intentionalLogout) return 0;
   if (!messages || messages.length === 0) return 0;
 
   const rows = messages.map(message => {
@@ -4274,6 +4442,7 @@ async function persistMessagesToSupabase(userId, messages) {
       message_id: normalized.id,
       chat_jid: normalized.chatJid,
       chat_number: normalized.sender,
+      chat_aliases: normalized.chatAliases || [],
       chat_name: normalized.chatName || null,
       participant_jid: normalized.participantJid,
       participant_number: normalized.participant,
@@ -4281,6 +4450,8 @@ async function persistMessagesToSupabase(userId, messages) {
       display_name: normalized.name || null,
       text: normalized.text,
       from_me: normalized.fromMe,
+      routing_status: normalized.routingStatus || 'legacy',
+      routing_issue: normalized.routingIssue || null,
       is_forwarded: normalized.isForwarded,
       quoted_message_id: normalized.quotedMessageId || null,
       quoted_message_sender: normalized.quotedMessageSender || null,
@@ -4289,6 +4460,18 @@ async function persistMessagesToSupabase(userId, messages) {
       message_date: messageDateStr(new Date(normalized.timestamp).getTime()),
       updated_at: new Date().toISOString()
     };
+  });
+
+  sock.ev.on('lid-mapping.update', async ({ lid, pn }) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
+    if (!lid || !pn) return;
+    cacheJidAliasPair(instance, [lid, pn]);
+    const name = bestNameFromAliases([lid, pn], instance.contactsCache);
+    if (name) {
+      addContactToCache(userId, instance, lid, name, 'lid-mapping.update', false);
+      addContactToCache(userId, instance, pn, name, 'lid-mapping.update', false);
+      await persistContactsCacheNow(userId, instance);
+    }
   });
 
   let persisted = 0;
@@ -4306,13 +4489,12 @@ async function persistMessagesToSupabase(userId, messages) {
       }
     );
     if (!response) {
-      const fallbackChunk = chunk.map(row => {
-        const fallbackRow = { ...row };
-        delete fallbackRow.is_forwarded;
-        delete fallbackRow.quoted_message_id;
-        delete fallbackRow.quoted_message_sender;
-        delete fallbackRow.quoted_message_text;
-        return fallbackRow;
+      const compatibleChunk = chunk.map(row => {
+        const compatibleRow = { ...row };
+        delete compatibleRow.chat_aliases;
+        delete compatibleRow.routing_status;
+        delete compatibleRow.routing_issue;
+        return compatibleRow;
       });
       response = await supabaseRest(
         'whatsapp_messages',
@@ -4323,11 +4505,39 @@ async function persistMessagesToSupabase(userId, messages) {
             'Content-Type': 'application/json',
             'Prefer': 'resolution=merge-dupes,return=minimal'
           },
-          body: JSON.stringify(fallbackChunk)
+          body: JSON.stringify(compatibleChunk)
         }
       );
       if (response) {
-        console.warn(`[${userId}] Mensagens persistidas no Supabase sem metadados de encaminhamento/resposta. Execute a migracao para habilitar as novas colunas.`);
+        console.warn(`[${userId}] Mensagens persistidas sem metadados de aliases/roteamento. Execute a migracao mais recente.`);
+      }
+    }
+    if (!response) {
+      const legacyChunk = chunk.map(row => {
+        const legacyRow = { ...row };
+        delete legacyRow.chat_aliases;
+        delete legacyRow.routing_status;
+        delete legacyRow.routing_issue;
+        delete legacyRow.is_forwarded;
+        delete legacyRow.quoted_message_id;
+        delete legacyRow.quoted_message_sender;
+        delete legacyRow.quoted_message_text;
+        return legacyRow;
+      });
+      response = await supabaseRest(
+        'whatsapp_messages',
+        '?on_conflict=user_id,dedupe_key',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-dupes,return=minimal'
+          },
+          body: JSON.stringify(legacyChunk)
+        }
+      );
+      if (response) {
+        console.warn(`[${userId}] Mensagens persistidas no modo legado. Execute todas as migracoes do WhatsApp.`);
       }
     }
     if (response) persisted += chunk.length;
@@ -4352,12 +4562,20 @@ async function persistMessagesToSupabase(userId, messages) {
 }
 
 async function loadMessagesFromSupabase(userId, dateStr) {
+  const fallbackPromise = loadStateBlobFromSupabase(userId, 'messages', dateStr);
   const baseSelect = 'dedupe_key,message_id,chat_jid,chat_number,chat_name,participant_jid,participant_number,participant_aliases,display_name,text,from_me,message_timestamp';
   const contextSelect = `${baseSelect},is_forwarded,quoted_message_id,quoted_message_sender,quoted_message_text`;
+  const routingSelect = `${contextSelect},chat_aliases,routing_status,routing_issue`;
   let response = await supabaseRest(
     'whatsapp_messages',
-    `?user_id=eq.${supabaseEq(userId)}&message_date=eq.${supabaseEq(dateStr)}&select=${contextSelect}&order=message_timestamp.asc&limit=20000`
+    `?user_id=eq.${supabaseEq(userId)}&message_date=eq.${supabaseEq(dateStr)}&select=${routingSelect}&order=message_timestamp.asc&limit=20000`
   );
+  if (!response) {
+    response = await supabaseRest(
+      'whatsapp_messages',
+      `?user_id=eq.${supabaseEq(userId)}&message_date=eq.${supabaseEq(dateStr)}&select=${contextSelect}&order=message_timestamp.asc&limit=20000`
+    );
+  }
   if (!response) {
     response = await supabaseRest(
       'whatsapp_messages',
@@ -4365,17 +4583,21 @@ async function loadMessagesFromSupabase(userId, dateStr) {
     );
   }
   if (!response) {
-    const fallbackMessages = await loadStateBlobFromSupabase(userId, 'messages', dateStr);
-    return Array.isArray(fallbackMessages) ? fallbackMessages.map(normalizeStoredMessage) : [];
+    const fallbackSnapshot = await fallbackPromise;
+    const fallbackMessages = Array.isArray(fallbackSnapshot) ? fallbackSnapshot.map(normalizeStoredMessage) : [];
+    return fallbackMessages;
   }
 
   try {
+    const fallbackSnapshot = await fallbackPromise;
+    const fallbackMessages = Array.isArray(fallbackSnapshot) ? fallbackSnapshot.map(normalizeStoredMessage) : [];
     const rows = await response.json();
-    return rows.map(row => normalizeStoredMessage({
+    const tableMessages = rows.map(row => normalizeStoredMessage({
       dedupe_key: row.dedupe_key,
       message_id: row.message_id,
       chat_jid: row.chat_jid,
       chat_number: row.chat_number,
+      chat_aliases: row.chat_aliases,
       chat_name: row.chat_name,
       participant_jid: row.participant_jid,
       participant_number: row.participant_number,
@@ -4383,18 +4605,32 @@ async function loadMessagesFromSupabase(userId, dateStr) {
       display_name: row.display_name,
       text: row.text,
       from_me: row.from_me,
+      routing_status: row.routing_status,
+      routing_issue: row.routing_issue,
       is_forwarded: row.is_forwarded,
       quoted_message_id: row.quoted_message_id,
       quoted_message_sender: row.quoted_message_sender,
       quoted_message_text: row.quoted_message_text,
       message_timestamp: row.message_timestamp
     }));
+    const mergedMessages = mergeMessages(fallbackMessages, tableMessages);
+    if (tableMessages.length < mergedMessages.length) {
+      const backfillKey = `${userId}:${dateStr}`;
+      if (!pendingMessageBackfills.has(backfillKey)) {
+        const backfillPromise = persistMessagesToSupabase(userId, mergedMessages)
+          .catch(err => console.warn(`[${userId}] Falha no backfill relacional de ${dateStr}:`, err.message || err))
+          .finally(() => pendingMessageBackfills.delete(backfillKey));
+        pendingMessageBackfills.set(backfillKey, backfillPromise);
+      }
+    }
+    return mergedMessages;
   } catch (err) {
     console.warn(`[${userId}] Falha ao carregar mensagens do Supabase:`, err.message || err);
   }
 
-  const fallbackMessages = await loadStateBlobFromSupabase(userId, 'messages', dateStr);
-  return Array.isArray(fallbackMessages) ? fallbackMessages.map(normalizeStoredMessage) : [];
+  const fallbackSnapshot = await fallbackPromise;
+  const fallbackMessages = Array.isArray(fallbackSnapshot) ? fallbackSnapshot.map(normalizeStoredMessage) : [];
+  return fallbackMessages;
 }
 
 // Higieniza o JID removendo IDs de dispositivos pareados para garantir compatibilidade no cache de contatos
@@ -4470,6 +4706,7 @@ async function getOrCreateInstance(userId) {
     interpretImagesSetting: false, // padrao desativado,
     messagesProcessedCount: 0,
     contactsCache: hydratedContactsCache,
+    jidAliasCache: {},
     groupMetadataCache: {}, // Cache de metadados dos grupos para otimização e evitar rate-limit do WhatsApp
     myPushName: storedOwnerName, // Nome de perfil do próprio usuário dono do WhatsApp
     myPushNameSource: storedOwnerName ? 'profile-hint' : 'fallback',
@@ -4480,12 +4717,15 @@ async function getOrCreateInstance(userId) {
     connectionGeneration: 0,
     forceHistorySync: false,
     requestAppStateResync: false,
+    intentionalLogout: false,
     lastIncomingBatchAt: null,
     lastIncomingBatchType: null,
     lastIncomingBatchCount: 0,
     lastStoredMessageAt: null,
     lastStoredMessageDate: null,
     lastStoredMessagesCount: 0,
+    ambiguousRoutingCount: 0,
+    lastAmbiguousRoutingAt: null,
     lastRecoveryAttemptAt: null,
     lastRecoveryMode: null,
     lastRecoveryRequestedDate: null,
@@ -4540,17 +4780,42 @@ async function getOrCreateInstance(userId) {
   }
   
   // Inicia o processo de conexão do Baileys assincronamente
-  connectUserWhatsApp(cleanUserId);
-  
-  // Pequena pausa para dar tempo ao socket de iniciar
-  await new Promise(resolve => setTimeout(resolve, 500));
+  connectUserWhatsApp(cleanUserId).catch(err => {
+    instanceState.connectionStatus = 'disconnected';
+    console.error(`[${cleanUserId}] Falha ao iniciar WhatsApp:`, err.message || err);
+  });
 
   return instanceState;
 }
 
-// Habilita o CORS para permitir requisições do frontend local (localhost)
+const configuredCorsOrigins = new Set(
+  String(process.env.WHATSAPP_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean)
+);
+
+function isAllowedCorsOrigin(origin) {
+  if (!origin) return true;
+  if (configuredCorsOrigins.has(origin)) return true;
+  try {
+    const url = new URL(origin);
+    return url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+// O app em produção usa o proxy do Next.js; CORS direto fica restrito ao desenvolvimento local.
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  if (!isAllowedCorsOrigin(origin)) {
+    return res.status(403).json({ error: 'Origem nao permitida.' });
+  }
+  if (origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  }
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-api-key, x-owner-name');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   if (req.method === 'OPTIONS') {
@@ -4698,13 +4963,17 @@ function listLocalMessageFiles(userId) {
     .sort();
 }
 
-function analyzeMessagesIntegrity(messages, contactsCache) {
+function analyzeMessagesIntegrity(messages, contactsCache, ownerJids = []) {
   const seen = new Set();
   let duplicateKeys = 0;
   let outOfOrder = 0;
   let missingChatNames = 0;
   let missingSenderNames = 0;
   let missingHumanSenderNames = 0;
+  let ambiguousRoutes = 0;
+  let invalidTimestamps = 0;
+  let unsupportedChatJids = 0;
+  let missingChatAliases = 0;
   let previousTime = 0;
 
   for (const raw of messages) {
@@ -4714,8 +4983,16 @@ function analyzeMessagesIntegrity(messages, contactsCache) {
     seen.add(key);
 
     const currentTime = new Date(message.timestamp).getTime();
-    if (previousTime && currentTime < previousTime) outOfOrder++;
-    previousTime = currentTime;
+    if (!Number.isFinite(currentTime)) {
+      invalidTimestamps++;
+    } else {
+      if (previousTime && currentTime < previousTime) outOfOrder++;
+      previousTime = currentTime;
+    }
+
+    if (!isSupportedChatJid(message.chatJid)) unsupportedChatJids++;
+    if (!message.chatAliases || message.chatAliases.length === 0) missingChatAliases++;
+    if (messageDomain.isAmbiguousOwnerMessage(message, ownerJids)) ambiguousRoutes++;
 
     const chatName = contactsCache[message.chatJid] || message.chatName;
     if (!chatName || looksLikeTechnicalName(chatName)) missingChatNames++;
@@ -4738,9 +5015,13 @@ function analyzeMessagesIntegrity(messages, contactsCache) {
     missingChatNames,
     missingSenderNames,
     missingHumanSenderNames,
+    ambiguousRoutes,
+    invalidTimestamps,
+    unsupportedChatJids,
+    missingChatAliases,
     firstTimestamp: messages[0]?.timestamp || null,
     lastTimestamp: messages[messages.length - 1]?.timestamp || null,
-    ok: duplicateKeys === 0 && outOfOrder === 0
+    ok: duplicateKeys === 0 && outOfOrder === 0 && ambiguousRoutes === 0 && invalidTimestamps === 0 && unsupportedChatJids === 0
   };
 }
 
@@ -4753,6 +5034,7 @@ async function buildDiagnostics(userId, dateStr) {
   );
 
   const dates = dateStr ? [dateStr] : listLocalMessageFiles(userId).slice(-7);
+  const ownerJids = instance ? messageDomain.ownerJidsFromInstance(instance) : [];
   const dateStats = [];
 
   for (const date of dates) {
@@ -4771,7 +5053,8 @@ async function buildDiagnostics(userId, dateStr) {
       localCount: localMessages.length,
       remoteCount: remoteMessages.length,
       mergedCount: mergedMessages.length,
-      integrity: analyzeMessagesIntegrity(mergedMessages, contacts)
+      persistenceDivergence: Math.abs(localMessages.length - remoteMessages.length),
+      integrity: analyzeMessagesIntegrity(mergedMessages, contacts, ownerJids)
     });
   }
 
@@ -4784,7 +5067,9 @@ async function buildDiagnostics(userId, dateStr) {
     retentionDays: MESSAGE_RETENTION_DAYS,
     persistence: {
       supabaseConfigured: !!getSupabaseConfig(),
-      disabledTables: Array.from(supabaseDisabledTables),
+      disabledTables: Array.from(supabaseDisabledTables.keys()),
+      tableRetryMs: SUPABASE_TABLE_RETRY_MS,
+      usingServiceRole: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
       fallbackSnapshots: true
     },
     dates: dateStats,
@@ -4814,7 +5099,10 @@ async function handleMaintenanceResync(req, res) {
 
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
   const mode = String(req.query.mode || 'soft');
-  const dateStr = req.query.date && /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date)) ? String(req.query.date) : null;
+  if (req.query.date && !messageDomain.isValidDate(req.query.date)) {
+    return res.status(400).json({ error: 'Data invalida. Use o formato YYYY-MM-DD.' });
+  }
+  const dateStr = messageDomain.isValidDate(req.query.date) ? String(req.query.date) : null;
   let clearedMessageFiles = 0;
   let clearedContacts = false;
   const forcedHistory = mode === 'force-history';
@@ -4867,7 +5155,10 @@ async function handleMaintenanceResync(req, res) {
     }
     resetUserSyncTimer(cleanUserId);
     saveContactsToFile(cleanUserId, contacts);
-    connectUserWhatsApp(cleanUserId);
+    connectUserWhatsApp(cleanUserId).catch(err => {
+      instance.connectionStatus = 'disconnected';
+      console.error(`[${cleanUserId}] Falha ao reiniciar durante ressincronizacao:`, err.message || err);
+    });
   }
 
   const waitResult = shouldWait && dateStr
@@ -5006,7 +5297,7 @@ app.get('/', checkAuth, async (req, res) => {
         <script>
           // Define a data de hoje no input de data por padrão
           const dateInput = document.getElementById('msgDate');
-          const today = new Date().toISOString().split('T')[0];
+          const today = messageDomain.dateInTimeZone();
           dateInput.value = today;
 
           // Elementos de Status de Sincronização
@@ -5414,6 +5705,8 @@ app.get('/status', checkAuth, async (req, res) => {
     lastStoredMessageAt: instance.lastStoredMessageAt || null,
     lastStoredMessageDate: instance.lastStoredMessageDate || null,
     lastStoredMessagesCount: instance.lastStoredMessagesCount || 0,
+    ambiguousRoutingCount: instance.ambiguousRoutingCount || 0,
+    lastAmbiguousRoutingAt: instance.lastAmbiguousRoutingAt || null,
     lastRecoveryAttemptAt: instance.lastRecoveryAttemptAt || null,
     lastRecoveryMode: instance.lastRecoveryMode || null,
     lastRecoveryRequestedDate: instance.lastRecoveryRequestedDate || null,
@@ -5424,7 +5717,9 @@ app.get('/status', checkAuth, async (req, res) => {
     retentionDays: MESSAGE_RETENTION_DAYS,
     persistence: {
       supabaseConfigured: !!getSupabaseConfig(),
-      disabledTables: Array.from(supabaseDisabledTables),
+      disabledTables: Array.from(supabaseDisabledTables.keys()),
+      tableRetryMs: SUPABASE_TABLE_RETRY_MS,
+      usingServiceRole: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
       fallbackSnapshots: true
     },
     audioTranscription: {
@@ -5479,12 +5774,20 @@ app.get('/status', checkAuth, async (req, res) => {
 app.post('/settings', checkAuth, async (req, res) => {
   const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const { transcribe_audio, interpret_images } = req.body;
+  if (transcribe_audio === undefined && interpret_images === undefined) {
+    return res.status(400).json({ error: 'Informe ao menos uma configuracao.' });
+  }
+  if (transcribe_audio !== undefined && typeof transcribe_audio !== 'boolean') {
+    return res.status(400).json({ error: 'transcribe_audio deve ser booleano.' });
+  }
+  if (interpret_images !== undefined && typeof interpret_images !== 'boolean') {
+    return res.status(400).json({ error: 'interpret_images deve ser booleano.' });
+  }
   const instance = await getOrCreateInstance(cleanUserId);
   if (!instance) {
     return res.status(400).json({ error: 'Instância não encontrada.' });
   }
-
-  const { transcribe_audio, interpret_images } = req.body;
   if (transcribe_audio !== undefined) instance.transcribeAudioSetting = !!transcribe_audio;
   if (interpret_images !== undefined) instance.interpretImagesSetting = !!interpret_images;
 
@@ -5570,7 +5873,7 @@ app.get('/diagnostics', checkAuth, async (req, res) => {
 
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
   const dateQuery = req.query.date;
-  const dateStr = dateQuery && /^\d{4}-\d{2}-\d{2}$/.test(String(dateQuery)) ? String(dateQuery) : undefined;
+  const dateStr = messageDomain.isValidDate(dateQuery) ? String(dateQuery) : undefined;
   const diagnostics = await buildDiagnostics(cleanUserId, dateStr);
   res.json(diagnostics);
 });
@@ -5748,9 +6051,12 @@ app.get('/messages', checkAuth, async (req, res) => {
 
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
   const dateQuery = req.query.date;
-  const dateStr = dateQuery && /^\d{4}-\d{2}-\d{2}$/.test(dateQuery)
-    ? dateQuery
-    : new Date().toISOString().split('T')[0];
+  if (dateQuery && !messageDomain.isValidDate(dateQuery)) {
+    return res.status(400).json({ error: 'Data invalida. Use o formato YYYY-MM-DD.' });
+  }
+  const dateStr = messageDomain.isValidDate(dateQuery)
+    ? String(dateQuery)
+    : messageDomain.dateInTimeZone();
 
   const userMsgDir = path.join(dataDir, 'messages', cleanUserId);
   const filePath = path.join(userMsgDir, `messages-${dateStr}.json`);
@@ -5758,13 +6064,14 @@ app.get('/messages', checkAuth, async (req, res) => {
   try {
     const { localMessages, remoteMessages, messages } = await loadMergedMessagesForDate(cleanUserId, dateStr);
     let activeInstance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
+    let contactsCache = mergeContactCaches(
+      loadContactsFromFile(cleanUserId),
+      await loadContactsFromSupabase(cleanUserId),
+      activeInstance ? (activeInstance.contactsCache || {}) : {}
+    );
     if (activeInstance) {
       applyOwnerNameHint(cleanUserId, activeInstance, readOwnerNameHint(req));
-      activeInstance.contactsCache = mergeContactCaches(
-        loadContactsFromFile(cleanUserId),
-        await loadContactsFromSupabase(cleanUserId),
-        activeInstance.contactsCache || {}
-      );
+      activeInstance.contactsCache = contactsCache;
       await ensureOwnerDisplayName(cleanUserId, activeInstance);
       await hydrateContactsFromStoredMessages(cleanUserId, activeInstance, messages, dateStr);
       if (activeInstance.connectionStatus === 'connected') {
@@ -5773,9 +6080,12 @@ app.get('/messages', checkAuth, async (req, res) => {
           await refreshGroupMetadataAliases(cleanUserId, activeInstance, groupJids);
         }
       }
+      contactsCache = mergeContactCaches(contactsCache, activeInstance.contactsCache || {});
     }
 
-    if (messages.length > 0 && (!fs.existsSync(filePath) || remoteMessages.length > localMessages.length)) {
+    const localSnapshot = mergeMessages(localMessages, []);
+    const mergedSnapshotChanged = JSON.stringify(localSnapshot) !== JSON.stringify(messages);
+    if (messages.length > 0 && (!fs.existsSync(filePath) || mergedSnapshotChanged)) {
       fs.mkdirSync(userMsgDir, { recursive: true });
       fs.writeFileSync(filePath, JSON.stringify(messages, null, JSON_INDENT), 'utf8');
     }
@@ -5789,18 +6099,15 @@ app.get('/messages', checkAuth, async (req, res) => {
     const ownName = activeInstance?.myPushName || 'Você';
 
     if (requestedFormat === 'json_grouped') {
-      const contactsCache = mergeContactCaches(
-        loadContactsFromFile(cleanUserId),
-        await loadContactsFromSupabase(cleanUserId),
-        activeInstance ? (activeInstance.contactsCache || {}) : {}
-      );
       const conversations = buildMessageConversations(messages, contactsCache, ownJid, ownLid, ownName);
       const formattedConversations = conversations.map(chat => {
         return {
           chatKey: chat.chatKey,
           chatJid: chat.chatJid,
+          chatAliases: chat.chatAliases,
           isGroup: chat.isGroup,
           displayName: chat.displayName,
+          routingWarning: chat.routingWarning || '',
           messages: chat.messages.map(m => {
             const senderName = resolveMessageSenderName(
               m,
@@ -5833,15 +6140,15 @@ app.get('/messages', checkAuth, async (req, res) => {
           })
         };
       });
-      return res.json({ date: dateStr, count: messages.length, conversations: formattedConversations });
+      return res.json({
+        date: dateStr,
+        count: messages.length,
+        unresolvedConversations: formattedConversations.filter(chat => chat.routingWarning).length,
+        conversations: formattedConversations
+      });
     }
 
     if (requestedFormat === 'text' || requestedFormat === 'markdown' || requestedFormat === 'md') {
-      const contactsCache = mergeContactCaches(
-        loadContactsFromFile(cleanUserId),
-        await loadContactsFromSupabase(cleanUserId),
-        activeInstance ? (activeInstance.contactsCache || {}) : {}
-      );
       const conversations = buildMessageConversations(messages, contactsCache, ownJid, ownLid, ownName);
 
       if (requestedFormat === 'markdown' || requestedFormat === 'md') {
@@ -5987,7 +6294,7 @@ app.get('/messages', checkAuth, async (req, res) => {
 });
 
 // Limpa todos os logs/snapshots de mensagens do usuário, localmente e no Supabase.
-app.get('/clear-logs', checkAuth, async (req, res) => {
+app.post('/clear-logs', checkAuth, async (req, res) => {
   const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
   if (!userId) {
     return res.status(400).send('Identificação de usuário necessária.');
@@ -6009,7 +6316,7 @@ app.get('/clear-logs', checkAuth, async (req, res) => {
 });
 
 // Desconecta a sessão do WhatsApp no servidor e zera as credenciais locais do usuário
-app.get('/logout', checkAuth, async (req, res) => {
+app.post('/logout', checkAuth, async (req, res) => {
   const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
   if (!userId) {
     return res.status(400).send('Identificação de usuário necessária.');
@@ -6022,6 +6329,11 @@ app.get('/logout', checkAuth, async (req, res) => {
     console.log(`Recebida solicitação de logout do WhatsApp para usuário: ${cleanUserId}...`);
     
     if (instance && instance.sock) {
+      instance.intentionalLogout = true;
+      if (instance.reconnectTimer) {
+        clearTimeout(instance.reconnectTimer);
+        instance.reconnectTimer = null;
+      }
       try {
         await instance.sock.logout();
       } catch (e) {
@@ -6069,13 +6381,7 @@ async function autoReconnectAllUsers() {
         if (userId.includes(':')) continue; // Ignora blobs de estado e arquivos
         
         console.log(`Reconectando sessão para usuário: ${userId}...`);
-        getOrCreateInstance(userId).then(instance => {
-          if (instance) {
-            connectUserWhatsApp(userId).catch(err => {
-              console.error(`Erro ao conectar WhatsApp para usuário ${userId} no boot:`, err.message || err);
-            });
-          }
-        }).catch(err => {
+        getOrCreateInstance(userId).catch(err => {
           console.error(`Erro ao criar instância para usuário ${userId} no boot:`, err.message || err);
         });
       }
@@ -6087,7 +6393,70 @@ async function autoReconnectAllUsers() {
   }
 }
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`WhatsApp Gateway ativo na porta ${port}`);
-  console.log(`Pasta de dados configurada em: ${dataDir}`);
-});
+async function startServer() {
+  await loadBaileys();
+  const server = await new Promise((resolve, reject) => {
+    const listeningServer = app.listen(port, '0.0.0.0', () => {
+      console.log(`WhatsApp Gateway ativo na porta ${listeningServer.address()?.port || port}`);
+      console.log(`Pasta de dados configurada em: ${dataDir}`);
+      resolve(listeningServer);
+    });
+    listeningServer.once('error', reject);
+  });
+  autoReconnectAllUsers().catch(err => {
+    console.error('Erro ao iniciar reconexao automatica:', err.message || err);
+  });
+  return server;
+}
+
+if (require.main === module) {
+  startServer().catch(err => {
+    console.error('Falha ao iniciar o WhatsApp Gateway:', err);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  app,
+  startServer,
+  __test: {
+    analyzeMessagesIntegrity,
+    buildMessageConversations,
+    chooseBetterMessageText,
+    cleanJid,
+    compareMessagesChronologically,
+    createDedupeKey,
+    escapeMarkdown,
+    extendQueueBackoff,
+    extensionFromMimeType,
+    extractTranscriptionText,
+    extractVisionResponseText,
+    formatImageInterpretationMessage,
+    formatDateLabel,
+    formatMessagesAsMarkdown,
+    formatMessagesAsText,
+    getMessageContextMetadata,
+    getMessageMediaInfo,
+    getMessageText,
+    getMessageTimestampMs,
+    inferChatJidFromMessage,
+    inferParticipantJidFromMessage,
+    isAllowedCorsOrigin,
+    isAudioTranscriptionText,
+    isImageInterpretationText,
+    isPermanentMediaError,
+    longTermRetryDelayMs,
+    mediaText,
+    mergeMessages,
+    mergeMediaStats,
+    normalizeBoolean,
+    normalizeDisplayName,
+    normalizeStoredMessage,
+    parseCookies,
+    parseRetryDelayMs,
+    queuePauseInMs,
+    retryDelayMsForError,
+    shouldPauseMediaQueueForError,
+    unwrapMessageContent
+  }
+};

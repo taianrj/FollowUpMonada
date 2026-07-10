@@ -6,101 +6,16 @@ import Sidebar from './Sidebar';
 import { useNotification } from '@/context/NotificationContext';
 import { createClient } from '@/lib/supabase/client';
 import { Client, Status, Profile, WhatsappSummary, WhatsappClientSummary } from '@/types';
+import {
+  conversationSectionsToChats,
+  filterWhatsappConversations,
+  formatWhatsappMessageTime,
+  isEmptyMessagesPayload,
+  isGroupedWhatsappResponse,
+  parseConversationDisplay,
+  type WhatsappConversation
+} from '@/lib/whatsapp/client';
 import './Dashboard.css'; // Reutiliza estilos globais de layout e botões
-
-type ConversationMessage = {
-  time: string;
-  sender: string;
-  text: string;
-};
-
-type ConversationSection = {
-  title: string;
-  meta?: string;
-  messages: ConversationMessage[];
-  notes: string[];
-};
-
-function unescapeConversationMarkdown(value: string) {
-  return value
-    .replace(/\\([\\`*_[\]{}()#+\-.!>])/g, '$1')
-    .replace(/`/g, '');
-}
-
-function parseConversationDisplay(text: string) {
-  const sections: ConversationSection[] = [];
-  let title = '';
-  let current: ConversationSection | null = null;
-
-  text.split(/\r?\n/).forEach((rawLine) => {
-    const line = rawLine.trim();
-    if (!line) return;
-
-    if (line.startsWith('# ')) {
-      title = unescapeConversationMarkdown(line.slice(2));
-      return;
-    }
-
-    if (line.startsWith('## ')) {
-      current = {
-        title: unescapeConversationMarkdown(line.slice(3)),
-        messages: [],
-        notes: []
-      };
-      sections.push(current);
-      return;
-    }
-
-    const legacyHeader = line.match(/^--- Conversa com: (.+?)(?: \((.*?)\))? ---$/);
-    if (legacyHeader) {
-      current = {
-        title: legacyHeader[1],
-        meta: legacyHeader[2],
-        messages: [],
-        notes: []
-      };
-      sections.push(current);
-      return;
-    }
-
-    if (line.startsWith('_Identificador:') && current) {
-      current.meta = unescapeConversationMarkdown(line.replace(/^_Identificador:\s*/, '').replace(/_$/, ''));
-      return;
-    }
-
-    const markdownMessage = line.match(/^- \*\*(.*?)\*\*([^\*]*?)\*\*(.*?)(?::\*\*|\*\*:) (.*)$/);
-    if (markdownMessage && current) {
-      current.messages.push({
-        time: unescapeConversationMarkdown(markdownMessage[1]),
-        sender: unescapeConversationMarkdown(markdownMessage[3]),
-        text: unescapeConversationMarkdown(markdownMessage[4])
-      });
-      return;
-    }
-
-    const legacyMessage = rawLine.match(/^\s*\[(.*?)\]\s+([^:]+):\s*(.*)$/);
-    if (legacyMessage && current) {
-      current.messages.push({
-        time: legacyMessage[1],
-        sender: legacyMessage[2],
-        text: legacyMessage[3]
-      });
-      return;
-    }
-
-    if (current) {
-      current.notes.push(unescapeConversationMarkdown(line));
-    }
-  });
-
-  const validSections = sections.filter((section) => {
-    const hasContent = section.messages.length > 0 || section.notes.length > 0;
-    const hasValidTitle = section.title && section.title.trim() !== '' && section.title !== 'undefined';
-    return hasContent && hasValidTitle;
-  });
-
-  return { title, sections: validSections };
-}
 
 function MessageBody({ text }: { text: string }) {
   if (!text.startsWith('[')) return <>{text}</>;
@@ -262,7 +177,7 @@ export default function WhatsappSummaryClient({
   const [qrStatus, setQrStatus] = useState<string>('waiting'); // 'waiting' | 'qrcode' | 'connected'
   const [isMessagesModalOpen, setIsMessagesModalOpen] = useState(false);
   const [modalMessagesText, setModalMessagesText] = useState<string>('');
-  const [chatConversations, setChatConversations] = useState<any[]>([]);
+  const [chatConversations, setChatConversations] = useState<WhatsappConversation[]>([]);
   const [selectedChatKey, setSelectedChatKey] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isLoadingModalMessages, setIsLoadingModalMessages] = useState(false);
@@ -313,9 +228,6 @@ export default function WhatsappSummaryClient({
   };
   const buildWhatsappServiceUrl = (path: string, params?: Record<string, string>) => {
     const searchParams = new URLSearchParams(params || {});
-    if (whatsappOwnerName) {
-      searchParams.set('ownerName', whatsappOwnerName);
-    }
     const query = searchParams.toString();
     return `/api/whatsapp-service/${path}${query ? `?${query}` : ''}`;
   };
@@ -327,6 +239,7 @@ export default function WhatsappSummaryClient({
   );
   const refreshWhatsappSync = async (date: string, mode: 'soft' | 'force-history') => {
     const response = await fetch(buildWhatsappServiceUrl('maintenance/resync', { date, mode }), {
+      method: 'POST',
       headers: whatsappHeaders
     });
     if (!response.ok) {
@@ -336,15 +249,7 @@ export default function WhatsappSummaryClient({
   const isEmptyMessagesResponse = async (response: Response, format: 'json_grouped' | 'text') => {
     if (!response.ok) return false;
     const responseText = await response.clone().text();
-    if (format === 'text') return responseText.trim().length === 0;
-    return (() => {
-      try {
-        const data = JSON.parse(responseText);
-        return !Array.isArray(data.conversations) || data.conversations.length === 0;
-      } catch {
-        return false;
-      }
-    })();
+    return isEmptyMessagesPayload(responseText, format);
   };
 
   const pollWhatsappMessages = async (
@@ -740,6 +645,7 @@ export default function WhatsappSummaryClient({
       setWhatsappSyncStatus('syncing');
 
       const response = await fetch(buildWhatsappServiceUrl('maintenance/resync', { date: summaryDate, mode }), {
+        method: 'POST',
         headers: whatsappHeaders
       });
 
@@ -825,7 +731,7 @@ export default function WhatsappSummaryClient({
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
           const data = await response.json();
-          if (data && Array.isArray(data.conversations)) {
+          if (isGroupedWhatsappResponse(data)) {
             setChatConversations(data.conversations);
             if (data.conversations.length > 0) {
               setSelectedChatKey(data.conversations[0].chatKey);
@@ -846,28 +752,7 @@ export default function WhatsappSummaryClient({
         
         if (trimmedText) {
           const parsed = parseConversationDisplay(trimmedText);
-          const conversations = parsed.sections.map((section, idx) => {
-            const chatKey = section.meta || section.title;
-            return {
-              chatKey: chatKey,
-              chatJid: section.meta ? `${section.meta}@s.whatsapp.net` : '',
-              isGroup: section.notes.length > 0 || section.title.includes('Grupo') || section.title.includes('+'),
-              displayName: section.title,
-              messages: section.messages.map((m, mIdx) => ({
-                id: `${chatKey}-${idx}-${mIdx}`,
-                sender: m.sender,
-                senderName: m.sender,
-                text: m.text,
-                fromMe: m.sender.toLowerCase() === 'você' || m.sender.toLowerCase() === 'voce',
-                timestamp: m.time,
-                isForwarded: false,
-                quotedMessageId: '',
-                quotedMessageSender: '',
-                quotedMessageSenderJid: '',
-                quotedMessageText: ''
-              }))
-            };
-          });
+          const conversations = conversationSectionsToChats(parsed.sections);
           setChatConversations(conversations);
           if (conversations.length > 0) {
             setSelectedChatKey(conversations[0].chatKey);
@@ -894,6 +779,7 @@ export default function WhatsappSummaryClient({
     
     try {
       const response = await fetch(buildWhatsappServiceUrl('logout'), {
+        method: 'POST',
         headers: whatsappHeaders
       });
       if (response.ok) {
@@ -2626,10 +2512,7 @@ export default function WhatsappSummaryClient({
                 </div>
               ) : (
                 (() => {
-                  const filteredChats = chatConversations.filter(chat => 
-                    chat.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                    chat.chatKey.includes(searchQuery)
-                  );
+                  const filteredChats = filterWhatsappConversations(chatConversations, searchQuery);
                   const activeChat = chatConversations.find(chat => chat.chatKey === selectedChatKey);
 
                   return (
@@ -2666,7 +2549,9 @@ export default function WhatsappSummaryClient({
                                 </div>
                                 <div className="chatListItemContent">
                                   <div className="chatListItemHeader">
-                                    <span className="chatListName" title={chat.displayName}>{chat.displayName}</span>
+                                    <span className="chatListName" title={chat.routingWarning || chat.displayName}>
+                                      {chat.routingWarning ? '⚠️ ' : ''}{chat.displayName}
+                                    </span>
                                     <span className="chatBadge">{chat.messages.length}</span>
                                   </div>
                                   <span className="chatListMeta">{chat.chatKey}</span>
@@ -2707,21 +2592,14 @@ export default function WhatsappSummaryClient({
                                 </div>
                               </div>
                             </div>
+                            {activeChat.routingWarning && (
+                              <div className="chatRoutingWarning" role="status">
+                                <strong>Identificação pendente.</strong> {activeChat.routingWarning}
+                              </div>
+                            )}
                             <div key={activeChat.chatKey} className="chatMessageList custom-scroll">
-                              {activeChat.messages.map((message: any) => {
-                                const formattedTime = (() => {
-                                  if (!message.timestamp) return '';
-                                  if (message.timestamp.includes('T')) {
-                                    try {
-                                      const date = new Date(message.timestamp);
-                                      return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-                                    } catch (e) {
-                                      return '';
-                                    }
-                                  }
-                                  const match = message.timestamp.match(/\d{2}:\d{2}/);
-                                  return match ? match[0] : message.timestamp;
-                                })();
+                              {activeChat.messages.map((message) => {
+                                const formattedTime = formatWhatsappMessageTime(message.timestamp);
 
                                 return (
                                   <div
@@ -3072,6 +2950,14 @@ export default function WhatsappSummaryClient({
         .chatAreaSubtitle {
           font-size: 0.72rem;
           color: var(--text-muted);
+        }
+        .chatRoutingWarning {
+          padding: 0.65rem 1.25rem;
+          border-bottom: 1px solid rgba(245, 158, 11, 0.28);
+          background: rgba(245, 158, 11, 0.1);
+          color: #fbbf24;
+          font-size: 0.76rem;
+          line-height: 1.4;
         }
         .chatMessageList {
           flex: 1;

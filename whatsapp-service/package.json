@@ -4,10 +4,11 @@
   "description": "Microsserviço leve para conexão do WhatsApp com o FollowUp Mônada",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.9",
+    "baileys": "7.0.0-rc13",
     "express": "^4.19.2",
     "pino": "^9.1.0",
     "qrcode": "^1.5.3",
