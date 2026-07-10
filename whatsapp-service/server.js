@@ -4855,21 +4855,19 @@ const REQUIRE_SERVICE_TOKEN = process.env.WHATSAPP_REQUIRE_SERVICE_TOKEN === 'tr
   || (process.env.NODE_ENV === 'production' && !ALLOW_LEGACY_UUID_AUTH);
 
 function checkAuth(req, res, next) {
-  const cookies = parseCookies(req.headers.cookie);
-
   if (REQUIRE_SERVICE_TOKEN && !SERVICE_TOKEN) {
     return denyAccess(req, res);
   }
 
-  // Permite ler do header, query string ou do cookie
-  const serviceToken = req.headers['x-service-token'] || req.query.service_token || cookies['whatsapp_service_token'];
+  // Permite ler estritamente do header ou da query string
+  const serviceToken = req.headers['x-service-token'] || req.query.service_token;
 
   if (SERVICE_TOKEN && serviceToken !== SERVICE_TOKEN) {
     return denyAccess(req, res);
   }
   
-  // Lê a chave de API do Header, da Query string, ou do Cookie persistente
-  const token = req.headers['x-api-key'] || req.query.key || cookies['whatsapp_api_key'];
+  // Lê a chave de API do Header ou da Query string
+  const token = req.headers['x-api-key'] || req.query.key;
   
   if (!token) {
     return denyAccess(req, res);
@@ -4881,24 +4879,6 @@ function checkAuth(req, res, next) {
   
   if (!isMasterKey && !isUuidKey) {
     return denyAccess(req, res);
-  }
-  
-  // Salva o token nos cookies para pings e navegação subsequente
-  res.cookie('whatsapp_api_key', token, {
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 dias
-    httpOnly: true,
-    secure: true,
-    sameSite: 'lax'
-  });
-
-  // Se o token de serviço veio via query string, salva ele também no cookie
-  if (req.query.service_token) {
-    res.cookie('whatsapp_service_token', req.query.service_token, {
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 dias
-      httpOnly: true,
-      secure: true,
-      sameSite: 'lax'
-    });
   }
   
   next();
@@ -5105,7 +5085,7 @@ function clearLocalMessageFiles(userId, dateStr) {
 }
 
 async function handleMaintenanceResync(req, res) {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   if (!userId) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
@@ -5194,13 +5174,14 @@ async function handleMaintenanceResync(req, res) {
 
 // Rota principal (Home/Dashboard simples) - protegida
 app.get('/', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   const instance = await getOrCreateInstance(userId);
   
   const connStatus = instance ? instance.connectionStatus : 'disconnected';
   const syncStatusVal = instance ? instance.syncStatus : 'pending';
   
-  const queryParam = userId ? `?key=${userId}` : '';
+  const serviceTokenVal = req.headers['x-service-token'] || req.query.service_token || '';
+  const queryParam = userId ? `?key=${userId}${serviceTokenVal ? `&service_token=${encodeURIComponent(serviceTokenVal)}` : ''}` : '';
   res.send(`
     <html>
       <head>
@@ -5491,7 +5472,7 @@ app.get('/', checkAuth, async (req, res) => {
             if (!confirm('Deseja realmente encerrar a sessão do WhatsApp? Você precisará ler um QR Code novamente para reconectar.')) return;
             
             try {
-              const response = await fetch('/logout');
+              const response = await fetch('/logout' + window.location.search);
               if (response.ok) {
                 alert('Sessão encerrada e logs limpos com sucesso!');
                 window.location.href = '/qr' + window.location.search;
@@ -5506,7 +5487,7 @@ app.get('/', checkAuth, async (req, res) => {
           // Função para atualizar barra de status de sincronização
           async function updateSyncStatus() {
             try {
-              const response = await fetch('/status');
+              const response = await fetch('/status' + window.location.search);
               if (!response.ok) return;
               const data = await response.json();
               
@@ -5575,7 +5556,7 @@ app.get('/', checkAuth, async (req, res) => {
             label.textContent = 'Mensagens do dia: ' + date.split('-').reverse().join('/');
 
             try {
-              const response = await fetch('/messages?date=' + date + '&format=' + format);
+              const response = await fetch('/messages' + window.location.search + '&date=' + date + '&format=' + format);
               
               if (!response.ok) {
                 if (response.status === 401) {
@@ -5619,7 +5600,7 @@ app.get('/', checkAuth, async (req, res) => {
               const key = urlParams.get('key') || '';
               const keyParam = key ? '?key=' + key : '';
 
-              const response = await fetch('/contacts' + keyParam);
+              const response = await fetch('/contacts' + window.location.search);
               if (!response.ok) {
                 if (response.status === 401) {
                   showRawOutput('Erro 401: Acesso Não Autorizado.');
@@ -5658,7 +5639,7 @@ app.get('/', checkAuth, async (req, res) => {
             label.textContent = 'Diagnóstico de Integridade:';
 
             try {
-              const response = await fetch('/diagnostics?date=' + date);
+              const response = await fetch('/diagnostics' + window.location.search + '&date=' + date);
               if (!response.ok) throw new Error('Erro do servidor: ' + response.status);
               const data = await response.json();
               showRawOutput(JSON.stringify(data, null, 2));
@@ -5677,7 +5658,7 @@ app.get('/', checkAuth, async (req, res) => {
             label.textContent = 'Ressincronização:';
 
             try {
-              const response = await fetch('/maintenance/resync?mode=soft&date=' + date);
+              const response = await fetch('/maintenance/resync' + window.location.search + '&mode=soft&date=' + date);
               if (!response.ok) throw new Error('Erro do servidor: ' + response.status);
               const data = await response.json();
               showRawOutput(JSON.stringify(data, null, 2));
@@ -5694,7 +5675,7 @@ app.get('/', checkAuth, async (req, res) => {
 
 // Retorna o status da conexão em JSON
 app.get('/status', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   const instance = await getOrCreateInstance(userId);
   if (!instance) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
@@ -5785,7 +5766,7 @@ app.get('/status', checkAuth, async (req, res) => {
 
 // Atualiza as configurações de processamento de mídia (áudio e imagem) do usuário em memória
 app.post('/settings', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
   const { transcribe_audio, interpret_images } = req.body;
   if (transcribe_audio === undefined && interpret_images === undefined) {
@@ -5815,7 +5796,7 @@ app.post('/settings', checkAuth, async (req, res) => {
 
 // Retorna a lista de contatos sincronizados em JSON
 app.get('/contacts', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   if (!userId) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
@@ -5841,7 +5822,7 @@ app.get('/contacts', checkAuth, async (req, res) => {
 
 // Busca diagnostica pontual no cache de contatos sem despejar a lista completa
 app.get('/diagnostics/contact-lookup', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   if (!userId) {
     return res.status(400).json({ error: 'Identificacao de usuario necessaria.' });
   }
@@ -5879,7 +5860,7 @@ app.get('/diagnostics/contact-lookup', checkAuth, async (req, res) => {
 
 // Diagnostico de integridade para dar confianca sobre ordem, duplicidade e nomes
 app.get('/diagnostics', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   if (!userId) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
@@ -5893,7 +5874,7 @@ app.get('/diagnostics', checkAuth, async (req, res) => {
 
 // Diagnostico pontual de aliases de participantes de um grupo
 app.get('/diagnostics/group-aliases', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   if (!userId) {
     return res.status(400).json({ error: 'Identificacao de usuario necessaria.' });
   }
@@ -5948,7 +5929,7 @@ app.post('/maintenance/resync', checkAuth, handleMaintenanceResync);
 
 // Retorna o QR Code em base64 ou status da conexão em JSON para modais
 app.get('/qr-code', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   const instance = await getOrCreateInstance(userId);
   if (!instance) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
@@ -5973,14 +5954,15 @@ app.get('/qr-code', checkAuth, async (req, res) => {
 
 // Renderiza a página web com o QR Code de autenticação
 app.get('/qr', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   const instance = await getOrCreateInstance(userId);
   if (!instance) {
     return res.status(400).send('Erro: Identificação do usuário inválida.');
   }
   applyOwnerNameHint(userId.replace(/[^a-zA-Z0-9-_]/g, ''), instance, readOwnerNameHint(req));
 
-  const keyParam = userId ? `?key=${userId}` : '';
+  const serviceTokenVal = req.headers['x-service-token'] || req.query.service_token || '';
+  const keyParam = userId ? `?key=${userId}${serviceTokenVal ? `&service_token=${encodeURIComponent(serviceTokenVal)}` : ''}` : '';
 
   if (instance.connectionStatus === 'connected') {
     return res.send(`
@@ -6057,7 +6039,7 @@ app.get('/qr', checkAuth, async (req, res) => {
 
 // Retorna as mensagens de um dia específico
 app.get('/messages', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   if (!userId) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
@@ -6308,7 +6290,7 @@ app.get('/messages', checkAuth, async (req, res) => {
 
 // Limpa todos os logs/snapshots de mensagens do usuário, localmente e no Supabase.
 app.post('/clear-logs', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   if (!userId) {
     return res.status(400).send('Identificação de usuário necessária.');
   }
@@ -6330,7 +6312,7 @@ app.post('/clear-logs', checkAuth, async (req, res) => {
 
 // Desconecta a sessão do WhatsApp no servidor e zera as credenciais locais do usuário
 app.post('/logout', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key || parseCookies(req.headers.cookie)['whatsapp_api_key'];
+  const userId = req.headers['x-api-key'] || req.query.key;
   if (!userId) {
     return res.status(400).send('Identificação de usuário necessária.');
   }
