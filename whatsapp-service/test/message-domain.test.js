@@ -35,6 +35,51 @@ test('extrai aliases PN/LID dos campos do Baileys 7', () => {
   ]);
 });
 
+test('identifica status do WhatsApp antes que o participante pareça uma conversa direta', () => {
+  const receivedStatus = {
+    key: {
+      remoteJid: 'status@broadcast',
+      participant: '30726296715288@lid',
+      participantAlt: '5521988888888@s.whatsapp.net',
+      fromMe: false
+    }
+  };
+  const sentStatus = {
+    key: {
+      remoteJid: 'status@broadcast',
+      remoteJidAlt: '5521983088576@s.whatsapp.net',
+      fromMe: true
+    }
+  };
+
+  assert.equal(domain.isStatusBroadcastMessage(receivedStatus), true);
+  assert.equal(domain.isStatusBroadcastMessage(sentStatus), true);
+  assert.equal(domain.isStatusBroadcastMessage({
+    key: { remoteJid: '12345@broadcast', participant: '5521988888888@s.whatsapp.net' }
+  }), false);
+  assert.equal(domain.isStatusBroadcastMessage({
+    key: { remoteJid: '5521988888888@s.whatsapp.net' }
+  }), false);
+
+  const route = domain.resolveMessageRoute(receivedStatus);
+  assert.equal(route.chatJid, 'status@broadcast');
+  assert.equal(route.routingStatus, 'ignored-status');
+  assert.equal(route.participantJid, '5521988888888@s.whatsapp.net');
+});
+
+test('reconhece status legado salvo como conversa pelo alias broadcast preservado', () => {
+  assert.equal(domain.isStoredStatusMessage({
+    chatJid: '5521988888888@s.whatsapp.net',
+    chatAliases: ['status@broadcast', '5521988888888@s.whatsapp.net'],
+    routingStatus: 'resolved'
+  }), true);
+  assert.equal(domain.isStoredStatusMessage({
+    chatJid: '5521988888888@s.whatsapp.net',
+    chatAliases: ['30726296715288@lid', '5521988888888@s.whatsapp.net'],
+    routingStatus: 'resolved'
+  }), false);
+});
+
 test('prioriza o interlocutor alternativo quando remoteJid aponta para o dono', () => {
   const route = domain.resolveMessageRoute({
     key: {
@@ -140,4 +185,3 @@ test('valida datas reais e calcula o dia em Sao Paulo', () => {
   assert.equal(domain.isValidDate('09/07/2026'), false);
   assert.equal(domain.dateInTimeZone('2026-07-10T02:30:00.000Z'), '2026-07-09');
 });
-

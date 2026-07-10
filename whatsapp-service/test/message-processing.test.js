@@ -83,6 +83,20 @@ test('nao mistura duas pessoas diferentes que possuem o mesmo nome', () => {
   assert.deepEqual(conversations.map(chat => chat.chatKey).sort(), ['111', '222']);
 });
 
+test('nao cria conversa para status legado salvo com alias status@broadcast', () => {
+  const conversations = service.buildMessageConversations([
+    stored({
+      id: 'STATUS-1',
+      chatAliases: ['status@broadcast', '5521972504651@s.whatsapp.net'],
+      text: '[Imagem] atualização de status'
+    }),
+    stored({ id: 'DIRECT-1', text: 'mensagem direta legítima' })
+  ], {});
+
+  assert.equal(conversations.length, 1);
+  assert.deepEqual(conversations[0].messages.map(message => message.id), ['DIRECT-1']);
+});
+
 test('quarentena a conversa corrompida de producao em vez de exibi-la como conversa propria', () => {
   const messages = [
     stored({

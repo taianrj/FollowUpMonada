@@ -3274,7 +3274,9 @@ function isValidConversationDisplayName(name) {
 }
 
 function buildMessageConversations(messages, contactsCache, ownerJid = '', ownerLid = '', ownerPushName = 'Você') {
-  const normalizedMessages = (messages || []).map(normalizeStoredMessage);
+  const normalizedMessages = (messages || [])
+    .map(normalizeStoredMessage)
+    .filter(message => !messageDomain.isStoredStatusMessage(message));
   const ownerJids = uniqueJids([
     ensureUserJid(String(ownerJid || ''), 's.whatsapp.net'),
     ensureUserJid(String(ownerLid || ''), 'lid')
@@ -3773,6 +3775,8 @@ async function connectUserWhatsApp(userId) {
     // O v7 mudou o comportamento deste filtro. Mantemos os tipos processáveis
     // oficiais e recusamos FULL, pois a aplicação retém somente a janela recente.
     shouldSyncHistoryMessage: ({ syncType }) => syncType !== proto.HistorySync.HistorySyncType.FULL,
+    // Status/Stories não são conversas e não devem entrar no pipeline.
+    shouldIgnoreJid: (jid) => messageDomain.isStatusBroadcastJid(jid),
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
     browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
@@ -3999,10 +4003,21 @@ async function connectUserWhatsApp(userId) {
 
     // Retém apenas uma janela configurável para limitar disco, memória e tempo de sincronização.
     const retentionThreshold = Date.now() - (MESSAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    let ignoredStatusCount = 0;
     const filteredList = messagesList.filter(msg => {
       if (!msg) return false;
+      if (messageDomain.isStatusBroadcastMessage(msg)) {
+        ignoredStatusCount++;
+        return false;
+      }
       return getMessageTimestampMs(msg) >= retentionThreshold;
     });
+
+    if (ignoredStatusCount > 0) {
+      instance.statusMessagesIgnored = (instance.statusMessagesIgnored || 0) + ignoredStatusCount;
+      instance.lastStatusMessageIgnoredAt = new Date().toISOString();
+      console.log(`[${userId}] ${ignoredStatusCount} atualização(ões) de status ignorada(s); nenhuma foi salva como conversa.`);
+    }
 
     if (filteredList.length === 0) return;
 
@@ -4908,6 +4923,8 @@ async function getOrCreateInstance(userId) {
     lastStoredMessageDate: null,
     lastStoredMessagesCount: 0,
     ambiguousRoutingCount: 0,
+    statusMessagesIgnored: 0,
+    lastStatusMessageIgnoredAt: null,
     lastAmbiguousRoutingAt: null,
     lastRecoveryAttemptAt: null,
     lastRecoveryMode: null,
@@ -5101,8 +5118,13 @@ function readLocalMessagesForDate(userId, dateStr) {
 }
 
 async function loadMergedMessagesForDate(userId, dateStr) {
-  const localMessages = readLocalMessagesForDate(userId, dateStr);
-  const remoteMessages = await loadMessagesFromSupabase(userId, dateStr);
+  // Versões anteriores podiam resolver status@broadcast pelo participante e
+  // salvá-lo com aparência de conversa direta. O alias original permaneceu no
+  // registro e permite ocultá-lo com segurança sem afetar mensagens diretas.
+  const localMessages = readLocalMessagesForDate(userId, dateStr)
+    .filter(message => !messageDomain.isStoredStatusMessage(message));
+  const remoteMessages = (await loadMessagesFromSupabase(userId, dateStr))
+    .filter(message => !messageDomain.isStoredStatusMessage(message));
   return {
     localMessages,
     remoteMessages,
@@ -5913,6 +5935,8 @@ app.get('/status', checkAuth, async (req, res) => {
     lastStoredMessagesCount: instance.lastStoredMessagesCount || 0,
     ambiguousRoutingCount: instance.ambiguousRoutingCount || 0,
     lastAmbiguousRoutingAt: instance.lastAmbiguousRoutingAt || null,
+    statusMessagesIgnored: instance.statusMessagesIgnored || 0,
+    lastStatusMessageIgnoredAt: instance.lastStatusMessageIgnoredAt || null,
     lastRecoveryAttemptAt: instance.lastRecoveryAttemptAt || null,
     lastRecoveryMode: instance.lastRecoveryMode || null,
     lastRecoveryRequestedDate: instance.lastRecoveryRequestedDate || null,

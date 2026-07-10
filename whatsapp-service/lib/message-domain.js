@@ -55,6 +55,33 @@ function isLidJid(jid) {
   return cleanJid(jid).endsWith('@lid');
 }
 
+function isStatusBroadcastJid(jid) {
+  return cleanJid(jid) === 'status@broadcast';
+}
+
+function isStatusBroadcastMessage(message) {
+  const key = message?.key || {};
+  return [
+    key.remoteJid,
+    key.remoteJidAlt,
+    message?.remoteJid,
+    message?.remoteJidAlt,
+    message?.message?.deviceSentMessage?.destinationJid,
+    message?.message?.senderKeyDistributionMessage?.groupId
+  ].some(isStatusBroadcastJid);
+}
+
+function isStoredStatusMessage(message) {
+  if (!message || typeof message !== 'object') return false;
+  if (message.routingStatus === 'ignored-status' || message.routing_status === 'ignored-status') return true;
+  return [
+    message.chatJid,
+    message.chat_jid,
+    ...(Array.isArray(message.chatAliases) ? message.chatAliases : []),
+    ...(Array.isArray(message.chat_aliases) ? message.chat_aliases : [])
+  ].some(isStatusBroadcastJid);
+}
+
 function isSupportedChatJid(jid) {
   return isGroupJid(jid) || isPnJid(jid) || isLidJid(jid);
 }
@@ -121,8 +148,25 @@ function resolveMessageRoute(message, options = {}) {
   const ownerJids = uniqueJids(options.ownerJids || []);
   const rawChatAliases = messageChatAliases(message);
   const chatAliases = uniqueJids([...rawChatAliases, ...(options.chatAliases || [])]);
-  const groupJid = chatAliases.find(isGroupJid);
   const fromMe = Boolean(message?.key?.fromMe ?? message?.fromMe);
+
+  if (isStatusBroadcastMessage(message)) {
+    const participantAliases = uniqueJids([
+      ...messageParticipantAliases(message),
+      ...(options.participantAliases || [])
+    ]);
+    return {
+      chatJid: 'status@broadcast',
+      chatAliases: ['status@broadcast'],
+      participantJid: chooseCanonicalJid(participantAliases),
+      participantAliases,
+      fromMe,
+      routingStatus: 'ignored-status',
+      routingIssue: 'Atualização de status do WhatsApp; não é uma conversa.'
+    };
+  }
+
+  const groupJid = chatAliases.find(isGroupJid);
 
   if (groupJid) {
     const rawParticipantAliases = messageParticipantAliases(message);
@@ -253,6 +297,9 @@ module.exports = {
   isLidJid,
   isOwnerJid,
   isPnJid,
+  isStatusBroadcastJid,
+  isStatusBroadcastMessage,
+  isStoredStatusMessage,
   isSupportedChatJid,
   isValidDate,
   jidNumber,
