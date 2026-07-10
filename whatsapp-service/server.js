@@ -5182,6 +5182,7 @@ app.get('/', checkAuth, async (req, res) => {
   
   const serviceTokenVal = req.headers['x-service-token'] || req.query.service_token || '';
   const queryParam = userId ? `?key=${userId}${serviceTokenVal ? `&service_token=${encodeURIComponent(serviceTokenVal)}` : ''}` : '';
+  const todayVal = messageDomain.dateInTimeZone();
   res.send(`
     <html>
       <head>
@@ -5291,7 +5292,7 @@ app.get('/', checkAuth, async (req, res) => {
         <script>
           // Define a data de hoje no input de data por padrão
           const dateInput = document.getElementById('msgDate');
-          const today = messageDomain.dateInTimeZone();
+          const today = '${todayVal}';
           dateInput.value = today;
 
           // Elementos de Status de Sincronização
