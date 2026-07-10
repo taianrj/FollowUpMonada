@@ -2073,12 +2073,12 @@ export default function WhatsappSummaryClient({
             backgroundColor: 'var(--bg-secondary)',
             borderRadius: 'var(--radius-lg)',
             border: '1px solid var(--border-color)',
-            padding: '2.25rem 2rem',
-            width: '450px',
-            maxWidth: '90%',
+            padding: '1.75rem 2rem',
+            width: '680px',
+            maxWidth: '95%',
             display: 'flex',
             flexDirection: 'column',
-            gap: '1.5rem',
+            gap: '1.25rem',
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4)',
             position: 'relative'
           }}>
@@ -2118,10 +2118,10 @@ export default function WhatsappSummaryClient({
                 ⚙️
               </div>
               <div style={{ textAlign: 'left' }}>
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
                   Configurações de Processamento
                 </h3>
-                <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '0.15rem 0 0 0' }}>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: '0.15rem 0 0 0' }}>
                   Ajuste o comportamento do WhatsApp
                 </p>
               </div>
@@ -2129,186 +2129,215 @@ export default function WhatsappSummaryClient({
 
             <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)' }}></div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', textAlign: 'left' }}>
-              {/* Opção Transcrever Áudio */}
-              <label style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '0.75rem',
-                cursor: 'pointer',
-                userSelect: 'none',
-                padding: '0.75rem',
-                borderRadius: 'var(--radius-md)',
-                backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                border: '1px solid rgba(255, 255, 255, 0.03)',
-                transition: 'background-color 0.2s'
-              }}
-              onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
-              onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.02)'}
-              >
-                <input
-                  type="checkbox"
-                  checked={transcribeAudioFlag}
-                  onChange={(e) => handleToggleSetting('transcribeAudio', e.target.checked)}
-                  style={{ width: '18px', height: '18px', accentColor: 'var(--accent-purple)', cursor: 'pointer', marginTop: '0.1rem' }}
-                />
-                <div>
-                  <span style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>
-                    Transcrever áudios automaticamente
-                  </span>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginTop: '0.15rem', lineHeight: 1.4 }}>
-                    Converte as mensagens de voz recebidas em texto para gerar os resumos.
-                  </span>
-                </div>
-              </label>
-
-              {/* Opção Interpretar Imagens */}
-              <label style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '0.75rem',
-                cursor: 'pointer',
-                userSelect: 'none',
-                padding: '0.75rem',
-                borderRadius: 'var(--radius-md)',
-                backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                border: '1px solid rgba(255, 255, 255, 0.03)',
-                transition: 'background-color 0.2s'
-              }}
-              onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
-              onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.02)'}
-              >
-                <input
-                  type="checkbox"
-                  checked={interpretImagesFlag}
-                  onChange={(e) => handleToggleSetting('interpretImages', e.target.checked)}
-                  style={{ width: '18px', height: '18px', accentColor: 'var(--accent-purple)', cursor: 'pointer', marginTop: '0.1rem' }}
-                />
-                <div>
-                  <span style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>
-                    Interpretar imagens e figurinhas
-                  </span>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginTop: '0.15rem', lineHeight: 1.4 }}>
-                    Usa visão computacional para descrever imagens e figurinhas enviadas pelos clientes.
-                  </span>
-                </div>
-              </label>
-            </div>
-
-            {/* Seção de Sincronização do WhatsApp */}
-            <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', margin: '0.5rem 0' }}></div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', textAlign: 'left' }}>
-              <div>
-                <h4 style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 0.25rem 0' }}>
-                  Sincronização de Mensagens
-                </h4>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.4 }}>
-                  Se você notar que faltam mensagens no dia, tente forçar a busca de mensagens do WhatsApp.
-                </p>
-              </div>
-
-              {/* Status Diagnóstico Rápido */}
+            {/* Layout de duas colunas */}
+            <div style={{
+              display: 'flex',
+              gap: '1.75rem',
+              flexWrap: 'wrap',
+              textAlign: 'left',
+              margin: '0.1rem 0'
+            }}>
+              {/* Coluna Esquerda: Configurações de Processamento */}
               <div style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.01)',
-                border: '1px solid var(--border-color)',
-                borderRadius: 'var(--radius-md)',
-                padding: '0.65rem 0.85rem',
+                flex: '1 1 270px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '0.4rem',
-                fontSize: '0.75rem',
-                color: 'var(--text-secondary)'
+                gap: '0.85rem'
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span>Status da Conexão:</span>
-                  <strong style={{ color: whatsappStatus === 'connected' ? '#10b981' : '#f59e0b' }}>
-                    {whatsappStatus === 'connected' ? 'Conectado' : whatsappStatus === 'connecting' ? 'Conectando...' : 'Desconectado'}
-                  </strong>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span>Sincronização:</span>
-                  <strong style={{ color: whatsappSyncStatus === 'completed' ? '#10b981' : '#f59e0b' }}>
-                    {whatsappSyncStatus === 'completed' ? 'Sincronizado' : 'Sincronizando...'}
-                  </strong>
-                </div>
-                {whatsappLastIncomingBatchAt && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed var(--border-color)', paddingTop: '0.4rem', marginTop: '0.1rem' }}>
-                    <span>Último lote recebido:</span>
-                    <span style={{ color: 'var(--text-primary)' }}>
-                      {new Date(whatsappLastIncomingBatchAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} ({whatsappLastIncomingBatchCount} msgs)
+                <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 0.15rem 0' }}>
+                  Processamento de Mídia
+                </h4>
+                
+                {/* Opção Transcrever Áudio */}
+                <label style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.65rem',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  padding: '0.65rem',
+                  borderRadius: 'var(--radius-md)',
+                  backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px solid rgba(255, 255, 255, 0.03)',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
+                onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.02)'}
+                >
+                  <input
+                    type="checkbox"
+                    checked={transcribeAudioFlag}
+                    onChange={(e) => handleToggleSetting('transcribeAudio', e.target.checked)}
+                    style={{ width: '16px', height: '16px', accentColor: 'var(--accent-purple)', cursor: 'pointer', marginTop: '0.1rem' }}
+                  />
+                  <div>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>
+                      Transcrever áudios
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'block', marginTop: '0.1rem', lineHeight: 1.35 }}>
+                      Converte mensagens de voz em texto para gerar os resumos.
                     </span>
                   </div>
-                )}
-                {whatsappLastStoredMessageAt && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>Última mensagem gravada:</span>
-                    <span style={{ color: 'var(--text-primary)' }}>
-                      {new Date(whatsappLastStoredMessageAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </label>
+
+                {/* Opção Interpretar Imagens */}
+                <label style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.65rem',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  padding: '0.65rem',
+                  borderRadius: 'var(--radius-md)',
+                  backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px solid rgba(255, 255, 255, 0.03)',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
+                onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.02)'}
+                >
+                  <input
+                    type="checkbox"
+                    checked={interpretImagesFlag}
+                    onChange={(e) => handleToggleSetting('interpretImages', e.target.checked)}
+                    style={{ width: '16px', height: '16px', accentColor: 'var(--accent-purple)', cursor: 'pointer', marginTop: '0.1rem' }}
+                  />
+                  <div>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>
+                      Interpretar imagens
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'block', marginTop: '0.1rem', lineHeight: 1.35 }}>
+                      Usa visão computacional para descrever imagens e figurinhas enviadas.
                     </span>
                   </div>
-                )}
+                </label>
               </div>
 
-              {/* Botões de Ação */}
-              <div style={{ display: 'flex', gap: '0.6rem', marginTop: '0.25rem' }}>
-                <button
-                  type="button"
-                  className="btn btnSecondary"
-                  disabled={whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing}
-                  onClick={() => handleManualResync('soft')}
-                  style={{
-                    flex: 1,
-                    padding: '0.5rem',
-                    fontSize: '0.78rem',
-                    fontWeight: 600,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.3rem',
-                    cursor: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 'not-allowed' : 'pointer',
-                    opacity: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 0.5 : 1
-                  }}
-                  title="Busca mensagens offline que o WhatsApp possa não ter entregue recentemente."
-                >
-                  {isResyncing === 'soft' ? '⌛ Buscando...' : '🔄 Sincronizar Recentes'}
-                </button>
-                
-                <button
-                  type="button"
-                  className="btn btnSecondary"
-                  disabled={whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing}
-                  onClick={() => handleManualResync('force-history')}
-                  style={{
-                    flex: 1,
-                    padding: '0.5rem',
-                    fontSize: '0.78rem',
-                    fontWeight: 600,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.3rem',
-                    border: '1px solid rgba(168, 85, 247, 0.3)',
-                    color: 'var(--accent-purple)',
-                    cursor: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 'not-allowed' : 'pointer',
-                    opacity: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 0.5 : 1
-                  }}
-                  title="Força a releitura completa do histórico de mensagens das últimas 48 horas a partir do celular."
-                >
-                  {isResyncing === 'force-history' ? '⌛ Lendo...' : '⚡ Forçar 48 Horas'}
-                </button>
+              {/* Coluna Direita: Sincronização do WhatsApp */}
+              <div style={{
+                flex: '1 1 290px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.75rem'
+              }}>
+                <div>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 0.15rem 0' }}>
+                    Sincronização de Mensagens
+                  </h4>
+                  <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.35 }}>
+                    Força a busca de mensagens do WhatsApp se houver dados offline ausentes.
+                  </p>
+                </div>
+
+                {/* Status Diagnóstico Rápido */}
+                <div style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.01)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '0.5rem 0.75rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.3rem',
+                  fontSize: '0.72rem',
+                  color: 'var(--text-secondary)'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Status da Conexão:</span>
+                    <strong style={{ color: whatsappStatus === 'connected' ? '#10b981' : '#f59e0b' }}>
+                      {whatsappStatus === 'connected' ? 'Conectado' : whatsappStatus === 'connecting' ? 'Conectando...' : 'Desconectado'}
+                    </strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Sincronização:</span>
+                    <strong style={{ color: whatsappSyncStatus === 'completed' ? '#10b981' : '#f59e0b' }}>
+                      {whatsappSyncStatus === 'completed' ? 'Sincronizado' : 'Sincronizando...'}
+                    </strong>
+                  </div>
+                  {whatsappLastIncomingBatchAt && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed var(--border-color)', paddingTop: '0.3rem', marginTop: '0.1rem' }}>
+                      <span>Último lote:</span>
+                      <span style={{ color: 'var(--text-primary)' }}>
+                        {new Date(whatsappLastIncomingBatchAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} ({whatsappLastIncomingBatchCount} msgs)
+                      </span>
+                    </div>
+                  )}
+                  {whatsappLastStoredMessageAt && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Última msg gravada:</span>
+                      <span style={{ color: 'var(--text-primary)' }}>
+                        {new Date(whatsappLastStoredMessageAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Botões de Ação */}
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button
+                    type="button"
+                    className="btn btnSecondary"
+                    disabled={whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing}
+                    onClick={() => handleManualResync('soft')}
+                    style={{
+                      flex: 1,
+                      padding: '0.45rem',
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.2rem',
+                      cursor: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 'not-allowed' : 'pointer',
+                      opacity: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 0.5 : 1
+                    }}
+                    title="Busca mensagens offline que o WhatsApp possa não ter entregue recentemente."
+                  >
+                    {isResyncing === 'soft' ? '⌛ Buscando...' : '🔄 Sincronizar'}
+                  </button>
+                  
+                  <button
+                    type="button"
+                    className="btn btnSecondary"
+                    disabled={whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing}
+                    onClick={() => handleManualResync('force-history')}
+                    style={{
+                      flex: 1,
+                      padding: '0.45rem',
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.2rem',
+                      border: '1px solid rgba(168, 85, 247, 0.3)',
+                      color: 'var(--accent-purple)',
+                      cursor: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 'not-allowed' : 'pointer',
+                      opacity: (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed' || !!isResyncing) ? 0.5 : 1
+                    }}
+                    title="Força a releitura completa do histórico de mensagens das últimas 48 horas a partir do celular."
+                  >
+                    {isResyncing === 'force-history' ? '⌛ Lendo...' : '⚡ Forçar 48h'}
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', marginTop: '0.5rem' }}></div>
+            <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', marginTop: '0.25rem' }}></div>
 
-            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '-0.25rem', marginBottom: '0.75rem' }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              width: '100%',
+              gap: '1rem',
+              flexWrap: 'wrap-reverse'
+            }}>
               <a
                 href="/api/whatsapp-service/redirect"
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
-                  fontSize: '0.8rem',
+                  fontSize: '0.78rem',
                   color: 'var(--accent-purple)',
                   textDecoration: 'none',
                   fontWeight: 600,
@@ -2316,7 +2345,7 @@ export default function WhatsappSummaryClient({
                   alignItems: 'center',
                   gap: '0.3rem',
                   transition: 'opacity 0.2s',
-                  padding: '0.25rem 0.5rem'
+                  padding: '0.25rem 0'
                 }}
                 onMouseOver={(e) => {
                   e.currentTarget.style.textDecoration = 'underline';
@@ -2329,27 +2358,28 @@ export default function WhatsappSummaryClient({
               >
                 🌐 Acessar serviço (avançado)
               </a>
-            </div>
 
-            <button
-              type="button"
-              className="btn btnPrimary"
-              onClick={() => setIsProcessingSettingsModalOpen(false)}
-              style={{
-                width: '100%',
-                padding: '0.75rem',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-                borderRadius: 'var(--radius-md)',
-                border: 'none',
-                background: 'linear-gradient(135deg, var(--accent-purple) 0%, #7e22ce 100%)',
-                color: 'white',
-                cursor: 'pointer',
-                boxShadow: '0 4px 6px -1px rgba(168, 85, 247, 0.2)'
-              }}
-            >
-              Confirmar
-            </button>
+              <button
+                type="button"
+                className="btn btnPrimary"
+                onClick={() => setIsProcessingSettingsModalOpen(false)}
+                style={{
+                  padding: '0.6rem 2.25rem',
+                  fontSize: '0.82rem',
+                  fontWeight: 600,
+                  borderRadius: 'var(--radius-md)',
+                  border: 'none',
+                  background: 'linear-gradient(135deg, var(--accent-purple) 0%, #7e22ce 100%)',
+                  color: 'white',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 6px -1px rgba(168, 85, 247, 0.2)',
+                  width: 'auto',
+                  minWidth: '120px'
+                }}
+              >
+                Confirmar
+              </button>
+            </div>
           </div>
         </div>
       )}
