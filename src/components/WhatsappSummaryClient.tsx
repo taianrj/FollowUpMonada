@@ -15,6 +15,11 @@ import {
   parseConversationDisplay,
   type WhatsappConversation
 } from '@/lib/whatsapp/client';
+import {
+  createWhatsappStatusHealth,
+  recordWhatsappStatusFailure,
+  recordWhatsappStatusSuccess
+} from '@/lib/whatsapp/status-health';
 import './Dashboard.css'; // Reutiliza estilos globais de layout e botões
 
 function MessageBody({ text }: { text: string }) {
@@ -213,13 +218,17 @@ export default function WhatsappSummaryClient({
   const isWhatsappBusy = isCheckingStatus || (isWhatsappConnectedPanelVisible && (whatsappStatus === 'connecting' || whatsappSyncStatus !== 'completed'));
   const whatsappInlineStatusLabel = whatsappStatus === 'connecting'
     ? 'Reconectando...'
-    : whatsappSyncStatus !== 'completed'
-      ? 'Sincronizando...'
-      : '';
+    : whatsappSyncStatus === 'stalled'
+      ? 'Sincronização pausada; aguardando o WhatsApp...'
+      : whatsappSyncStatus !== 'completed'
+        ? 'Sincronizando...'
+        : '';
   const whatsappStatusPanelClass = `whatsappStatusPanel${isWhatsappBusy ? ' whatsappStatusPanelActive' : ''}`;
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const hasShownSuccessToastRef = useRef(false);
+  const statusHealthRef = useRef(createWhatsappStatusHealth());
+  const statusRequestInFlightRef = useRef(false);
 
   const whatsappOwnerName = (profile?.name || profile?.email?.split('@')[0] || '').trim();
   const whatsappHeaders: Record<string, string> = {
@@ -535,16 +544,22 @@ export default function WhatsappSummaryClient({
 
   // Função auxiliar para testar conexão com o WhatsApp
   const checkConnectionStatus = async () => {
+    if (statusRequestInFlightRef.current) return;
+    statusRequestInFlightRef.current = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10_000);
     try {
       const response = await fetch(buildWhatsappServiceUrl('status'), {
-        headers: whatsappHeaders
+        headers: whatsappHeaders,
+        signal: controller.signal
       });
-      
+
       if (response.ok) {
         const data = await response.json();
+        statusHealthRef.current = recordWhatsappStatusSuccess(statusHealthRef.current);
         setIntegrationConnected(true);
         setWhatsappStatus(data.status);
-        setWhatsappSyncStatus(data.syncStatus || 'completed');
+        setWhatsappSyncStatus(data.syncStatus || 'pending');
         setWhatsappMessagesCount(data.messagesCount || 0);
         setWhatsappContactsCount(data.contactsCount || 0);
         setWhatsappLastIncomingBatchAt(data.lastIncomingBatchAt || null);
@@ -602,24 +617,35 @@ export default function WhatsappSummaryClient({
       }
     } catch (e) {
       handleStatusFailure();
+    } finally {
+      window.clearTimeout(timeout);
+      statusRequestInFlightRef.current = false;
     }
   };
 
   const handleStatusFailure = () => {
-    setIntegrationConnected(false);
-    setWhatsappStatus('disconnected');
-    setConnectedUser(null);
-    setWhatsappSyncStatus('completed');
-    setWhatsappMessagesCount(0);
-    setWhatsappContactsCount(0);
-    setTranscriptionRunning(false);
-    setTranscriptionQueueLength(0);
-    setTranscriptionCompleted(0);
-    setTranscriptionTotal(0);
-    setImageInterpretationRunning(false);
-    setImageInterpretationQueueLength(0);
-    setImageInterpretationCompleted(0);
-    setImageInterpretationTotal(0);
+    const health = recordWhatsappStatusFailure(statusHealthRef.current);
+    statusHealthRef.current = health.state;
+
+    // Uma falha HTTP isolada não representa logout do WhatsApp. Mantemos o
+    // último estado conhecido durante a janela de tolerância e só derrubamos a
+    // interface após falhas consecutivas e prolongadas.
+    if (health.shouldMarkDisconnected) {
+      setIntegrationConnected(false);
+      setWhatsappStatus('disconnected');
+      setConnectedUser(null);
+      setWhatsappSyncStatus('pending');
+      setWhatsappMessagesCount(0);
+      setWhatsappContactsCount(0);
+      setTranscriptionRunning(false);
+      setTranscriptionQueueLength(0);
+      setTranscriptionCompleted(0);
+      setTranscriptionTotal(0);
+      setImageInterpretationRunning(false);
+      setImageInterpretationQueueLength(0);
+      setImageInterpretationCompleted(0);
+      setImageInterpretationTotal(0);
+    }
     
     // Tenta carregar até 8 vezes (8 * 3s = 24 segundos) antes de dar timeout do spinner de inicialização
     setCheckAttempts(prev => {
@@ -1316,10 +1342,18 @@ export default function WhatsappSummaryClient({
               {/* Status de Sincronização e Mídias em Linha */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
                 {/* Mensagens Sincronizadas / Histórico */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-secondary)' }} title={whatsappSyncStatus === 'completed' ? "Histórico sincronizado" : "Sincronizando mensagens..."}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-secondary)' }} title={
+                  whatsappSyncStatus === 'completed'
+                    ? 'Histórico sincronizado por confirmação do WhatsApp'
+                    : whatsappSyncStatus === 'stalled'
+                      ? 'O WhatsApp pausou o envio do histórico antes de confirmar 100%'
+                      : 'Sincronizando mensagens...'
+                }>
                   <span>💬</span>
                   <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{whatsappMessagesCount}</span>
-                  {whatsappSyncStatus !== 'completed' ? (
+                  {whatsappSyncStatus === 'stalled' ? (
+                    <span style={{ color: '#f59e0b', fontSize: '0.75rem' }}>⏸</span>
+                  ) : whatsappSyncStatus !== 'completed' ? (
                     <span className="spinner" style={{ display: 'inline-block', width: '10px', height: '10px', border: '1.5px solid rgba(168, 85, 247, 0.1)', borderTop: '1.5px solid var(--accent-purple)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
                   ) : (
                     <span style={{ color: '#10b981', fontSize: '0.75rem' }}>✅</span>

@@ -203,6 +203,27 @@ test('interpreta respostas dos provedores de audio e visao', () => {
   assert.match(service.formatImageInterpretationMessage('[Figurinha]', 'um gato', 'gemini'), /um gato/);
 });
 
+test('preserva buffers protobuf da fila de midia no formato BufferJSON do Baileys 7', () => {
+  const payload = {
+    rawMessage: {
+      message: {
+        audioMessage: {
+          mediaKey: Buffer.from([1, 2, 3, 254]),
+          fileSha256: new Uint8Array([9, 8, 7])
+        }
+      }
+    }
+  };
+
+  const serialized = service.stringifyMediaState(payload);
+  const restored = service.parseMediaState(serialized);
+  assert.match(serialized, /"type":"Buffer","data":"/);
+  assert.equal(Buffer.isBuffer(restored.rawMessage.message.audioMessage.mediaKey), true);
+  assert.equal(Buffer.isBuffer(restored.rawMessage.message.audioMessage.fileSha256), true);
+  assert.deepEqual([...restored.rawMessage.message.audioMessage.mediaKey], [1, 2, 3, 254]);
+  assert.deepEqual([...restored.rawMessage.message.audioMessage.fileSha256], [9, 8, 7]);
+});
+
 test('aplica backoff de fila e distingue erros permanentes', () => {
   assert.equal(service.parseRetryDelayMs('retry after 12.5s'), 12500);
   assert.equal(service.shouldPauseMediaQueueForError('HTTP 429 rate limit'), true);
@@ -249,4 +270,3 @@ test('valida cookies e origens CORS', () => {
   assert.equal(service.isAllowedCorsOrigin('http://localhost:3000'), true);
   assert.equal(service.isAllowedCorsOrigin('https://evil.example'), false);
 });
-

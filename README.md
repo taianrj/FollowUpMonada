@@ -25,6 +25,9 @@ O ecossistema está implantado e integrado na nuvem nos seguintes endereços:
 - **Motor de Conexão**: `baileys@7.0.0-rc13` (Multi-device API do WhatsApp Web, com aliases PN/LID)
 - **Servidor HTTP**: Node.js + Express
 - **Persistência**: arquivos JSON no volume do Fly.io + Supabase (tabelas relacionais e blobs de contingência)
+- **Auth state do Baileys 7**: `useMultiFileAuthState` com suporte a `lid-mapping`, `device-list` e `tctoken`; o snapshot remoto é consolidado em um único bundle `gzip-base64` para não gerar uma chamada por chave.
+- **Conclusão do histórico**: somente o evento oficial `messaging-history.status` de `RECENT` com confirmação explícita de 100%, seguido do processamento do lote final, pode marcar a sincronização como concluída. Pausas inferidas permanecem visíveis como `stalled`.
+- **Mídia protobuf**: filas persistentes de áudio/imagem usam `BufferJSON` para preservar `Buffer`/`Uint8Array` exigidos pelo Baileys 7.
 
 ### Inteligência Artificial
 - **Extração Semântica**: API do Gemini (`gemini-2.5-flash`) e Groq API (`llama-3.3-70b-versatile`) como provedor de fallback.
@@ -41,7 +44,7 @@ O frontend Next.js não acessa o microsserviço de WhatsApp diretamente no clien
 
 ### 2. Endpoints do Microsserviço de WhatsApp (Permitidos no Proxy)
 
-* `GET /status`: Retorna o status de conexão (`connected`, `connecting`, `qrcode`, `disconnected`), contagem de contatos e mensagens da sessão atual, além de diagnósticos em tempo real do último lote de mensagens recebido do WhatsApp.
+* `GET /status`: Retorna o status de conexão (`connected`, `connecting`, `qrcode`, `disconnected`), o status do histórico (`pending`, `syncing`, `stalled`, `completed`), contagens e os sinais oficiais/progresso do Baileys usados para concluir a sincronização.
 * `GET /qr-code`: Retorna a imagem do QR Code em formato Base64 para pareamento quando o status é `qrcode`.
 * `GET /messages?date=YYYY-MM-DD&format=json_grouped`: Carrega e agrupa mensagens da data selecionada, organizadas em conversas individuais para exibição ou consumo da IA. Suporta formatos `json_grouped`, `text` e `markdown`.
 * `POST /settings`: Atualiza as preferências do usuário (ex: transcrever áudio automaticamente, interpretar imagens).

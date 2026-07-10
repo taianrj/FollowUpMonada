@@ -18,12 +18,43 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 const messageDomain = require('./lib/message-domain');
+const historySync = require('./lib/history-sync');
 let makeWASocket;
 let useMultiFileAuthState;
 let DisconnectReason;
 let fetchLatestBaileysVersion;
 let downloadMediaMessage;
 let ALL_WA_PATCH_NAMES;
+let BufferJSON;
+let proto;
+
+const bufferJsonFallback = {
+  replacer: (_key, value) => {
+    if (Buffer.isBuffer(value) || value instanceof Uint8Array || value?.type === 'Buffer') {
+      return { type: 'Buffer', data: Buffer.from(value?.data || value).toString('base64') };
+    }
+    return value;
+  },
+  reviver: (_key, value) => {
+    if (value && typeof value === 'object' && value.type === 'Buffer' && typeof value.data === 'string') {
+      return Buffer.from(value.data, 'base64');
+    }
+    return value;
+  }
+};
+
+function stringifyMediaState(payload, space) {
+  const codec = BufferJSON || bufferJsonFallback;
+  return JSON.stringify(payload, (key, value) => {
+    if (typeof value === 'bigint') return value.toString();
+    return codec.replacer(key, value);
+  }, space);
+}
+
+function parseMediaState(payload) {
+  const codec = BufferJSON || bufferJsonFallback;
+  return JSON.parse(payload, codec.reviver);
+}
 
 async function loadBaileys() {
   if (makeWASocket) return;
@@ -34,11 +65,14 @@ async function loadBaileys() {
   fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
   downloadMediaMessage = baileys.downloadMediaMessage;
   ALL_WA_PATCH_NAMES = baileys.ALL_WA_PATCH_NAMES;
+  BufferJSON = baileys.BufferJSON;
+  proto = baileys.proto;
 }
 const pino = require('pino');
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 let sharp = null;
 try {
   sharp = require('sharp');
@@ -357,7 +391,9 @@ async function clearAllUserData(userId) {
       `${dbSessionId}:media-processing:*`,
       `${cleanUserId}:media-processing:*`,
       `${dbSessionId}:auth-state:*`,
-      `${cleanUserId}:auth-state:*`
+      `${cleanUserId}:auth-state:*`,
+      `${dbSessionId}:auth-state-bundle:*`,
+      `${cleanUserId}:auth-state-bundle:*`
     ];
     for (const pattern of [...new Set(statePatterns)]) {
       try {
@@ -507,7 +543,7 @@ const SUPABASE_TIMEOUT_MS = Math.max(2000, parseInt(process.env.SUPABASE_TIMEOUT
 const SUPABASE_TABLE_RETRY_MS = Math.max(30000, parseInt(process.env.SUPABASE_TABLE_RETRY_MS || '300000', 10));
 const CONTACT_FLUSH_DELAY_MS = Math.max(250, parseInt(process.env.CONTACT_FLUSH_DELAY_MS || '1200', 10));
 const CONTACT_MESSAGE_HYDRATION_INTERVAL_MS = Math.max(60000, parseInt(process.env.CONTACT_MESSAGE_HYDRATION_INTERVAL_MS || '300000', 10));
-const SYNC_IDLE_COMPLETE_MS = Math.max(5000, parseInt(process.env.SYNC_IDLE_COMPLETE_MS || '90000', 10));
+const HISTORY_SYNC_SETTLE_MS = Math.max(500, parseInt(process.env.HISTORY_SYNC_SETTLE_MS || '3000', 10));
 const RESYNC_POLL_INTERVAL_MS = Math.max(1000, parseInt(process.env.RESYNC_POLL_INTERVAL_MS || '3000', 10));
 const RESYNC_WAIT_TIMEOUT_MS = Math.max(5000, parseInt(process.env.RESYNC_WAIT_TIMEOUT_MS || '30000', 10));
 const FORCE_HISTORY_WAIT_TIMEOUT_MS = Math.max(10000, parseInt(process.env.FORCE_HISTORY_WAIT_TIMEOUT_MS || '60000', 10));
@@ -610,6 +646,9 @@ function stateBlobId(userId, kind, key = 'default') {
 
 async function saveStateBlobToSupabase(userId, kind, key, payload) {
   const id = stateBlobId(userId, kind, key);
+  const serializedPayload = kind === 'media-processing'
+    ? stringifyMediaState(payload)
+    : JSON.stringify(payload);
   const response = await supabaseRest(
     'whatsapp_sessions',
     '?on_conflict=id',
@@ -621,7 +660,7 @@ async function saveStateBlobToSupabase(userId, kind, key, payload) {
       },
       body: JSON.stringify({
         id,
-        creds: JSON.stringify(payload),
+        creds: serializedPayload,
         updated_at: new Date().toISOString()
       })
     }
@@ -646,6 +685,9 @@ async function loadStateBlobFromSupabase(userId, kind, key = 'default') {
       const rows = await response.json();
       const raw = rows?.[0]?.creds;
       if (!raw) continue;
+      if (kind === 'media-processing') {
+        return parseMediaState(typeof raw === 'string' ? raw : JSON.stringify(raw));
+      }
       return typeof raw === 'string' ? JSON.parse(raw) : raw;
     } catch (err) {
       console.warn(`[${userId}] Falha ao carregar snapshot ${kind}/${key}:`, err.message || err);
@@ -754,19 +796,29 @@ function readAuthStateFiles(authStateDir) {
   return files;
 }
 
-async function deleteStateBlobFromSupabase(userId, kind, key) {
-  const ids = [...new Set([
-    stateBlobId(userId, kind, key),
-    `${userId}:${kind}:${key}`
-  ])];
+function buildAuthStateBundle(files) {
+  const safeFiles = (Array.isArray(files) ? files : []).filter(item =>
+    isSafeAuthStateFile(item?.file) && typeof item?.content === 'string'
+  );
+  const compressed = zlib.gzipSync(Buffer.from(JSON.stringify(safeFiles), 'utf8'));
+  return {
+    version: 1,
+    encoding: 'gzip-base64',
+    fileCount: safeFiles.length,
+    data: compressed.toString('base64'),
+    savedAt: new Date().toISOString()
+  };
+}
 
-  for (const id of ids) {
-    await supabaseRest(
-      'whatsapp_sessions',
-      `?id=eq.${supabaseEq(id)}`,
-      { method: 'DELETE' }
-    );
+function parseAuthStateBundle(payload) {
+  if (!payload || payload.version !== 1 || payload.encoding !== 'gzip-base64' || typeof payload.data !== 'string') {
+    return [];
   }
+  const decoded = zlib.gunzipSync(Buffer.from(payload.data, 'base64')).toString('utf8');
+  const files = JSON.parse(decoded);
+  return (Array.isArray(files) ? files : []).filter(item =>
+    isSafeAuthStateFile(item?.file) && typeof item?.content === 'string'
+  );
 }
 
 async function persistAuthStateSnapshot(userId, authStateDir) {
@@ -774,19 +826,28 @@ async function persistAuthStateSnapshot(userId, authStateDir) {
   const files = readAuthStateFiles(authStateDir);
   if (files.length === 0) return 0;
 
-  const localKeys = new Set(files.map(item => item.file));
-  for (const chunk of chunkArray(files, 20)) {
-    await Promise.all(chunk.map(item => saveStateBlobToSupabase(userId, 'auth-state', item.file, {
-      file: item.file,
-      content: item.content,
-      savedAt: new Date().toISOString()
-    })));
-  }
+  // O useMultiFileAuthState pode criar milhares de arquivos. Um blob
+  // comprimido evita uma chamada Supabase por chave durante o primeiro sync.
+  const bundleSaved = await saveStateBlobToSupabase(userId, 'auth-state-bundle', 'default', buildAuthStateBundle(files));
 
-  const remoteKeys = await listStateBlobKeysFromSupabase(userId, 'auth-state');
-  for (const key of remoteKeys) {
-    if (isSafeAuthStateFile(key) && !localKeys.has(key)) {
-      await deleteStateBlobFromSupabase(userId, 'auth-state', key);
+  // Este registro base permite descobrir a sessão no boot e também mantém
+  // compatibilidade com instalações anteriores.
+  const credsEntry = files.find(item => item.file === 'creds.json');
+  if (credsEntry) await saveCredsToSupabase(userId, JSON.parse(credsEntry.content));
+
+  // Depois de confirmar o bundle, remove em duas operações os antigos blobs
+  // por arquivo. Isso evita que o boot continue listando milhares de linhas.
+  if (bundleSaved) {
+    const legacyPatterns = [
+      `${getDbSessionId(userId)}:auth-state:*`,
+      `${userId}:auth-state:*`
+    ];
+    for (const pattern of [...new Set(legacyPatterns)]) {
+      await supabaseRest(
+        'whatsapp_sessions',
+        `?id=like.${supabaseEq(pattern)}`,
+        { method: 'DELETE' }
+      );
     }
   }
 
@@ -795,7 +856,7 @@ async function persistAuthStateSnapshot(userId, authStateDir) {
     instance.authStateFilesBackedUp = files.length;
     instance.lastAuthStateBackupAt = new Date().toISOString();
   }
-  console.log(`[${userId}] Snapshot de auth-state salvo no Supabase com ${files.length} arquivos.`);
+  console.log(`[${userId}] Snapshot de auth-state salvo em um blob comprimido com ${files.length} arquivos.`);
   return files.length;
 }
 
@@ -818,6 +879,36 @@ function scheduleAuthStateSnapshot(userId, authStateDir, delayMs = AUTH_STATE_PE
 }
 
 async function restoreAuthStateSnapshot(userId, authStateDir, { overwrite = false } = {}) {
+  const bundle = await loadStateBlobFromSupabase(userId, 'auth-state-bundle', 'default');
+  if (bundle) {
+    try {
+      const files = parseAuthStateBundle(bundle);
+      fs.mkdirSync(authStateDir, { recursive: true });
+      let restoredFromBundle = 0;
+
+      for (const item of files) {
+        const filePath = path.join(authStateDir, item.file);
+        if (!overwrite && fs.existsSync(filePath)) continue;
+        JSON.parse(item.content);
+        fs.writeFileSync(filePath, item.content, 'utf8');
+        restoredFromBundle++;
+      }
+
+      if (restoredFromBundle > 0) {
+        const instance = instances[userId];
+        if (instance) {
+          instance.authStateFilesRestored = restoredFromBundle;
+          instance.lastAuthStateRestoreAt = new Date().toISOString();
+        }
+        console.log(`[${userId}] Restaurados ${restoredFromBundle} arquivos do bundle de auth-state.`);
+      }
+      return restoredFromBundle;
+    } catch (err) {
+      console.warn(`[${userId}] Bundle de auth-state inválido; tentando formato legado:`, err.message || err);
+    }
+  }
+
+  // Compatibilidade de leitura com snapshots gravados antes do bundle v1.
   const keys = await listStateBlobKeysFromSupabase(userId, 'auth-state');
   if (keys.length === 0) return 0;
 
@@ -1207,7 +1298,7 @@ function loadLocalMediaProcessingState(userId) {
   const filePath = mediaStateFilePath(userId);
   try {
     if (!fs.existsSync(filePath)) return null;
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return parseMediaState(fs.readFileSync(filePath, 'utf8'));
   } catch (err) {
     console.warn(`[${userId}] Falha ao carregar estado local da fila de midia:`, err.message || err);
     return null;
@@ -1261,7 +1352,7 @@ function restoreMediaQueueItems(userId, kind, items) {
 function saveMediaProcessingStateLocally(userId, snapshot) {
   try {
     fs.mkdirSync(mediaStateDir, { recursive: true });
-    fs.writeFileSync(mediaStateFilePath(userId), JSON.stringify(snapshot, mediaStateJsonReplacer, JSON_INDENT), 'utf8');
+    fs.writeFileSync(mediaStateFilePath(userId), stringifyMediaState(snapshot, JSON_INDENT), 'utf8');
     return true;
   } catch (err) {
     console.warn(`[${userId}] Falha ao salvar estado local da fila de midia:`, err.message || err);
@@ -1269,14 +1360,9 @@ function saveMediaProcessingStateLocally(userId, snapshot) {
   }
 }
 
-function mediaStateJsonReplacer(key, value) {
-  if (typeof value === 'bigint') return value.toString();
-  return value;
-}
-
 function makeMediaStateJsonSafe(snapshot) {
   try {
-    return JSON.parse(JSON.stringify(snapshot, mediaStateJsonReplacer));
+    return parseMediaState(stringifyMediaState(snapshot));
   } catch (err) {
     console.warn('[media] Falha ao preparar snapshot da fila de midia:', err.message || err);
     return null;
@@ -1617,36 +1703,41 @@ function shouldQueueAudioTranscription(userId, messageObject, savedKeys) {
   return !storedMessage || !isAudioTranscriptionText(storedMessage.text);
 }
 
-function queueAudioTranscription(item) {
-  if (!getAudioTranscriptionConfig()) return;
+function queueAudioTranscriptions(items) {
+  if (!getAudioTranscriptionConfig()) return 0;
+  const affectedUsers = new Set();
+  let added = 0;
 
-  const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
-  const processingKey = mediaProcessingKey(item.userId, dedupeKey);
-  if (!dedupeKey || queuedAudioTranscriptionKeys.has(processingKey)) return;
-  if (failedAudioTranscriptionKeys.has(processingKey)) return;
+  for (const item of Array.isArray(items) ? items : []) {
+    const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
+    const processingKey = mediaProcessingKey(item?.userId, dedupeKey);
+    if (!dedupeKey || queuedAudioTranscriptionKeys.has(processingKey)) continue;
+    if (failedAudioTranscriptionKeys.has(processingKey)) continue;
 
-  if (audioTranscriptionQueue.length >= AUDIO_TRANSCRIPTION_QUEUE_MAX) {
-    console.warn(`[${item.userId}] Fila de transcricao de audio acima do limite configurado; audio ${dedupeKey} sera mantido na fila persistente.`);
+    if (audioTranscriptionQueue.length >= AUDIO_TRANSCRIPTION_QUEUE_MAX) {
+      console.warn(`[${item.userId}] Fila de transcricao de audio acima do limite configurado; audio ${dedupeKey} sera mantido na fila persistente.`);
+    }
+
+    const userId = item.userId;
+    const instance = instances[userId];
+    if (instance) instance.transcriptionTotal = (instance.transcriptionTotal || 0) + 1;
+
+    queuedAudioTranscriptionKeys.add(processingKey);
+    audioTranscriptionQueue.push({
+      ...item,
+      dedupeKey,
+      attempt: item.attempt || 1,
+      availableAt: item.availableAt || 0,
+      longTerm: !!item.longTerm,
+      longTermAttempts: item.longTermAttempts || 0
+    });
+    affectedUsers.add(userId);
+    added++;
   }
 
-  // Incrementa estatísticas da instância correspondente
-  const userId = item.userId;
-  const instance = instances[userId];
-  if (instance) {
-    instance.transcriptionTotal = (instance.transcriptionTotal || 0) + 1;
-  }
-
-  queuedAudioTranscriptionKeys.add(processingKey);
-  audioTranscriptionQueue.push({
-    ...item,
-    dedupeKey,
-    attempt: item.attempt || 1,
-    availableAt: item.availableAt || 0,
-    longTerm: !!item.longTerm,
-    longTermAttempts: item.longTermAttempts || 0
-  });
-  scheduleMediaProcessingStateSave(userId);
-  runAudioTranscriptionQueue();
+  for (const userId of affectedUsers) scheduleMediaProcessingStateSave(userId);
+  if (added > 0) runAudioTranscriptionQueue();
+  return added;
 }
 
 async function runAudioTranscriptionQueue() {
@@ -1775,7 +1866,7 @@ async function transcribeQueuedAudio(item) {
   const updateMediaMessage = item.instance?.sock?.updateMediaMessage;
   const downloadContext = typeof updateMediaMessage === 'function'
     ? { logger, reuploadRequest: updateMediaMessage.bind(item.instance.sock) }
-    : { logger };
+    : undefined;
   const buffer = await downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext);
   if (!buffer || buffer.length === 0) {
     throw new Error('Download do audio retornou vazio.');
@@ -2096,35 +2187,41 @@ function shouldQueueImageInterpretation(userId, messageObject, savedKeys) {
   return !storedMessage || !isImageInterpretationText(storedMessage.text);
 }
 
-function queueImageInterpretation(item) {
-  if (!getImageInterpretationConfig()) return;
+function queueImageInterpretations(items) {
+  if (!getImageInterpretationConfig()) return 0;
+  const affectedUsers = new Set();
+  let added = 0;
 
-  const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
-  const processingKey = mediaProcessingKey(item.userId, dedupeKey);
-  if (!dedupeKey || queuedImageInterpretationKeys.has(processingKey)) return;
-  if (failedImageInterpretationKeys.has(processingKey)) return;
+  for (const item of Array.isArray(items) ? items : []) {
+    const dedupeKey = item?.messageObject?.dedupeKey || createDedupeKey(item?.messageObject || {});
+    const processingKey = mediaProcessingKey(item?.userId, dedupeKey);
+    if (!dedupeKey || queuedImageInterpretationKeys.has(processingKey)) continue;
+    if (failedImageInterpretationKeys.has(processingKey)) continue;
 
-  if (imageInterpretationQueue.length >= IMAGE_INTERPRETATION_QUEUE_MAX) {
-    console.warn(`[${item.userId}] Fila de interpretacao visual acima do limite configurado; midia ${dedupeKey} sera mantida na fila persistente.`);
+    if (imageInterpretationQueue.length >= IMAGE_INTERPRETATION_QUEUE_MAX) {
+      console.warn(`[${item.userId}] Fila de interpretacao visual acima do limite configurado; midia ${dedupeKey} sera mantida na fila persistente.`);
+    }
+
+    const userId = item.userId;
+    const instance = instances[userId];
+    if (instance) instance.imageInterpretationTotal = (instance.imageInterpretationTotal || 0) + 1;
+
+    queuedImageInterpretationKeys.add(processingKey);
+    imageInterpretationQueue.push({
+      ...item,
+      dedupeKey,
+      attempt: item.attempt || 1,
+      availableAt: item.availableAt || 0,
+      longTerm: !!item.longTerm,
+      longTermAttempts: item.longTermAttempts || 0
+    });
+    affectedUsers.add(userId);
+    added++;
   }
 
-  const userId = item.userId;
-  const instance = instances[userId];
-  if (instance) {
-    instance.imageInterpretationTotal = (instance.imageInterpretationTotal || 0) + 1;
-  }
-
-  queuedImageInterpretationKeys.add(processingKey);
-  imageInterpretationQueue.push({
-    ...item,
-    dedupeKey,
-    attempt: item.attempt || 1,
-    availableAt: item.availableAt || 0,
-    longTerm: !!item.longTerm,
-    longTermAttempts: item.longTermAttempts || 0
-  });
-  scheduleMediaProcessingStateSave(userId);
-  runImageInterpretationQueue();
+  for (const userId of affectedUsers) scheduleMediaProcessingStateSave(userId);
+  if (added > 0) runImageInterpretationQueue();
+  return added;
 }
 
 async function runImageInterpretationQueue() {
@@ -2269,7 +2366,7 @@ async function interpretQueuedImage(item) {
   const updateMediaMessage = item.instance?.sock?.updateMediaMessage;
   const downloadContext = typeof updateMediaMessage === 'function'
     ? { logger, reuploadRequest: updateMediaMessage.bind(item.instance.sock) }
-    : { logger };
+    : undefined;
   const buffer = await downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext);
   if (!buffer || buffer.length === 0) {
     throw new Error('Download da imagem retornou vazio.');
@@ -2513,6 +2610,10 @@ function cacheJidAliasPair(instance, aliases) {
   if (!pn || !lid) return;
   instance.jidAliasCache[pn] = lid;
   instance.jidAliasCache[lid] = pn;
+  if (instance.jidAliasMissCache) {
+    delete instance.jidAliasMissCache[pn];
+    delete instance.jidAliasMissCache[lid];
+  }
 }
 
 async function expandJidAliases(aliasJids, instance) {
@@ -2523,12 +2624,15 @@ async function expandJidAliases(aliasJids, instance) {
     const cached = instance?.jidAliasCache?.[jid];
     if (cached) expanded.push(cached);
 
-    if (jid.endsWith('@lid') && instance?.sock?.signalRepository?.lidMapping?.getPNForLID) {
+    if (jid.endsWith('@lid') && !instance?.jidAliasMissCache?.[jid] && instance?.sock?.signalRepository?.lidMapping?.getPNForLID) {
       try {
         const pn = await instance.sock.signalRepository.lidMapping.getPNForLID(jid);
         if (pn) {
           expanded.push(pn);
           cacheJidAliasPair(instance, [jid, pn]);
+        } else if (instance) {
+          if (!instance.jidAliasMissCache) instance.jidAliasMissCache = {};
+          instance.jidAliasMissCache[jid] = true;
         }
       } catch (err) {
         console.warn(`[jid-mapping] Falha ao resolver ${jid}:`, err.message || err);
@@ -2539,8 +2643,8 @@ async function expandJidAliases(aliasJids, instance) {
   return uniqueJids(expanded);
 }
 
-async function resolveIncomingMessageRoute(msg, instance) {
-  const ownerJids = await expandJidAliases(messageDomain.ownerJidsFromInstance(instance), instance);
+async function resolveIncomingMessageRoute(msg, instance, knownOwnerJids) {
+  const ownerJids = knownOwnerJids || await expandJidAliases(messageDomain.ownerJidsFromInstance(instance), instance);
   const [chatAliases, participantAliases] = await Promise.all([
     expandJidAliases(messageDomain.messageChatAliases(msg), instance),
     expandJidAliases(messageDomain.messageParticipantAliases(msg), instance)
@@ -3392,7 +3496,7 @@ function addContactToCache(userId, instance, id, name, source = 'sync', updateFi
   return true;
 }
 
-function addContactRecordToCache(userId, instance, contact, source = 'sync') {
+function addContactRecordToCache(userId, instance, contact, source = 'sync', updateFiles = true) {
   if (!contact || !instance) return false;
   const baseAliases = contactAliasJids(contact);
   cacheJidAliasPair(instance, baseAliases);
@@ -3416,16 +3520,16 @@ function addContactRecordToCache(userId, instance, contact, source = 'sync') {
 
   let changed = false;
   for (const alias of aliases) {
-    changed = addContactToCache(userId, instance, alias, name, source) || changed;
+    changed = addContactToCache(userId, instance, alias, name, source, updateFiles) || changed;
   }
   return changed;
 }
 
-function addGroupMetadataToCache(userId, instance, metadata, source = 'groupMetadata') {
+function addGroupMetadataToCache(userId, instance, metadata, source = 'groupMetadata', updateFiles = true) {
   if (!metadata || !instance) return false;
-  let changed = addContactToCache(userId, instance, metadata.id, metadata.subject, source);
+  let changed = addContactToCache(userId, instance, metadata.id, metadata.subject, source, updateFiles);
   for (const participant of metadata.participants || []) {
-    changed = addContactRecordToCache(userId, instance, participant, `${source}.participant`) || changed;
+    changed = addContactRecordToCache(userId, instance, participant, `${source}.participant`, updateFiles) || changed;
   }
   return changed;
 }
@@ -3436,11 +3540,11 @@ async function persistContactsCacheNow(userId, instance) {
   saveContactsToFile(userId, instance.contactsCache || {});
 }
 
-async function processContactRecords(userId, instance, contacts, source = 'contacts.update') {
+async function processContactRecords(userId, instance, contacts, source = 'contacts.update', { updateFiles = true } = {}) {
   if (!instance || !Array.isArray(contacts) || contacts.length === 0) return 0;
   let changed = 0;
   for (const contact of contacts) {
-    if (addContactRecordToCache(userId, instance, contact, source)) {
+    if (addContactRecordToCache(userId, instance, contact, source, updateFiles)) {
       changed++;
     }
   }
@@ -3625,6 +3729,7 @@ async function connectUserWhatsApp(userId) {
   }
 
   const { state, saveCreds } = await useMultiFileAuthState(userAuthDir);
+  const expectsHistorySync = instance.forceHistorySync || Number(state.creds.accountSyncCounter || 0) === 0;
   if (state?.creds?.me) {
     instance.myJid = jidNumber(state.creds.me.id || '');
     instance.myLid = jidNumber(state.creds.me.lid || '');
@@ -3665,6 +3770,9 @@ async function connectUserWhatsApp(userId) {
     auth: state,
     version,
     syncFullHistory: true, // Força a sincronização do histórico inicial recente
+    // O v7 mudou o comportamento deste filtro. Mantemos os tipos processáveis
+    // oficiais e recusamos FULL, pois a aplicação retém somente a janela recente.
+    shouldSyncHistoryMessage: ({ syncType }) => syncType !== proto.HistorySync.HistorySyncType.FULL,
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
     browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
@@ -3698,14 +3806,6 @@ async function connectUserWhatsApp(userId) {
   // Salva as credenciais a cada alteração de autenticação e faz backup no Supabase
   sock.ev.on('creds.update', async () => {
     await saveCreds();
-    try {
-      if (fs.existsSync(credsFilePath)) {
-        const credsData = JSON.parse(fs.readFileSync(credsFilePath, 'utf8'));
-        await saveCredsToSupabase(userId, credsData);
-      }
-    } catch (err) {
-      console.error(`[${userId}] Erro ao fazer backup do creds.json para o Supabase:`, err);
-    }
     scheduleAuthStateSnapshot(userId, userAuthDir);
   });
 
@@ -3713,8 +3813,11 @@ async function connectUserWhatsApp(userId) {
   sock.ev.on('connection.update', async (update) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     const { connection, lastDisconnect, qr, receivedPendingNotifications } = update;
+    instance.lastConnectionEventAt = new Date().toISOString();
+    if (receivedPendingNotifications) instance.pendingNotificationsObserved = true;
 
     if (qr) {
+      clearUserSyncCompletionTimer(instance);
       instance.currentQr = qr;
       instance.connectionStatus = 'qrcode';
       instance.syncStatus = 'pending';
@@ -3722,12 +3825,8 @@ async function connectUserWhatsApp(userId) {
       console.log(`[${userId}] Novo QR Code gerado! Acesse /qr para escanear.`);
     }
 
-    if (receivedPendingNotifications) {
-      console.log(`[${userId}] Sincronização de notificações pendentes recebida.`);
-      resetUserSyncTimer(userId);
-    }
-
     if (connection === 'close') {
+      clearUserSyncCompletionTimer(instance);
       instance.currentQr = null;
       instance.syncStatus = 'pending';
       instance.messagesProcessedCount = 0;
@@ -3736,6 +3835,9 @@ async function connectUserWhatsApp(userId) {
         return;
       }
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      instance.lastConnectionCloseAt = new Date().toISOString();
+      instance.lastDisconnectCode = lastDisconnect?.error?.output?.statusCode || null;
+      instance.lastDisconnectError = normalizeDisplayName(lastDisconnect?.error?.message || lastDisconnect?.error || '');
       console.log(`[${userId}] Conexão fechada devido a:`, lastDisconnect?.error || 'motivo desconhecido');
       
       if (shouldReconnect) {
@@ -3776,7 +3878,10 @@ async function connectUserWhatsApp(userId) {
     } else if (connection === 'open') {
       instance.currentQr = null;
       instance.connectionStatus = 'connected';
-      instance.syncStatus = 'syncing';
+      initializeUserSyncState(instance, expectsHistorySync);
+      instance.lastConnectionOpenAt = new Date().toISOString();
+      instance.lastDisconnectCode = null;
+      instance.lastDisconnectError = '';
       if (sock && sock.user) {
         instance.myJid = jidNumber(sock.user.id);
         instance.myLid = sock.user.lid ? jidNumber(sock.user.lid) : '';
@@ -3819,6 +3924,26 @@ async function connectUserWhatsApp(userId) {
         .catch(err => {
         console.warn(`[${userId}] Falha ao hidratar aliases de grupos apos conexao:`, err.message || err);
       });
+      if (instance.pendingNotificationsObserved) {
+        historySync.markPendingNotifications(instance.historySyncState);
+        instance.pendingNotificationsObserved = false;
+        scheduleUserSyncCompletion(userId);
+      }
+    }
+
+    if (receivedPendingNotifications) {
+      console.log(`[${userId}] Sincronização de notificações pendentes recebida.`);
+      if (!instance.historySyncState || connection === 'open') {
+        // connection=open pode chegar no mesmo update; o estado já foi
+        // inicializado acima com a informação do accountSyncCounter.
+        instance.historySyncState = instance.historySyncState || historySync.createHistorySyncState({ expectsHistory: expectsHistorySync });
+      }
+      resetUserSyncTimer(userId);
+      if (instance.connectionStatus === 'connected') {
+        historySync.markPendingNotifications(instance.historySyncState);
+        instance.pendingNotificationsObserved = false;
+        scheduleUserSyncCompletion(userId);
+      }
     }
   });
 
@@ -3829,7 +3954,7 @@ async function connectUserWhatsApp(userId) {
     for (const metadata of groups || []) {
       if (!metadata?.id || !instance.groupMetadataCache) continue;
       instance.groupMetadataCache[metadata.id] = metadata;
-      if (addGroupMetadataToCache(userId, instance, metadata, 'groups.upsert')) changed++;
+      if (addGroupMetadataToCache(userId, instance, metadata, 'groups.upsert', false)) changed++;
     }
     if (changed > 0) {
       await persistContactsCacheNow(userId, instance);
@@ -3868,7 +3993,7 @@ async function connectUserWhatsApp(userId) {
   });
 
   // Função auxiliar para processar e salvar um lote de mensagens
-  async function processUserMessages(messagesList) {
+  async function processUserMessages(messagesList, { bulk = false } = {}) {
     if (instance.intentionalLogout) return;
     if (!messagesList || messagesList.length === 0) return;
 
@@ -3887,15 +4012,18 @@ async function connectUserWhatsApp(userId) {
     const messageObjects = [];
     const audioTranscriptionCandidates = [];
     const imageInterpretationCandidates = [];
-    const ownerDisplayName = filteredList.some(msg => msg?.key?.fromMe)
-      ? await ensureOwnerDisplayName(userId, instance)
-      : '';
+    let failedMessageCount = 0;
+    const needsOwnerName = filteredList.some(msg => msg?.key?.fromMe);
+    const [ownerDisplayName, ownerJids] = await Promise.all([
+      needsOwnerName ? ensureOwnerDisplayName(userId, instance) : Promise.resolve(''),
+      expandJidAliases(messageDomain.ownerJidsFromInstance(instance), instance)
+    ]);
 
     for (const msg of filteredList) {
       try {
         if (!msg.key || (!msg.key.remoteJid && !msg.key.remoteJidAlt)) continue;
 
-        const route = await resolveIncomingMessageRoute(msg, instance);
+        const route = await resolveIncomingMessageRoute(msg, instance, ownerJids);
         const chatJid = cleanJid(route.chatJid);
         
         // Mantém chats privados (PN ou LID) e grupos.
@@ -3927,7 +4055,7 @@ async function connectUserWhatsApp(userId) {
           pushName = savedName || messagePushName || jidNumber(participantJid);
           if (messagePushName) {
             for (const alias of participantAliases) {
-              addContactToCache(userId, instance, alias, messagePushName, 'message.pushName');
+              addContactToCache(userId, instance, alias, messagePushName, 'message.pushName', !bulk);
             }
           }
         } else {
@@ -3939,7 +4067,7 @@ async function connectUserWhatsApp(userId) {
         const chatName = bestNameFromAliases(chatAliases, instance.contactsCache) || (!isGroup && !fromMe ? pushName : '');
         if (!isGroup && !fromMe && pushName) {
           for (const alias of chatAliases) {
-            addContactToCache(userId, instance, alias, pushName, 'message.chat');
+            addContactToCache(userId, instance, alias, pushName, 'message.chat', !bulk);
           }
         }
 
@@ -4008,6 +4136,7 @@ async function connectUserWhatsApp(userId) {
         }
 
       } catch (err) {
+        failedMessageCount++;
         console.error(`[${userId}] Erro ao processar mensagem do lote:`, err);
       }
     }
@@ -4029,20 +4158,20 @@ async function connectUserWhatsApp(userId) {
 
     if (audioTranscriptionCandidates.length > 0) {
       const savedKeys = new Set(savedMessages.map(message => message.dedupeKey || createDedupeKey(message)));
-      for (const candidate of audioTranscriptionCandidates) {
-        if (shouldQueueAudioTranscription(userId, candidate.messageObject, savedKeys)) {
-          queueAudioTranscription(candidate);
-        }
-      }
+      queueAudioTranscriptions(audioTranscriptionCandidates.filter(candidate =>
+        shouldQueueAudioTranscription(userId, candidate.messageObject, savedKeys)
+      ));
     }
 
     if (imageInterpretationCandidates.length > 0) {
       const savedKeys = new Set(savedMessages.map(message => message.dedupeKey || createDedupeKey(message)));
-      for (const candidate of imageInterpretationCandidates) {
-        if (shouldQueueImageInterpretation(userId, candidate.messageObject, savedKeys)) {
-          queueImageInterpretation(candidate);
-        }
-      }
+      queueImageInterpretations(imageInterpretationCandidates.filter(candidate =>
+        shouldQueueImageInterpretation(userId, candidate.messageObject, savedKeys)
+      ));
+    }
+
+    if (bulk && failedMessageCount > 0) {
+      throw new Error(`${failedMessageCount} mensagem(ns) do histórico falharam no processamento local.`);
     }
   }
 
@@ -4090,95 +4219,128 @@ async function connectUserWhatsApp(userId) {
     }
   });
 
-  sock.ev.on('chats.phoneNumberShare', async ({ lid, jid }) => {
+  // Evento oficial do Baileys 7 para manter o mapeamento LID <-> PN.
+  sock.ev.on('lid-mapping.update', async ({ lid, pn }) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
-    if (!lid || !jid) return;
-    const changed = addContactRecordToCache(userId, instance, { id: lid, lid, jid, phoneNumber: jid }, 'chats.phoneNumberShare');
-    if (changed) {
+    if (!lid || !pn) return;
+    cacheJidAliasPair(instance, [lid, pn]);
+    const name = bestNameFromAliases([lid, pn], instance.contactsCache);
+    if (name) {
+      addContactToCache(userId, instance, lid, name, 'lid-mapping.update', false);
+      addContactToCache(userId, instance, pn, name, 'lid-mapping.update', false);
       await persistContactsCacheNow(userId, instance);
-      resetUserSyncTimer(userId);
-      console.log(`[${userId}] Alias telefone/LID recebido via chats.phoneNumberShare: ${lid} -> ${jid}`);
     }
   });
 
-  // Escuta o histórico de mensagens inicial enviado pelo WhatsApp na sincronização
-  sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, syncType, progress }) => {
+  sock.ev.on('messaging-history.status', ({ syncType, status, explicit }) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
-    let totalMessages = 0;
+    if (!instance.historySyncState) initializeUserSyncState(instance, true);
+
+    historySync.applyHistoryStatus(instance.historySyncState, {
+      isRecent: syncType === proto.HistorySync.HistorySyncType.RECENT,
+      isInitialBootstrap: syncType === proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
+      status,
+      explicit
+    });
+    instance.lastSyncActivity = Date.now();
+
+    if (status === 'paused') {
+      clearUserSyncCompletionTimer(instance);
+      instance.syncStatus = 'stalled';
+      console.warn(`[${userId}] Histórico RECENT pausado pelo Baileys sem progresso 100; mantendo sincronização como pendente.`);
+      return;
+    }
+
+    scheduleUserSyncCompletion(userId);
+  });
+
+  // Escuta o histórico de mensagens inicial enviado pelo WhatsApp na sincronização
+  sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, lidPnMappings, syncType, progress, isLatest, chunkOrder }) => {
+    if (instance.connectionGeneration !== connectionGeneration) return;
+    if (!instance.historySyncState) initializeUserSyncState(instance, true);
+    clearUserSyncCompletionTimer(instance);
+    historySync.beginHistoryBatch(instance.historySyncState);
+    instance.syncStatus = 'syncing';
+
     const historyContacts = Array.isArray(contacts) ? contacts : [];
     const historyChats = Array.isArray(chats) ? chats : [];
     const historyMessages = Array.isArray(messages) ? messages : [];
+    const historyLidMappings = Array.isArray(lidPnMappings) ? lidPnMappings : [];
     const profileNameContacts = historyContacts.filter(hasUsableProfileName).length;
+    const retentionThreshold = Date.now() - (MESSAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    const collected = historySync.collectHistoryMessages({
+      messages: historyMessages,
+      chats: historyChats,
+      retentionThreshold,
+      getTimestampMs: getMessageTimestampMs
+    });
 
     instance.historySyncStats = {
       ...(instance.historySyncStats || {}),
       batches: (instance.historySyncStats?.batches || 0) + 1,
       contacts: (instance.historySyncStats?.contacts || 0) + historyContacts.length,
       pushNameContacts: (instance.historySyncStats?.pushNameContacts || 0) + profileNameContacts,
-      messages: (instance.historySyncStats?.messages || 0) + historyMessages.length,
+      lidPnMappings: (instance.historySyncStats?.lidPnMappings || 0) + historyLidMappings.length,
+      messages: (instance.historySyncStats?.messages || 0) + collected.messages.length,
+      filteredOut: (instance.historySyncStats?.filteredOut || 0) + collected.filteredOut,
+      duplicatesSkipped: (instance.historySyncStats?.duplicatesSkipped || 0) + collected.duplicatesSkipped,
       lastSyncType: syncType ?? null,
       lastProgress: progress ?? null,
+      lastIsLatest: isLatest ?? null,
+      lastChunkOrder: chunkOrder ?? null,
       lastAt: new Date().toISOString()
     };
 
     console.log(
       `[${userId}] History sync: type=${syncType ?? 'unknown'} progress=${progress ?? 'unknown'} ` +
-      `contacts=${historyContacts.length} profileNames=${profileNameContacts} chats=${historyChats.length} messages=${historyMessages.length}`
+      `contacts=${historyContacts.length} profileNames=${profileNameContacts} chats=${historyChats.length} ` +
+      `messages=${collected.messages.length} filtered=${collected.filteredOut} duplicates=${collected.duplicatesSkipped}`
     );
-    
-    // 0. Sincroniza a lista de contatos da agenda inicial do celular
-    if (historyContacts.length > 0) {
-      const changedContacts = await processContactRecords(userId, instance, historyContacts, 'history.contacts');
-      console.log(`[${userId}] Sincronizados ${historyContacts.length} contatos do histórico, incluindo ${profileNameContacts} nomes de perfil (${changedContacts} atualizados).`);
-    }
 
-    // 0.1. Sincroniza os nomes das conversas e grupos do histórico recente
-    if (historyChats.length > 0) {
-      let syncGroupNamesCount = 0;
-      let changedChats = 0;
-      for (const chat of historyChats) {
-        if (addContactRecordToCache(userId, instance, chat, 'history.chats')) {
-          changedChats++;
-          if (chat.id?.endsWith('@g.us')) {
-            syncGroupNamesCount++;
+    try {
+      // O evento lid-mapping.update ainda é WIP no v7 e pode não ser emitido;
+      // o próprio lote de histórico é uma fonte oficial adicional do mapeamento.
+      for (const mapping of historyLidMappings) {
+        if (mapping?.lid && mapping?.pn) cacheJidAliasPair(instance, [mapping.lid, mapping.pn]);
+      }
+
+      // 0. Sincroniza a lista de contatos da agenda inicial do celular
+      if (historyContacts.length > 0) {
+        const changedContacts = await processContactRecords(userId, instance, historyContacts, 'history.contacts', { updateFiles: false });
+        console.log(`[${userId}] Sincronizados ${historyContacts.length} contatos do histórico, incluindo ${profileNameContacts} nomes de perfil (${changedContacts} atualizados).`);
+      }
+
+      // 0.1. Sincroniza os nomes das conversas e grupos do histórico recente
+      if (historyChats.length > 0) {
+        let syncGroupNamesCount = 0;
+        let changedChats = 0;
+        for (const chat of historyChats) {
+          if (addContactRecordToCache(userId, instance, chat, 'history.chats', false)) {
+            changedChats++;
+            if (chat.id?.endsWith('@g.us')) syncGroupNamesCount++;
           }
         }
+        if (changedChats > 0) await persistContactsCacheNow(userId, instance);
+        console.log(`[${userId}] Sincronizados ${historyChats.length} chats recentes, incluindo ${syncGroupNamesCount} nomes de grupos (${changedChats} atualizados).`);
       }
-      if (changedChats > 0) {
-        await persistContactsCacheNow(userId, instance);
-      }
-      console.log(`[${userId}] Sincronizados ${historyChats.length} chats recentes, incluindo ${syncGroupNamesCount} nomes de grupos (${changedChats} atualizados).`);
+
+      // O v7 já fornece o array global. O fallback chat.messages é combinado
+      // somente para snapshots antigos e deduplicado antes de uma única gravação.
+      if (collected.messages.length > 0) await processUserMessages(collected.messages, { bulk: true });
+
+      await persistContactsCacheNow(userId, instance);
+      scheduleAuthStateSnapshot(userId, userAuthDir);
+      console.log(`[${userId}] Lote de histórico finalizado. Total de mensagens únicas processadas: ${collected.messages.length}`);
+    } catch (err) {
+      instance.historySyncStats.lastError = err?.message || String(err);
+      historySync.failHistoryBatch(instance.historySyncState, err);
+      instance.syncStatus = 'stalled';
+      console.error(`[${userId}] Falha ao processar lote do histórico:`, err);
+    } finally {
+      historySync.finishHistoryBatch(instance.historySyncState);
+      resetUserSyncTimer(userId);
+      scheduleUserSyncCompletion(userId);
     }
-    
-    // 1. Processa mensagens do array global (se houver)
-    if (historyMessages.length > 0) {
-      await processUserMessages(historyMessages);
-      totalMessages += historyMessages.length;
-    }
-    
-    // 2. Extrai e processa mensagens do histórico de cada chat (onde o Baileys agrupa o histórico real)
-    if (historyChats.length > 0) {
-      let chatMsgsCount = 0;
-      const retentionThreshold = Date.now() - (MESSAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-      for (const chat of historyChats) {
-        if (chat.messages && chat.messages.length > 0) {
-          // Filtra na origem do chat as mensagens recentes para poupar RAM e CPU
-          const chatMsgs = chat.messages.filter(m => {
-            if (!m) return false;
-            return getMessageTimestampMs(m) >= retentionThreshold;
-          });
-          if (chatMsgs.length > 0) {
-            await processUserMessages(chatMsgs);
-            chatMsgsCount += chatMsgs.length;
-          }
-        }
-      }
-      totalMessages += chatMsgsCount;
-    }
-    
-    await persistContactsCacheNow(userId, instance);
-    scheduleAuthStateSnapshot(userId, userAuthDir);
-    console.log(`[${userId}] Carga de histórico finalizada. Total de mensagens processadas: ${totalMessages}`);
   });
 }
 
@@ -4462,18 +4624,6 @@ async function persistMessagesToSupabase(userId, messages) {
     };
   });
 
-  sock.ev.on('lid-mapping.update', async ({ lid, pn }) => {
-    if (instance.connectionGeneration !== connectionGeneration) return;
-    if (!lid || !pn) return;
-    cacheJidAliasPair(instance, [lid, pn]);
-    const name = bestNameFromAliases([lid, pn], instance.contactsCache);
-    if (name) {
-      addContactToCache(userId, instance, lid, name, 'lid-mapping.update', false);
-      addContactToCache(userId, instance, pn, name, 'lid-mapping.update', false);
-      await persistContactsCacheNow(userId, instance);
-    }
-  });
-
   let persisted = 0;
   for (const chunk of chunkArray(rows, 250)) {
     let response = await supabaseRest(
@@ -4658,24 +4808,48 @@ const yyyymmddFormatter = new Intl.DateTimeFormat('fr-CA', {
 // Dicionário de instâncias ativas em memória
 const instances = {};
 
-// Reseta o timer de inatividade de sincronização do WhatsApp
+function clearUserSyncCompletionTimer(instance) {
+  if (!instance?.syncTimer) return;
+  clearTimeout(instance.syncTimer);
+  instance.syncTimer = null;
+}
+
+function initializeUserSyncState(instance, expectsHistory) {
+  clearUserSyncCompletionTimer(instance);
+  instance.historySyncState = historySync.createHistorySyncState({ expectsHistory });
+  instance.syncStatus = 'syncing';
+  instance.lastSyncActivity = Date.now();
+  instance.syncCompletedAt = null;
+}
+
+function scheduleUserSyncCompletion(userId) {
+  const instance = instances[userId];
+  if (!instance?.historySyncState || instance.connectionStatus !== 'connected') return;
+
+  clearUserSyncCompletionTimer(instance);
+  if (!historySync.canFinalizeHistorySync(instance.historySyncState)) {
+    if (instance.historySyncState.paused) instance.syncStatus = 'stalled';
+    return;
+  }
+
+  instance.syncTimer = setTimeout(() => {
+    instance.syncTimer = null;
+    if (instance.connectionStatus !== 'connected') return;
+    if (!historySync.finalizeHistorySync(instance.historySyncState)) return;
+    instance.syncStatus = 'completed';
+    instance.syncCompletedAt = new Date(instance.historySyncState.completedAt).toISOString();
+    console.log(`[${userId}] Sincronização concluída por sinal explícito do Baileys e drenagem dos lotes locais.`);
+  }, HISTORY_SYNC_SETTLE_MS);
+}
+
+// Registra atividade sem inferir que o histórico terminou. No Baileys 7, a
+// conclusão vem de messaging-history.status (RECENT com progresso 100).
 function resetUserSyncTimer(userId) {
   const instance = instances[userId];
   if (!instance) return;
 
   instance.lastSyncActivity = Date.now();
-
-  if (instance.connectionStatus === 'connected' && instance.syncStatus !== 'completed') {
-    if (instance.syncTimer) {
-      clearTimeout(instance.syncTimer);
-    }
-
-    instance.syncTimer = setTimeout(() => {
-      instance.syncStatus = 'completed';
-      console.log(`[${userId}] Sincronização concluída por inatividade de eventos (mensagens e contatos processados).`);
-      instance.syncTimer = null;
-    }, SYNC_IDLE_COMPLETE_MS);
-  }
+  if (instance.syncTimer) scheduleUserSyncCompletion(userId);
 }
 
 // Retorna ou cria dinamicamente a instância do WhatsApp de um usuário sob demanda
@@ -4707,13 +4881,22 @@ async function getOrCreateInstance(userId) {
     messagesProcessedCount: 0,
     contactsCache: hydratedContactsCache,
     jidAliasCache: {},
+    jidAliasMissCache: {},
     groupMetadataCache: {}, // Cache de metadados dos grupos para otimização e evitar rate-limit do WhatsApp
     myPushName: storedOwnerName, // Nome de perfil do próprio usuário dono do WhatsApp
     myPushNameSource: storedOwnerName ? 'profile-hint' : 'fallback',
     lastSyncActivity: Date.now(),
     syncTimer: null,
+    syncCompletedAt: null,
+    historySyncState: historySync.createHistorySyncState({ expectsHistory: true }),
     contactsSaveTimer: null,
     reconnectTimer: null,
+    pendingNotificationsObserved: false,
+    lastConnectionEventAt: null,
+    lastConnectionOpenAt: null,
+    lastConnectionCloseAt: null,
+    lastDisconnectCode: null,
+    lastDisconnectError: '',
     connectionGeneration: 0,
     forceHistorySync: false,
     requestAppStateResync: false,
@@ -5508,12 +5691,22 @@ app.get('/', checkAuth, async (req, res) => {
                   syncStatusBadge.style.border = '1px solid rgba(245, 158, 11, 0.3)';
                   
                   const count = data.messagesCount || 0;
-                  const percent = Math.min(95, Math.floor(100 * (1 - Math.exp(-count / 150))));
+                  const serverProgress = Number(data.historySyncStats && data.historySyncStats.lastProgress);
+                  const percent = Number.isFinite(serverProgress)
+                    ? Math.min(99, Math.max(0, Math.floor(serverProgress)))
+                    : Math.min(95, Math.floor(100 * (1 - Math.exp(-count / 150))));
                   
                   syncProgressText.textContent = 'Sincronizando histórico... (' + count + ' mensagens importadas)';
                   syncProgressPercent.textContent = percent + '%';
                   syncProgressBarFill.style.width = percent + '%';
                   
+                } else if (data.syncStatus === 'stalled') {
+                  syncStatusBadge.textContent = '⏸ SINCRONIZAÇÃO PAUSADA';
+                  syncStatusBadge.style.background = 'rgba(245, 158, 11, 0.15)';
+                  syncStatusBadge.style.color = '#f59e0b';
+                  syncStatusBadge.style.border = '1px solid rgba(245, 158, 11, 0.3)';
+                  syncProgressText.textContent = 'O WhatsApp pausou o histórico antes de confirmar 100%.';
+                  syncProgressPercent.textContent = String(data.historySyncStats?.lastProgress ?? '—') + '%';
                 } else if (data.syncStatus === 'completed') {
                   syncStatusBadge.textContent = '✓ SINCRONIZADO';
                   syncStatusBadge.style.background = 'rgba(16, 185, 129, 0.15)';
@@ -5693,7 +5886,25 @@ app.get('/status', checkAuth, async (req, res) => {
     messagesCount: instance.messagesProcessedCount,
     contactsCount: Object.keys(instance.contactsCache || {}).length,
     historySyncStats: instance.historySyncStats || null,
+    historySyncState: instance.historySyncState ? {
+      expectsHistory: instance.historySyncState.expectsHistory,
+      pendingNotificationsReceived: instance.historySyncState.pendingNotificationsReceived,
+      pendingBatches: instance.historySyncState.pendingBatches,
+      explicitRecentComplete: instance.historySyncState.explicitRecentComplete,
+      finalBatchObservedAfterCompletion: instance.historySyncState.finalBatchObservedAfterCompletion,
+      initialBootstrapComplete: instance.historySyncState.initialBootstrapComplete,
+      paused: instance.historySyncState.paused,
+      processingFailed: instance.historySyncState.processingFailed,
+      lastProcessingError: instance.historySyncState.lastProcessingError,
+      completionSource: instance.historySyncState.completionSource,
+      completedAt: instance.syncCompletedAt
+    } : null,
     lastSyncActivity: instance.lastSyncActivity ? new Date(instance.lastSyncActivity).toISOString() : null,
+    lastConnectionEventAt: instance.lastConnectionEventAt || null,
+    lastConnectionOpenAt: instance.lastConnectionOpenAt || null,
+    lastConnectionCloseAt: instance.lastConnectionCloseAt || null,
+    lastDisconnectCode: instance.lastDisconnectCode || null,
+    lastDisconnectError: instance.lastDisconnectError || null,
     lastIncomingBatchAt: instance.lastIncomingBatchAt || null,
     lastIncomingBatchType: instance.lastIncomingBatchType || null,
     lastIncomingBatchCount: instance.lastIncomingBatchCount || 0,
@@ -6417,6 +6628,7 @@ module.exports = {
   startServer,
   __test: {
     analyzeMessagesIntegrity,
+    buildAuthStateBundle,
     buildMessageConversations,
     chooseBetterMessageText,
     cleanJid,
@@ -6449,10 +6661,13 @@ module.exports = {
     normalizeDisplayName,
     normalizeStoredMessage,
     parseCookies,
+    parseAuthStateBundle,
+    parseMediaState,
     parseRetryDelayMs,
     queuePauseInMs,
     retryDelayMsForError,
     shouldPauseMediaQueueForError,
+    stringifyMediaState,
     unwrapMessageContent
   }
 };
