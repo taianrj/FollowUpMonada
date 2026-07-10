@@ -2302,6 +2302,35 @@ export default function WhatsappSummaryClient({
 
             <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', marginTop: '0.5rem' }}></div>
 
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '-0.25rem', marginBottom: '0.75rem' }}>
+              <a
+                href="/api/whatsapp-service/redirect"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  fontSize: '0.8rem',
+                  color: 'var(--accent-purple)',
+                  textDecoration: 'none',
+                  fontWeight: 600,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                  transition: 'opacity 0.2s',
+                  padding: '0.25rem 0.5rem'
+                }}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.textDecoration = 'underline';
+                  e.currentTarget.style.opacity = '0.85';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.textDecoration = 'none';
+                  e.currentTarget.style.opacity = '1';
+                }}
+              >
+                🌐 Acessar serviço (avançado)
+              </a>
+            </div>
+
             <button
               type="button"
               className="btn btnPrimary"

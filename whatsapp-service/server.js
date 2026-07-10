@@ -4861,7 +4861,10 @@ function checkAuth(req, res, next) {
     return denyAccess(req, res);
   }
 
-  if (SERVICE_TOKEN && req.headers['x-service-token'] !== SERVICE_TOKEN) {
+  // Permite ler do header, query string ou do cookie
+  const serviceToken = req.headers['x-service-token'] || req.query.service_token || cookies['whatsapp_service_token'];
+
+  if (SERVICE_TOKEN && serviceToken !== SERVICE_TOKEN) {
     return denyAccess(req, res);
   }
   
@@ -4887,6 +4890,16 @@ function checkAuth(req, res, next) {
     secure: true,
     sameSite: 'lax'
   });
+
+  // Se o token de serviço veio via query string, salva ele também no cookie
+  if (req.query.service_token) {
+    res.cookie('whatsapp_service_token', req.query.service_token, {
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 dias
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax'
+    });
+  }
   
   next();
 }
