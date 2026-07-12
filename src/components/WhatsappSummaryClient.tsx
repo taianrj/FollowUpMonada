@@ -1197,7 +1197,25 @@ export default function WhatsappSummaryClient({
       <Sidebar profile={profile} isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
 
       <main className="mainContent whatsappSummaryMain">
-        
+        {/* Cabeçalho da página: primeiro no mobile e no topo da coluna principal no desktop */}
+        <div className="header whatsappSummaryPageHeader" style={{ marginBottom: 0 }}>
+          <div className="whatsappSummaryHeading">
+            <button className="hamburgerBtn" onClick={() => setIsSidebarOpen(true)} title="Abrir menu">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="12" x2="21" y2="12"></line>
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <line x1="3" y1="18" x2="21" y2="18"></line>
+              </svg>
+            </button>
+            <div>
+              <h1 className="headerTitle">Resumos Diários do WhatsApp</h1>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
+                Processe logs de conversas do dia para obter relatórios semânticos automáticos separados por cliente.
+              </p>
+            </div>
+          </div>
+        </div>
+
         {/* Painel Lateral Secundário - Histórico de Resumos */}
         <section className="historyPanel whatsappSummaryHistoryPanel" style={{
           backgroundColor: 'var(--bg-secondary)',
@@ -1291,25 +1309,6 @@ export default function WhatsappSummaryClient({
 
         {/* Área de Trabalho Principal */}
         <section className="custom-scroll whatsappSummaryWorkspace">
-          {/* Header Mobile / Desktop */}
-          <div className="header" style={{ marginBottom: 0 }}>
-            <div className="whatsappSummaryHeading">
-              <button className="hamburgerBtn" onClick={() => setIsSidebarOpen(true)} title="Abrir menu">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="3" y1="12" x2="21" y2="12"></line>
-                  <line x1="3" y1="6" x2="21" y2="6"></line>
-                  <line x1="3" y1="18" x2="21" y2="18"></line>
-                </svg>
-              </button>
-              <div>
-                <h1 className="headerTitle">Resumos Diários do WhatsApp</h1>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
-                  Processe logs de conversas do dia para obter relatórios semânticos automáticos separados por cliente.
-                </p>
-              </div>
-            </div>
-          </div>
-
           {/* Painel de Status Único e Compacto (Celular) */}
           {isCheckingStatus ? (
             <div className={whatsappStatusPanelClass} style={{

@@ -1398,15 +1398,31 @@ textarea.formInput {
 .whatsappSummaryMain {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'history header'
+    'history workspace';
   gap: 2rem;
+  row-gap: 0.85rem;
   padding: 2.5rem;
 }
 
+.whatsappSummaryPageHeader {
+  grid-area: header;
+  min-width: 0;
+}
+
+.whatsappSummaryHistoryPanel {
+  grid-area: history;
+}
+
 .whatsappSummaryWorkspace {
+  grid-area: workspace;
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
-  height: calc(100vh - 5rem);
+  height: auto;
+  min-height: 0;
   min-width: 0;
   overflow-y: auto;
 }
@@ -1449,6 +1465,11 @@ textarea.formInput {
 @media (max-width: 1024px) {
   .whatsappSummaryMain {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    grid-template-areas:
+      'header'
+      'history'
+      'workspace';
     height: auto;
     min-height: 100vh;
     overflow: visible;

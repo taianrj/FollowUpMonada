@@ -24,6 +24,18 @@ describe('WhatsappSummaryClient responsive layout', () => {
     expect(dashboardCss).toContain("height: calc(100dvh - 2rem) !important;");
   });
 
+  it('places the page heading before the history on mobile without moving the desktop columns', () => {
+    expect(componentSource.indexOf('whatsappSummaryPageHeader')).toBeLessThan(
+      componentSource.indexOf('whatsappSummaryHistoryPanel')
+    );
+    expect(dashboardCss).toMatch(
+      /grid-template-areas:\s*'history header'\s*'history workspace';/
+    );
+    expect(dashboardCss).toMatch(
+      /@media \(max-width: 1024px\)[\s\S]*?grid-template-areas:\s*'header'\s*'history'\s*'workspace';/
+    );
+  });
+
   it('switches the mobile chat view through React state instead of reading window width during render', () => {
     expect(componentSource).not.toContain('window.innerWidth');
     expect(componentSource).toContain("selectedChatKey ? 'chatSidebarWithSelection' : ''");
