@@ -12,4 +12,12 @@ Before starting any task, read and follow the complete root `AGENTS.md` and `.ag
 
 Also run `npm run build` for Next.js/React/TypeScript changes, `node --check whatsapp-service/server.js` when that server changes, and `git diff --check` before handoff.
 
+## Responsive design
+
+For every frontend task, preserve the intended desktop experience and review phone, tablet, laptop, and desktop layouts, including widths around 320px, 375px, 768px, and 1024px. Check overflow, wrapping, fixed dimensions, touch targets, modals, and all relevant UI states. Add responsive regression coverage when practical.
+
+## Security
+
+For every task, review affected trust boundaries and preserve authentication, authorization, per-user isolation, validation, safe output handling, secrets/PII protection, least privilege, and fail-closed behavior. Never treat client-side checks or hidden UI as security controls, and do not broaden proxy/API access or introduce unsafe defaults.
+
 Protect credentials and user data, preserve unrelated worktree changes, avoid destructive Git or production operations, and follow the WhatsApp/Baileys identity, status filtering, synchronization, media, batching, and persistence invariants in `AGENTS.md`.

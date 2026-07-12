@@ -1393,6 +1393,79 @@ textarea.formInput {
   gap: 1rem;
 }
 
+/* Layout exclusivo da pÃ¡gina de resumos do WhatsApp. As regras base
+   reproduzem o desktop atual; os overrides ficam nos breakpoints abaixo. */
+.whatsappSummaryMain {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 2rem;
+  padding: 2.5rem;
+}
+
+.whatsappSummaryWorkspace {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  height: calc(100vh - 5rem);
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.whatsappSummaryHeading,
+.whatsappSummaryDateControls,
+.whatsappSummaryActionButtons {
+  display: flex;
+  align-items: center;
+}
+
+.whatsappSummaryHeading {
+  gap: 1rem;
+  min-width: 0;
+}
+
+.whatsappSummaryDateControls {
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.whatsappSummaryActionButtons {
+  gap: 0.6rem;
+}
+
+.whatsappSummarySkeletonGrid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-top: 1rem;
+  opacity: 0.25;
+}
+
+.chatSidebar,
+.chatArea {
+  display: flex;
+}
+
+@media (max-width: 1024px) {
+  .whatsappSummaryMain {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .whatsappSummaryHistoryPanel {
+    height: auto !important;
+    max-height: 16rem;
+    overflow: hidden !important;
+  }
+
+  .whatsappSummaryWorkspace {
+    height: auto;
+    overflow: visible;
+  }
+}
+
 @media (max-width: 768px) {
   .desktopOnly {
     display: none !important;
@@ -1530,6 +1603,205 @@ textarea.formInput {
     padding: 1.25rem;
   }
 
+  .whatsappSummaryMain {
+    gap: 1rem;
+    padding: 1rem;
+  }
+
+  .whatsappSummaryHistoryPanel {
+    padding: 1rem !important;
+    gap: 0.85rem !important;
+    max-height: none;
+  }
+
+  .whatsappSummaryHistoryPanel > .custom-scroll {
+    flex-direction: row !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    padding-bottom: 0.25rem;
+  }
+
+  .whatsappSummaryHistoryPanel .historyItem {
+    flex: 0 0 min(15rem, 78vw);
+  }
+
+  .whatsappSummaryHeading {
+    align-items: flex-start;
+  }
+
+  .whatsappSummaryHeading .headerTitle {
+    font-size: 1.35rem;
+    line-height: 1.25;
+  }
+
+  .whatsappSummaryHeading p {
+    font-size: 0.82rem !important;
+    line-height: 1.45;
+  }
+
+  .whatsappStatusPanel {
+    align-items: stretch !important;
+    gap: 0.75rem !important;
+    padding: 0.85rem 1rem !important;
+  }
+
+  .whatsappStatusPanel > div {
+    max-width: 100%;
+  }
+
+  .whatsappSummaryActionBar {
+    align-items: stretch !important;
+    padding: 1rem !important;
+  }
+
+  .whatsappSummaryDateControls,
+  .whatsappSummaryActionButtons {
+    width: 100%;
+  }
+
+  .whatsappSummaryDateControls {
+    align-items: stretch;
+  }
+
+  .whatsappSummaryDateControls > h3 {
+    width: 100%;
+  }
+
+  .whatsappSummaryDateControls input[type='date'] {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .whatsappSummaryActionButtons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .whatsappSummaryActionButtons .btn {
+    min-width: 0;
+    justify-content: center;
+    white-space: normal;
+  }
+
+  .whatsappSummarySkeletonGrid {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
+  .whatsappSummaryResultHeader,
+  .whatsappSummaryClientHeader,
+  .whatsappSummaryTaskHeader {
+    align-items: flex-start !important;
+    flex-direction: column;
+    gap: 0.75rem !important;
+  }
+
+  .whatsappSummaryClientHeader .roleBadge {
+    align-self: flex-start;
+    white-space: normal;
+  }
+
+  .whatsappSummaryTaskHeader .btn {
+    align-self: stretch;
+    height: auto !important;
+    min-height: 2rem;
+  }
+
+  .whatsappSummaryModalOverlay {
+    align-items: flex-start !important;
+    overflow-y: auto;
+    padding: 1rem;
+  }
+
+  .whatsappSummaryChoiceModal,
+  .whatsappSummarySettingsModal,
+  .whatsappSummaryQrModal,
+  .whatsappSummaryMessagesModal {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: auto 0;
+    padding: 1.25rem !important;
+  }
+
+  .whatsappSummarySettingsModal,
+  .whatsappSummaryMessagesModal {
+    max-height: calc(100dvh - 2rem) !important;
+    overflow-y: auto;
+  }
+
+  .whatsappSummarySettingsColumns {
+    flex-direction: column;
+    flex-wrap: nowrap !important;
+    gap: 1.25rem !important;
+  }
+
+  .whatsappSummarySettingsActions,
+  .whatsappSummarySettingsFooter {
+    align-items: stretch !important;
+    flex-direction: column;
+  }
+
+  .whatsappSummarySettingsFooter .btn {
+    width: 100% !important;
+  }
+
+  .whatsappSummaryQrCode {
+    width: min(260px, calc(100vw - 4.5rem)) !important;
+    height: min(260px, calc(100vw - 4.5rem)) !important;
+  }
+
+  .whatsappSummaryQrCode img {
+    width: calc(100% - 1rem) !important;
+    height: calc(100% - 1rem) !important;
+  }
+
+  .whatsappSummaryMessagesModal {
+    height: calc(100dvh - 2rem) !important;
+    gap: 0.85rem !important;
+  }
+
+  .whatsappSummaryMessagesLayout {
+    min-height: 0;
+  }
+
+  .chatSidebar,
+  .chatArea {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .chatSidebarWithSelection,
+  .chatArea:not(.chatAreaWithSelection) {
+    display: none !important;
+  }
+
+  .chatAreaWithSelection {
+    display: flex;
+  }
+
+  .whatsappSummaryTaskModal {
+    min-width: 0 !important;
+    max-height: calc(100dvh - 2rem);
+    padding: 1.25rem !important;
+  }
+
+  .whatsappSummaryTaskModal .modalFooter {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .whatsappSummaryTaskModal .modalFooter .btn {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .whatsappSummaryLoadingCard,
+  .whatsappSummaryResultCard,
+  .whatsappSummaryClientCard,
+  .whatsappSummaryEmptyResult {
+    padding: 1rem !important;
+  }
+
   .cadastrosGrid {
     grid-template-columns: 1fr;
     gap: 1.5rem;
@@ -1551,6 +1823,32 @@ textarea.formInput {
 
   .cadastrosFormCard {
     padding: 1.25rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .whatsappSummaryMain {
+    padding: 0.75rem;
+  }
+
+  .whatsappSummaryActionButtons {
+    grid-template-columns: 1fr;
+  }
+
+  .whatsappSummarySettingsActions .btn {
+    width: 100%;
+  }
+
+  .whatsappSummaryMessagesModal > div:first-of-type {
+    padding-right: 1.5rem;
+  }
+
+  .chatMessageList {
+    padding: 0.75rem !important;
+  }
+
+  .chatMessageBubble {
+    max-width: 90% !important;
   }
 }
 

@@ -1196,10 +1196,10 @@ export default function WhatsappSummaryClient({
     <div className="dashboardLayout">
       <Sidebar profile={profile} isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
 
-      <main className="mainContent" style={{ display: 'grid', gridTemplateColumns: '300px minmax(0, 1fr)', gap: '2rem', padding: '2.5rem' }}>
+      <main className="mainContent whatsappSummaryMain">
         
         {/* Painel Lateral Secundário - Histórico de Resumos */}
-        <section className="historyPanel" style={{
+        <section className="historyPanel whatsappSummaryHistoryPanel" style={{
           backgroundColor: 'var(--bg-secondary)',
           borderRadius: 'var(--radius-lg)',
           border: '1px solid var(--border-color)',
@@ -1290,10 +1290,10 @@ export default function WhatsappSummaryClient({
         </section>
 
         {/* Área de Trabalho Principal */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', height: 'calc(100vh - 5rem)', overflowY: 'auto' }} className="custom-scroll">
+        <section className="custom-scroll whatsappSummaryWorkspace">
           {/* Header Mobile / Desktop */}
           <div className="header" style={{ marginBottom: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <div className="whatsappSummaryHeading">
               <button className="hamburgerBtn" onClick={() => setIsSidebarOpen(true)} title="Abrir menu">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -1543,7 +1543,7 @@ export default function WhatsappSummaryClient({
           {(() => {
             const isActionBarDisabled = !integrationConnected || whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed';
             return (
-              <div style={{
+              <div className="whatsappSummaryActionBar" style={{
                 backgroundColor: 'var(--bg-secondary)',
                 borderRadius: 'var(--radius-lg)',
                 border: '1px solid var(--border-color)',
@@ -1556,7 +1556,7 @@ export default function WhatsappSummaryClient({
                 animation: 'fadeIn 0.3s ease-out',
                 opacity: isActionBarDisabled ? 0.65 : 1
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <div className="whatsappSummaryDateControls">
                   <h3 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
                     Gerar Novo Resumo
                     {whatsappStatus !== 'connected' && (
@@ -1638,7 +1638,7 @@ export default function WhatsappSummaryClient({
                 </div>
 
                 {/* Botões de Ação */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <div className="whatsappSummaryActionButtons">
                   <button
                     type="button"
                     className="btn btnSecondary"
@@ -1685,7 +1685,7 @@ export default function WhatsappSummaryClient({
 
           {/* Estado de Carregamento Premium com Skeleton */}
           {isLoading && (
-            <div style={{
+            <div className="whatsappSummaryLoadingCard" style={{
               backgroundColor: 'var(--bg-secondary)',
               borderRadius: 'var(--radius-lg)',
               border: '1px solid var(--border-color)',
@@ -1712,7 +1712,7 @@ export default function WhatsappSummaryClient({
                 </p>
               </div>
               {/* Skeleton Cards simulando a estrutura que virá */}
-              <div style={{ width: '100%', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginTop: '1rem', opacity: 0.25 }}>
+              <div className="whatsappSummarySkeletonGrid">
                 <div style={{ height: '140px', backgroundColor: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }} />
                 <div style={{ height: '140px', backgroundColor: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }} />
               </div>
@@ -1721,7 +1721,7 @@ export default function WhatsappSummaryClient({
 
           {/* Exibição do Resumo Ativo */}
           {!isLoading && activeSummary && (
-            <div style={{
+            <div className="whatsappSummaryResultCard" style={{
               backgroundColor: 'var(--bg-secondary)',
               borderRadius: 'var(--radius-lg)',
               border: '1px solid var(--border-color)',
@@ -1732,7 +1732,7 @@ export default function WhatsappSummaryClient({
               animation: 'fadeIn 0.3s ease-out',
               boxShadow: 'var(--shadow-sm)'
             }}>
-              <div style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div className="whatsappSummaryResultHeader" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h2 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
                   Resumo Semântico do Dia - {new Date(activeSummary.summary_date + 'T00:00:00').toLocaleDateString('pt-BR')}
                 </h2>
@@ -1741,7 +1741,7 @@ export default function WhatsappSummaryClient({
               {/* Grid de Clientes no Resumo */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.25rem' }}>
                 {activeSummary.summary_data.summaries.length === 0 ? (
-                  <div style={{ backgroundColor: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <div className="whatsappSummaryEmptyResult" style={{ backgroundColor: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                     Nenhum cliente ou tópico relevante foi identificado nas conversas deste dia.
                   </div>
                 ) : (
@@ -1751,6 +1751,7 @@ export default function WhatsappSummaryClient({
                     return (
                       <div
                         key={cIndex}
+                        className="whatsappSummaryClientCard"
                         style={{
                           backgroundColor: 'var(--bg-primary)',
                           borderRadius: 'var(--radius-lg)',
@@ -1764,7 +1765,7 @@ export default function WhatsappSummaryClient({
                         }}
                       >
                         {/* Nome do Cliente e Tag de Cadastro */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
+                        <div className="whatsappSummaryClientHeader" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
                           <span style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                             👤 {clientSummary.client_name}
                           </span>
@@ -1841,7 +1842,7 @@ export default function WhatsappSummaryClient({
                                       }}
                                     >
                                       {/* Título e Botão */}
-                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+                                      <div className="whatsappSummaryTaskHeader" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
                                         <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.4 }}>
                                           {task.description}
                                         </span>
@@ -1966,7 +1967,7 @@ export default function WhatsappSummaryClient({
 
       {/* Modal de Escolha Intermediária para Conexão */}
       {isChoiceModalOpen && (
-        <div style={{
+        <div className="whatsappSummaryModalOverlay" style={{
           position: 'fixed',
           top: 0,
           left: 0,
@@ -1980,7 +1981,7 @@ export default function WhatsappSummaryClient({
           zIndex: 9999,
           animation: 'fadeIn 0.25s ease'
         }}>
-          <div style={{
+          <div className="whatsappSummaryChoiceModal" style={{
             backgroundColor: 'var(--bg-secondary)',
             borderRadius: 'var(--radius-lg)',
             border: '1px solid var(--border-color)',
@@ -2191,7 +2192,7 @@ export default function WhatsappSummaryClient({
 
       {/* Modal de Configurações de Processamento */}
       {isProcessingSettingsModalOpen && (
-        <div style={{
+        <div className="whatsappSummaryModalOverlay" style={{
           position: 'fixed',
           top: 0,
           left: 0,
@@ -2205,7 +2206,7 @@ export default function WhatsappSummaryClient({
           zIndex: 9999,
           animation: 'fadeIn 0.25s ease'
         }}>
-          <div style={{
+          <div className="whatsappSummarySettingsModal" style={{
             backgroundColor: 'var(--bg-secondary)',
             borderRadius: 'var(--radius-lg)',
             border: '1px solid var(--border-color)',
@@ -2266,7 +2267,7 @@ export default function WhatsappSummaryClient({
             <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)' }}></div>
 
             {/* Layout de duas colunas */}
-            <div style={{
+            <div className="whatsappSummarySettingsColumns" style={{
               display: 'flex',
               gap: '1.75rem',
               flexWrap: 'wrap',
@@ -2408,7 +2409,7 @@ export default function WhatsappSummaryClient({
                 </div>
 
                 {/* Botões de Ação */}
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <div className="whatsappSummarySettingsActions" style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
                     type="button"
                     className="btn btnSecondary"
@@ -2460,7 +2461,7 @@ export default function WhatsappSummaryClient({
 
             <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--border-color)', marginTop: '0.25rem' }}></div>
 
-            <div style={{
+            <div className="whatsappSummarySettingsFooter" style={{
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
@@ -2522,7 +2523,7 @@ export default function WhatsappSummaryClient({
 
       {/* Modal de Pareamento via QR Code */}
       {isQrModalOpen && (
-        <div style={{
+        <div className="whatsappSummaryModalOverlay" style={{
           position: 'fixed',
           top: 0,
           left: 0,
@@ -2536,7 +2537,7 @@ export default function WhatsappSummaryClient({
           zIndex: 9999,
           animation: 'fadeIn 0.25s ease'
         }}>
-          <div style={{
+          <div className="whatsappSummaryQrModal" style={{
             backgroundColor: 'var(--bg-secondary)',
             borderRadius: 'var(--radius-lg)',
             border: '1px solid var(--border-color)',
@@ -2580,7 +2581,7 @@ export default function WhatsappSummaryClient({
               Abra o WhatsApp no seu celular, acesse <strong>Dispositivos Conectados</strong> e escaneie o código abaixo:
             </p>
 
-            <div style={{
+            <div className="whatsappSummaryQrCode" style={{
               width: '260px',
               height: '260px',
               display: 'flex',
@@ -2626,7 +2627,7 @@ export default function WhatsappSummaryClient({
 
       {/* Modal de Visualização de Mensagens Coletadas */}
       {isMessagesModalOpen && (
-        <div style={{
+        <div className="whatsappSummaryModalOverlay" style={{
           position: 'fixed',
           top: 0,
           left: 0,
@@ -2640,7 +2641,7 @@ export default function WhatsappSummaryClient({
           zIndex: 9999,
           animation: 'fadeIn 0.25s ease'
         }}>
-          <div style={{
+          <div className="whatsappSummaryMessagesModal" style={{
             backgroundColor: 'var(--bg-secondary)',
             borderRadius: 'var(--radius-lg)',
             border: '1px solid var(--border-color)',
@@ -2686,7 +2687,7 @@ export default function WhatsappSummaryClient({
               </p>
             </div>
 
-            <div style={{
+            <div className="whatsappSummaryMessagesLayout" style={{
               flex: 1,
               backgroundColor: 'var(--bg-primary)',
               borderRadius: 'var(--radius-md)',
@@ -2713,7 +2714,7 @@ export default function WhatsappSummaryClient({
                   return (
                     <>
                       {/* Coluna Esquerda: Lista de Conversas */}
-                      <div className="chatSidebar" style={{ display: (selectedChatKey && window.innerWidth <= 768) ? 'none' : 'flex' }}>
+                      <div className={`chatSidebar ${selectedChatKey ? 'chatSidebarWithSelection' : ''}`}>
                         <div className="chatSearchContainer">
                           <input
                             type="text"
@@ -2761,7 +2762,7 @@ export default function WhatsappSummaryClient({
                       </div>
 
                       {/* Coluna Direita: Conteúdo do Chat */}
-                      <div className="chatArea" style={{ display: (!selectedChatKey && window.innerWidth <= 768) ? 'none' : 'flex' }}>
+                      <div className={`chatArea ${selectedChatKey ? 'chatAreaWithSelection' : ''}`}>
                         {activeChat ? (
                           <>
                             <div className="chatAreaHeader">
@@ -2865,7 +2866,7 @@ export default function WhatsappSummaryClient({
       {/* Modal Unificado: Criação ou Edição de Demanda a partir do WhatsApp */}
       {isTaskModalOpen && (
         <div className="modalOverlay" style={{ zIndex: 1100 }}>
-          <div className="modalContent" style={{ minWidth: '450px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-lg)' }}>
+          <div className="modalContent whatsappSummaryTaskModal" style={{ minWidth: '450px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-lg)' }}>
             <div className="modalHeader" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '0.85rem' }}>
               <h2 className="modalTitle" style={{ fontSize: '1.2rem', fontWeight: 700 }}>Cadastrar Nova Demanda</h2>
               <button className="modalCloseBtn" onClick={() => setIsTaskModalOpen(false)}>×</button>

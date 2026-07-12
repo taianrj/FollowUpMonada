@@ -72,6 +72,20 @@ On Windows PowerShell systems that block `npm.ps1`, use `npm.cmd`/`npx.cmd` with
 - Preserve backward compatibility for persisted records and explicitly migrate or safely filter legacy shapes.
 - Do not commit, push, deploy, rotate secrets, or mutate production data unless the user explicitly requests that action.
 
+## Mandatory responsive design review
+
+- Treat responsive design as a cross-cutting requirement in every frontend task, not as optional follow-up work. Before handoff, review the final diff for responsive behavior even when the request appears local or narrowly scoped.
+- For every frontend change, preserve the intended desktop experience while explicitly checking phone, tablet, laptop, and desktop layouts. At minimum, reason about widths around 320px, 375px, 768px, and 1024px as well as the existing desktop layout; verify visually when the authenticated/local environment permits it.
+- Avoid fixed widths, minimum widths, viewport-locked heights, overflowing content, and desktop-only interaction assumptions unless a responsive override is provided. Ensure text wraps, controls remain reachable, touch targets are usable, modals fit the viewport, and loading, empty, error, and populated states remain legible.
+- Add or update regression coverage for responsive behavior when practical, especially for breakpoint rules, layout state transitions, and mobile-only interaction paths. Do not alter the established desktop presentation unless the task requires it.
+
+## Mandatory security review
+
+- Treat system security as a cross-cutting requirement in every task, not as optional follow-up work. Before handoff, review the final diff for security impact even when the request appears visual, local, or narrowly scoped.
+- For every change, identify affected trust boundaries and check authentication, authorization, per-user isolation, input validation, output encoding, secret/PII exposure, filesystem and URL construction, allowed HTTP methods, CORS/CSRF exposure, and safe failure behavior as applicable.
+- Apply least privilege and fail closed. Never rely on hidden UI, client-side checks, obscured identifiers, or untrusted request fields as security controls; enforce sensitive permissions and validation on the server.
+- A refactor or UI-only change must not weaken existing security controls, expose server data to Client Components, broaden proxy/API access, log sensitive values, or create unsafe defaults. If a requested design conflicts with security or data isolation, stop and explain the risk rather than implementing the unsafe behavior.
+
 ## Next.js and frontend rules
 
 - Before modifying Next.js code, read the relevant installed documentation under `node_modules/next/dist/docs/`; do not rely on remembered APIs from older Next.js versions.
