@@ -22,7 +22,19 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             cd /home/ubuntu/followup
-            git pull origin main
+
+            # Se não estiver inicializado como repositório Git, inicializa de forma resiliente
+            if [ ! -d ".git" ]; then
+              git init
+              git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/taianrj/FollowUpMonada.git
+              git fetch origin main
+              git checkout -f main
+            else
+              # Atualiza a URL remota com o token temporário de autenticação do GitHub Actions
+              git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/taianrj/FollowUpMonada.git
+              git fetch origin main
+              git checkout -f main
+            fi
             
             # Reconstrói a imagem Docker para o microsserviço de WhatsApp
             sudo docker build -t followup-whatsapp ./whatsapp-service
