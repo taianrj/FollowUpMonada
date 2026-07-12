@@ -1571,28 +1571,28 @@ export default function WhatsappSummaryClient({
                     )}
                     :
                   </h3>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                     <button
                       type="button"
+                      className="btn btnSecondary"
                       onClick={() => setSummaryDate(prev => changeDateByDays(prev, -1))}
                       disabled={isActionBarDisabled}
                       style={{
-                        backgroundColor: 'transparent',
-                        border: 'none',
-                        color: 'var(--text-primary)',
-                        padding: '0.4rem',
-                        borderRadius: 'var(--radius-md)',
-                        cursor: isActionBarDisabled ? 'not-allowed' : 'pointer',
-                        opacity: isActionBarDisabled ? 0.5 : 0.8,
+                        padding: '0.4rem 0.65rem',
+                        fontSize: '0.82rem',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: '0.9rem',
-                        transition: 'opacity 0.2s',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: isActionBarDisabled ? 'not-allowed' : 'pointer',
+                        opacity: isActionBarDisabled ? 0.5 : 1,
+                        height: '32px',
+                        width: '32px',
+                        minWidth: 'auto',
                       }}
                       title="Voltar um dia"
                     >
-                      ◀️
+                      ←
                     </button>
                     <input
                       type="date"
@@ -1608,30 +1608,31 @@ export default function WhatsappSummaryClient({
                         fontSize: '0.82rem',
                         outline: 'none',
                         opacity: isActionBarDisabled ? 0.6 : 1,
-                        cursor: isActionBarDisabled ? 'not-allowed' : 'default'
+                        cursor: isActionBarDisabled ? 'not-allowed' : 'default',
+                        height: '32px',
                       }}
                     />
                     <button
                       type="button"
+                      className="btn btnSecondary"
                       onClick={() => setSummaryDate(prev => changeDateByDays(prev, 1))}
                       disabled={isActionBarDisabled}
                       style={{
-                        backgroundColor: 'transparent',
-                        border: 'none',
-                        color: 'var(--text-primary)',
-                        padding: '0.4rem',
-                        borderRadius: 'var(--radius-md)',
-                        cursor: isActionBarDisabled ? 'not-allowed' : 'pointer',
-                        opacity: isActionBarDisabled ? 0.5 : 0.8,
+                        padding: '0.4rem 0.65rem',
+                        fontSize: '0.82rem',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: '0.9rem',
-                        transition: 'opacity 0.2s',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: isActionBarDisabled ? 'not-allowed' : 'pointer',
+                        opacity: isActionBarDisabled ? 0.5 : 1,
+                        height: '32px',
+                        width: '32px',
+                        minWidth: 'auto',
                       }}
                       title="Avançar um dia"
                     >
-                      ▶️
+                      →
                     </button>
                   </div>
                 </div>
@@ -2081,25 +2082,26 @@ export default function WhatsappSummaryClient({
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', maxWidth: '260px', justifyContent: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', width: '100%', maxWidth: '280px', justifyContent: 'center' }}>
                     <button
                       type="button"
+                      className="btn btnSecondary"
                       onClick={() => setAutoSummaryDate(prev => changeDateByDays(prev, -1))}
                       style={{
-                        backgroundColor: 'transparent',
-                        border: 'none',
-                        color: 'var(--text-primary)',
-                        padding: '0.5rem',
-                        borderRadius: 'var(--radius-md)',
-                        cursor: 'pointer',
+                        padding: '0.5rem 0.75rem',
+                        fontSize: '0.9rem',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: '1rem',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: 'pointer',
+                        height: '38px',
+                        width: '38px',
+                        minWidth: 'auto',
                       }}
                       title="Voltar um dia"
                     >
-                      ◀️
+                      ←
                     </button>
                     <input
                       type="date"
@@ -2114,28 +2116,30 @@ export default function WhatsappSummaryClient({
                         fontSize: '0.9rem',
                         outline: 'none',
                         width: '100%',
-                        maxWidth: '220px',
-                        textAlign: 'center'
+                        maxWidth: '200px',
+                        textAlign: 'center',
+                        height: '38px',
                       }}
                     />
                     <button
                       type="button"
+                      className="btn btnSecondary"
                       onClick={() => setAutoSummaryDate(prev => changeDateByDays(prev, 1))}
                       style={{
-                        backgroundColor: 'transparent',
-                        border: 'none',
-                        color: 'var(--text-primary)',
-                        padding: '0.5rem',
-                        borderRadius: 'var(--radius-md)',
-                        cursor: 'pointer',
+                        padding: '0.5rem 0.75rem',
+                        fontSize: '0.9rem',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: '1rem',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: 'pointer',
+                        height: '38px',
+                        width: '38px',
+                        minWidth: 'auto',
                       }}
                       title="Avançar um dia"
                     >
-                      ▶️
+                      →
                     </button>
                   </div>
 
