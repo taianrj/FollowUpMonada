@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useEffectEvent, useMemo } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import Sidebar from './Sidebar';
 import { useNotification } from '@/context/NotificationContext';
@@ -36,47 +37,6 @@ function MessageBody({ text }: { text: string }) {
   );
 }
 
-function ConversationTextViewer({ text }: { text: string }) {
-  const cleanText = text.trim();
-  const { title, sections } = parseConversationDisplay(cleanText);
-
-  if (!cleanText) {
-    return <p className="conversationEmpty">Nenhuma mensagem registrada para esta data.</p>;
-  }
-
-  if (sections.length === 0) {
-    return <pre className="conversationRawFallback">{text}</pre>;
-  }
-
-  return (
-    <div className="conversationMarkdownViewer">
-      {title && <h4 className="conversationMarkdownTitle">{title}</h4>}
-      {sections.map((section, sectionIndex) => (
-        <section className="conversationSection" key={`${section.title}-${sectionIndex}`}>
-          <div className="conversationSectionHeader">
-            <h5>{section.title}</h5>
-            {section.meta && <span>{section.meta}</span>}
-          </div>
-          <div className="conversationMessageList">
-            {section.messages.map((message, messageIndex) => (
-              <div className="conversationMessageRow" key={`${message.time}-${message.sender}-${messageIndex}`}>
-                <span className="conversationMessageTime">{message.time}</span>
-                <span className="conversationMessageSender">{message.sender}</span>
-                <span className="conversationMessageText">
-                  <MessageBody text={message.text} />
-                </span>
-              </div>
-            ))}
-            {section.notes.map((note, noteIndex) => (
-              <p className="conversationNote" key={`${note}-${noteIndex}`}>{note}</p>
-            ))}
-          </div>
-        </section>
-      ))}
-    </div>
-  );
-}
-
 const changeDateByDays = (dateStr: string, days: number): string => {
   if (!dateStr) return '';
   const parts = dateStr.split('-');
@@ -95,6 +55,39 @@ const changeDateByDays = (dateStr: string, days: number): string => {
   return `${nextYear}-${nextMonth}-${nextDay}`;
 };
 
+const loadingSteps = [
+  'Analisando conversas do WhatsApp...',
+  'Separando mensagens por interlocutor...',
+  'Identificando clientes conhecidos no banco...',
+  'Agrupando discussões e tópicos chaves...',
+  'Extraindo demandas e prazos implícitos...',
+  'Formatando relatório executivo final...'
+];
+
+const getSaoPauloDateString = (): string => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+};
+
+const getErrorMessage = (error: unknown): string => (
+  error instanceof Error ? error.message : 'Erro desconhecido.'
+);
+
+interface CollaboratorOption {
+  id?: string;
+  name: string;
+}
+
+type WindowWithWebkitAudioContext = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
+
 interface WhatsappSummaryClientProps {
   profile: Profile | null;
   initialClients: Client[];
@@ -110,7 +103,7 @@ export default function WhatsappSummaryClient({
 }: WhatsappSummaryClientProps) {
   const router = useRouter();
   const { showToast } = useNotification();
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
 
   // Estados de navegação e layout
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -155,8 +148,8 @@ export default function WhatsappSummaryClient({
   
   // Entrada do usuário
   const [rawText, setRawText] = useState('');
-  const [summaryDate, setSummaryDate] = useState('');
-  const [saveToDb, setSaveToDb] = useState(true);
+  const [summaryDate, setSummaryDate] = useState(getSaoPauloDateString);
+  const saveToDb = true;
   
   // Status de processamento
   const [isLoading, setIsLoading] = useState(false);
@@ -166,16 +159,13 @@ export default function WhatsappSummaryClient({
   const [activeSummary, setActiveSummary] = useState<WhatsappSummary | null>(
     initialSummaries.length > 0 ? initialSummaries[0] : null
   );
+  const activeSavedSummary = summaries.find((summary) => summary.id === activeSummary?.id);
 
   // Controle de tarefas já cadastradas na sessão atual para evitar múltiplos cliques
   const [createdTasksKeys, setCreatedTasksKeys] = useState<Record<string, boolean>>({});
 
-  // Elementos de Upload
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [dragOver, setDragOver] = useState(false);
-
   // Estados da integração do WhatsApp
-  const [apiToken, setApiToken] = useState('');
+  const apiToken = profile?.id || '';
   const [integrationConnected, setIntegrationConnected] = useState(false);
   const [whatsappStatus, setWhatsappStatus] = useState<string>('disconnected');
   
@@ -205,15 +195,13 @@ export default function WhatsappSummaryClient({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isLoadingModalMessages, setIsLoadingModalMessages] = useState(false);
   const [isCheckingStatus, setIsCheckingStatus] = useState(true);
-  const [checkAttempts, setCheckAttempts] = useState(0);
+  const checkAttemptsRef = useRef(0);
   const [connectedUser, setConnectedUser] = useState<{ id: string; name?: string } | null>(null);
   const [whatsappSyncStatus, setWhatsappSyncStatus] = useState<string>('completed'); // 'pending' | 'syncing' | 'completed'
   const [whatsappMessagesCount, setWhatsappMessagesCount] = useState<number>(0);
-  const [whatsappContactsCount, setWhatsappContactsCount] = useState<number>(0);
   const [whatsappLastIncomingBatchAt, setWhatsappLastIncomingBatchAt] = useState<string | null>(null);
   const [whatsappLastIncomingBatchCount, setWhatsappLastIncomingBatchCount] = useState<number>(0);
   const [whatsappLastStoredMessageAt, setWhatsappLastStoredMessageAt] = useState<string | null>(null);
-  const [whatsappLastStoredMessagesCount, setWhatsappLastStoredMessagesCount] = useState<number>(0);
   const [isResyncing, setIsResyncing] = useState<'soft' | 'force-history' | null>(null);
 
   // Estados para o Modal de Criação de Demanda preenchido
@@ -225,7 +213,7 @@ export default function WhatsappSummaryClient({
   const [modalObservations, setModalObservations] = useState('');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [manualLoading, setManualLoading] = useState(false);
-  const [collaborators, setCollaborators] = useState<any[]>([]);
+  const [collaborators, setCollaborators] = useState<CollaboratorOption[]>([]);
   const [pendingTaskInfo, setPendingTaskInfo] = useState<{
     task: { description: string; responsibles: string[]; status: string; observations: string },
     clientSummary: WhatsappClientSummary,
@@ -249,10 +237,10 @@ export default function WhatsappSummaryClient({
   const statusRequestInFlightRef = useRef(false);
 
   const whatsappOwnerName = (profile?.name || profile?.email?.split('@')[0] || '').trim();
-  const whatsappHeaders: Record<string, string> = {
+  const whatsappHeaders = useMemo<Record<string, string>>(() => ({
     'Content-Type': 'application/json',
     ...(whatsappOwnerName ? { 'x-owner-name': whatsappOwnerName } : {})
-  };
+  }), [whatsappOwnerName]);
   const buildWhatsappServiceUrl = (path: string, params?: Record<string, string>) => {
     const searchParams = new URLSearchParams(params || {});
     const query = searchParams.toString();
@@ -343,83 +331,15 @@ export default function WhatsappSummaryClient({
       }
     };
     fetchCollaborators();
-  }, []);
-
-  // Passos de carregamento animados para entreter o usuário enquanto a IA processa
-  const loadingSteps = [
-    'Analisando conversas do WhatsApp...',
-    'Separando mensagens por interlocutor...',
-    'Identificando clientes conhecidos no banco...',
-    'Agrupando discussões e tópicos chaves...',
-    'Extraindo demandas e prazos implícitos...',
-    'Formatando relatório executivo final...'
-  ];
+  }, [supabase]);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isLoading) {
-      interval = setInterval(() => {
-        setLoadingStep((prev) => (prev + 1) % loadingSteps.length);
-      }, 3500);
-    } else {
-      setLoadingStep(0);
-    }
+    if (!isLoading) return;
+    const interval = setInterval(() => {
+      setLoadingStep((prev) => (prev + 1) % loadingSteps.length);
+    }, 3500);
     return () => clearInterval(interval);
   }, [isLoading]);
-
-  // Função para carregar exemplo de dados para teste (Wow factor)
-  const handleLoadDemoData = () => {
-    const today = new Date().toLocaleDateString('pt-BR');
-    const demoMessages = `[09:12, ${today}] Cliente Acme Corp: Olá equipe, analisamos o último briefing. Precisamos que o Carlos crie o novo layout para a tela de login do aplicativo, com foco em design escuro e moderno.
-[09:15, ${today}] Carlos: Perfeito! Vou iniciar a criação desse layout hoje mesmo.
-[10:30, ${today}] Cliente Acme Corp: Outra coisa importante, Carlos. Precisamos que você envie a planilha de conciliação financeira do mês passado retificada até o fim da tarde. O financeiro está cobrando.
-[10:32, ${today}] Carlos: Sem problemas, vou retificar e enviar até às 17h.
-[11:00, ${today}] João (Loja de Doces): Olá! Qual o status da demanda da nova campanha do Dia dos Namorados? O banner principal precisa de um ajuste nas cores, está muito apagado. Pode colocar o status como 'ajuste' por favor?
-[11:05, ${today}] Carlos: Oi João, tudo bem? Sim, eu mudo o status no painel para ajuste e vou corrigir as cores do banner para destacar mais.
-[14:15, ${today}] Suporte Interno: Pessoal, lembrando que na sexta-feira às 22h teremos a manutenção programada para o backup semanal do banco de dados. Favor avisar os clientes se necessário.
-[16:20, ${today}] Carlos: Excelente, vou agendar o aviso de backup.`;
-    
-    setRawText(demoMessages);
-    showToast('Dados de demonstração carregados com sucesso!', 'info');
-  };
-
-  // Trata a leitura do arquivo enviado
-  const handleFileRead = (file: File) => {
-    if (file.type !== 'text/plain' && !file.name.endsWith('.txt')) {
-      showToast('Por favor, envie apenas arquivos de texto (.txt) exportados do WhatsApp.', 'error');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      if (text) {
-        setRawText(text);
-        showToast(`Arquivo "${file.name}" carregado com sucesso (${text.length} caracteres).`, 'success');
-      }
-    };
-    reader.onerror = () => {
-      showToast('Erro ao ler o arquivo de conversa.', 'error');
-    };
-    reader.readAsText(file);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFileRead(e.dataTransfer.files[0]);
-    }
-  };
 
   // Prepara e abre o modal intermediário de escolha de autogeração ao tentar conectar o celular
   const handleStartConnection = () => {
@@ -427,76 +347,13 @@ export default function WhatsappSummaryClient({
     setChoiceStep('options');
   };
 
-  // Define a data inicial com base no fuso horário local do computador do usuário para evitar hydration mismatches
-  useEffect(() => {
-    const getLocalDateString = () => {
-      const d = new Date();
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    };
-    setSummaryDate(getLocalDateString());
-  }, []);
+  const openQrModal = () => {
+    hasShownSuccessToastRef.current = false;
+    setQrCodeImage(null);
+    setQrStatus('waiting');
+    setIsQrModalOpen(true);
+  };
 
-  // Sincroniza a chave de segurança com o ID do usuário Supabase logado
-  useEffect(() => {
-    if (profile?.id) {
-      setApiToken(profile.id);
-      checkConnectionStatus();
-    }
-  }, [profile]);
-
-  // Monitora e checa o status de conexão com o WhatsApp em segundo plano
-  useEffect(() => {
-    if (!apiToken) return;
-    
-    checkConnectionStatus();
-    
-    // Polling a cada 3 segundos na fase de inicialização ou sincronização para atualizar rápido, e a cada 15 segundos depois
-    const interval = setInterval(() => {
-      checkConnectionStatus();
-    }, (isCheckingStatus || whatsappSyncStatus !== 'completed') ? 3000 : 15000);
-    
-    return () => clearInterval(interval);
-  }, [apiToken, isCheckingStatus, whatsappSyncStatus, whatsappOwnerName]);
-
-  // Efeito de gatilho de autogeração de resumo pós-sincronização
-  useEffect(() => {
-    if (autoSummaryEnabled && autoSummaryDate && whatsappStatus === 'connected' && whatsappSyncStatus === 'completed') {
-      // Se configurado para transcrever áudios, espera até que a fila de áudios chegue a zero
-      if (transcribeAudioFlag && (transcriptionQueueLength > 0 || transcriptionRunning)) {
-        return; // Aguarda o polling de status atualizar e limpar a fila de áudios
-      }
-
-      // Se configurado para interpretar imagens, espera até que a fila de imagens chegue a zero
-      if (interpretImagesFlag && (imageInterpretationQueueLength > 0 || imageInterpretationRunning)) {
-        return; // Aguarda o polling de status atualizar e limpar a fila de imagens
-      }
-
-      setAutoSummaryEnabled(false);
-      setSummaryDate(autoSummaryDate);
-      
-      const dateToGenerate = autoSummaryDate;
-      setAutoSummaryDate('');
-      
-      // Pequeno timeout para aguardar a renderização e o fechamento do modal antes de rodar
-      setTimeout(() => {
-        handleSyncAndGenerateSummary(dateToGenerate);
-      }, 250);
-    }
-  }, [
-    autoSummaryEnabled,
-    autoSummaryDate,
-    whatsappStatus,
-    whatsappSyncStatus,
-    transcribeAudioFlag,
-    transcriptionQueueLength,
-    transcriptionRunning,
-    interpretImagesFlag,
-    imageInterpretationQueueLength,
-    imageInterpretationRunning
-  ]);
 
   // Atualiza as configurações de processamento de mídias do usuário no banco e no microsserviço
   const handleToggleSetting = async (key: 'transcribeAudio' | 'interpretImages', val: boolean) => {
@@ -579,11 +436,9 @@ export default function WhatsappSummaryClient({
         setWhatsappStatus(data.status);
         setWhatsappSyncStatus(data.syncStatus || 'pending');
         setWhatsappMessagesCount(data.messagesCount || 0);
-        setWhatsappContactsCount(data.contactsCount || 0);
         setWhatsappLastIncomingBatchAt(data.lastIncomingBatchAt || null);
         setWhatsappLastIncomingBatchCount(data.lastIncomingBatchCount || 0);
         setWhatsappLastStoredMessageAt(data.lastStoredMessageAt || null);
-        setWhatsappLastStoredMessagesCount(data.lastStoredMessagesCount || 0);
         
         if (data.settings) {
           setTranscribeAudioFlag(data.settings.transcribeAudio);
@@ -618,22 +473,22 @@ export default function WhatsappSummaryClient({
         if (data.status === 'connected') {
           setConnectedUser(data.user || null);
           setIsCheckingStatus(false);
-          setCheckAttempts(0);
+          checkAttemptsRef.current = 0;
         } else if (data.status === 'connecting') {
           // Se o status for conectando, não limpa o usuário para manter a barra verde de conectado no topo sem pulos
           setIsCheckingStatus(false);
-          setCheckAttempts(0);
+          checkAttemptsRef.current = 0;
         } else {
           setConnectedUser(null);
           // Se o servidor respondeu, mas não está conectado (ex: qrcode ou disconnected), 
           // significa que o servidor está online e respondendo. Não precisamos continuar checando no spinner.
           setIsCheckingStatus(false);
-          setCheckAttempts(0);
+          checkAttemptsRef.current = 0;
         }
       } else {
         handleStatusFailure();
       }
-    } catch (e) {
+    } catch {
       handleStatusFailure();
     } finally {
       window.clearTimeout(timeout);
@@ -654,7 +509,6 @@ export default function WhatsappSummaryClient({
       setConnectedUser(null);
       setWhatsappSyncStatus('pending');
       setWhatsappMessagesCount(0);
-      setWhatsappContactsCount(0);
       setTranscriptionRunning(false);
       setTranscriptionQueueLength(0);
       setTranscriptionCompleted(0);
@@ -666,14 +520,27 @@ export default function WhatsappSummaryClient({
     }
     
     // Tenta carregar até 8 vezes (8 * 3s = 24 segundos) antes de dar timeout do spinner de inicialização
-    setCheckAttempts(prev => {
-      const next = prev + 1;
-      if (next >= 8) {
-        setIsCheckingStatus(false);
-      }
-      return next;
-    });
+    checkAttemptsRef.current += 1;
+    if (checkAttemptsRef.current >= 8) {
+      setIsCheckingStatus(false);
+    }
   };
+
+  const checkConnectionStatusEffect = useEffectEvent(checkConnectionStatus);
+
+  useEffect(() => {
+    if (!apiToken) return;
+
+    const initialCheck = window.setTimeout(() => void checkConnectionStatusEffect(), 0);
+    const interval = setInterval(() => {
+      void checkConnectionStatusEffect();
+    }, (isCheckingStatus || whatsappSyncStatus !== 'completed') ? 3000 : 15000);
+
+    return () => {
+      window.clearTimeout(initialCheck);
+      clearInterval(interval);
+    };
+  }, [apiToken, isCheckingStatus, whatsappSyncStatus]);
 
   const handleManualResync = async (mode: 'soft' | 'force-history') => {
     if (!apiToken) return;
@@ -699,61 +566,53 @@ export default function WhatsappSummaryClient({
 
       showToast('Sincronização acionada com sucesso! Aguarde a conclusão da leitura.', 'success');
       checkConnectionStatus();
-    } catch (err: any) {
-      showToast(`Falha ao ressincronizar: ${err.message}`, 'error');
+    } catch (err: unknown) {
+      showToast(`Falha ao ressincronizar: ${getErrorMessage(err)}`, 'error');
       checkConnectionStatus();
     } finally {
       setIsResyncing(null);
     }
   };
 
+  const pollQrEffect = useEffectEvent(async () => {
+    try {
+      const response = await fetch(buildWhatsappServiceUrl('qr-code'), {
+        headers: whatsappHeaders
+      });
+      if (!response.ok) return;
+
+      const data = await response.json();
+      setQrStatus(data.status);
+      if (data.status === 'qrcode') {
+        setQrCodeImage(data.qrCode);
+      } else if (data.status === 'connected') {
+        if (!hasShownSuccessToastRef.current) {
+          hasShownSuccessToastRef.current = true;
+          setQrCodeImage(null);
+          setIsQrModalOpen(false);
+          setIntegrationConnected(true);
+          setWhatsappStatus('connected');
+          showToast('WhatsApp conectado com sucesso!', 'success');
+        }
+      } else {
+        setQrCodeImage(null);
+      }
+    } catch (error) {
+      console.error('Erro ao buscar status do QR Code:', error);
+    }
+  });
+
   // Polling para obter o QR Code dinâmico quando o modal está aberto
   useEffect(() => {
-    let timer: NodeJS.Timeout;
-    
-    const pollQr = async () => {
-      if (!isQrModalOpen || !apiToken) return;
-      
-      try {
-        const response = await fetch(buildWhatsappServiceUrl('qr-code'), {
-          headers: whatsappHeaders
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setQrStatus(data.status);
-          if (data.status === 'qrcode') {
-            setQrCodeImage(data.qrCode);
-          } else if (data.status === 'connected') {
-            if (!hasShownSuccessToastRef.current) {
-              hasShownSuccessToastRef.current = true;
-              setQrCodeImage(null);
-              setIsQrModalOpen(false);
-              setIntegrationConnected(true);
-              setWhatsappStatus('connected');
-              showToast('WhatsApp conectado com sucesso!', 'success');
-            }
-          } else {
-            setQrCodeImage(null);
-          }
-        }
-      } catch (e) {
-        console.error('Erro ao buscar status do QR Code:', e);
-      }
-    };
+    if (!isQrModalOpen || !apiToken) return;
 
-    if (isQrModalOpen) {
-      hasShownSuccessToastRef.current = false;
-      pollQr();
-      timer = setInterval(pollQr, 3000); // Polling a cada 3 segundos
-    } else {
-      setQrCodeImage(null);
-      setQrStatus('waiting');
-    }
-
+    const initialPoll = window.setTimeout(() => void pollQrEffect(), 0);
+    const timer = setInterval(() => void pollQrEffect(), 3000);
     return () => {
-      if (timer) clearInterval(timer);
+      window.clearTimeout(initialPoll);
+      clearInterval(timer);
     };
-  }, [isQrModalOpen, apiToken, whatsappOwnerName]);
+  }, [isQrModalOpen, apiToken]);
 
   // Função para abrir o modal de conversas coletadas
   const handleOpenMessagesModal = async () => {
@@ -803,8 +662,8 @@ export default function WhatsappSummaryClient({
           setModalMessagesText(`Erro ao buscar mensagens do servidor: HTTP ${response.status}`);
         }
       }
-    } catch (err: any) {
-      setModalMessagesText(`Erro de conexão ao buscar mensagens: ${err.message}`);
+    } catch (err: unknown) {
+      setModalMessagesText(`Erro de conexão ao buscar mensagens: ${getErrorMessage(err)}`);
     } finally {
       setIsLoadingModalMessages(false);
     }
@@ -827,8 +686,8 @@ export default function WhatsappSummaryClient({
       } else {
         throw new Error('Falha ao desconectar.');
       }
-    } catch (err: any) {
-      showToast('Erro ao desconectar: ' + err.message, 'error');
+    } catch (err: unknown) {
+      showToast('Erro ao desconectar: ' + getErrorMessage(err), 'error');
     }
   };
 
@@ -874,9 +733,9 @@ export default function WhatsappSummaryClient({
       // Passo 2: Executa a geração chamando diretamente a função de processamento estruturada
       await handleGenerateSummary(textMessages, targetDate);
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       setIsLoading(false);
-      showToast('Falha no processo: ' + error.message, 'error');
+      showToast('Falha no processo: ' + getErrorMessage(error), 'error');
     }
   };
 
@@ -884,7 +743,7 @@ export default function WhatsappSummaryClient({
   const triggerCompletionAlert = () => {
     // 1. Toca o som de notificação harmônico sutil usando Web Audio API nativa
     try {
-      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+      const AudioContext = window.AudioContext || (window as WindowWithWebkitAudioContext).webkitAudioContext;
       if (AudioContext) {
         const ctx = new AudioContext();
         const osc = ctx.createOscillator();
@@ -993,14 +852,47 @@ export default function WhatsappSummaryClient({
 
       // Dispara o som e o alerta visual na aba do navegador
       triggerCompletionAlert();
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(error);
-      showToast('Erro ao processar resumo: ' + error.message, 'error');
+      showToast('Erro ao processar resumo: ' + getErrorMessage(error), 'error');
     } finally {
       setIsLoading(false);
       setLoadingStep(0);
     }
   };
+
+  const generateAutoSummaryEffect = useEffectEvent((date: string) => {
+    void handleSyncAndGenerateSummary(date);
+  });
+
+  // Dispara a geração automática somente depois que sincronização e mídias terminarem.
+  useEffect(() => {
+    if (!autoSummaryEnabled || !autoSummaryDate) return;
+    if (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed') return;
+    if (transcribeAudioFlag && (transcriptionQueueLength > 0 || transcriptionRunning)) return;
+    if (interpretImagesFlag && (imageInterpretationQueueLength > 0 || imageInterpretationRunning)) return;
+
+    const dateToGenerate = autoSummaryDate;
+    const timer = window.setTimeout(() => {
+      setAutoSummaryEnabled(false);
+      setSummaryDate(dateToGenerate);
+      setAutoSummaryDate('');
+      generateAutoSummaryEffect(dateToGenerate);
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    autoSummaryEnabled,
+    autoSummaryDate,
+    whatsappStatus,
+    whatsappSyncStatus,
+    transcribeAudioFlag,
+    transcriptionQueueLength,
+    transcriptionRunning,
+    interpretImagesFlag,
+    imageInterpretationQueueLength,
+    imageInterpretationRunning
+  ]);
 
   // Prepara e abre o modal de criação de tarefa sugerida com campos pré-preenchidos
   const handleOpenSuggestedTaskModal = async (
@@ -1081,9 +973,9 @@ export default function WhatsappSummaryClient({
 
       // Abre o modal
       setIsTaskModalOpen(true);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(error);
-      showToast('Erro ao inicializar formulário da demanda: ' + error.message, 'error');
+      showToast('Erro ao inicializar formulário da demanda: ' + getErrorMessage(error), 'error');
     }
   };
 
@@ -1145,9 +1037,9 @@ export default function WhatsappSummaryClient({
       
       // Dá um refresh nas rotas para atualizar o Kanban principal
       router.refresh();
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(error);
-      showToast('Erro ao criar demanda: ' + error.message, 'error');
+      showToast('Erro ao criar demanda: ' + getErrorMessage(error), 'error');
     } finally {
       setManualLoading(false);
     }
@@ -1186,9 +1078,9 @@ export default function WhatsappSummaryClient({
       if (activeSummary?.id === summaryId) {
         setActiveSummary(remainingSummaries.length > 0 ? remainingSummaries[0] : null);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(error);
-      showToast('Erro ao deletar resumo: ' + error.message, 'error');
+      showToast('Erro ao deletar resumo: ' + getErrorMessage(error), 'error');
     }
   };
 
@@ -1235,7 +1127,50 @@ export default function WhatsappSummaryClient({
             </span>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', overflowY: 'auto', flex: 1 }} className="custom-scroll">
+          <div className="whatsappSummaryMobileHistoryPicker">
+            <label className="visually-hidden" htmlFor="whatsapp-summary-history">
+              Selecionar resumo do histórico
+            </label>
+            <select
+              id="whatsapp-summary-history"
+              className="formInput"
+              value={activeSavedSummary?.id || ''}
+              onChange={(event) => {
+                const selectedSummary = summaries.find((summary) => summary.id === event.target.value);
+                if (selectedSummary) {
+                  setActiveSummary(selectedSummary);
+                  setCreatedTasksKeys({});
+                }
+              }}
+              disabled={summaries.length === 0}
+            >
+              {summaries.length === 0 ? (
+                <option value="">Nenhum resumo salvo</option>
+              ) : (
+                <>
+                  <option value="">Selecionar outro resumo</option>
+                  {summaries.map((summary) => (
+                    <option key={summary.id} value={summary.id}>
+                      {new Date(`${summary.summary_date}T00:00:00`).toLocaleDateString('pt-BR')}
+                    </option>
+                  ))}
+                </>
+              )}
+            </select>
+            {profile?.role === 'admin' && activeSavedSummary && (
+              <button
+                type="button"
+                className="whatsappSummaryMobileDelete"
+                onClick={(event) => handleDeleteSummary(activeSavedSummary.id, event)}
+                aria-label="Excluir resumo selecionado"
+                title="Excluir resumo selecionado"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', overflowY: 'auto', flex: 1 }} className="custom-scroll whatsappSummaryHistoryList">
             {summaries.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                 Nenhum resumo salvo no banco de dados.
@@ -1954,7 +1889,7 @@ export default function WhatsappSummaryClient({
               <div>
                 <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>Nenhum Resumo Carregado</h3>
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', maxWidth: '400px', margin: '0 auto', lineHeight: 1.5 }}>
-                  Coloque as mensagens do dia acima e clique em "Gerar Resumo Semântico", ou selecione um resumo histórico no painel esquerdo para visualizar.
+                  Coloque as mensagens do dia acima e clique em &quot;Gerar Resumo Semântico&quot;, ou selecione um resumo histórico para visualizar.
                 </p>
               </div>
             </div>
@@ -2056,7 +1991,7 @@ export default function WhatsappSummaryClient({
                     onClick={() => {
                       setAutoSummaryEnabled(false);
                       setIsChoiceModalOpen(false);
-                      setIsQrModalOpen(true);
+                      openQrModal();
                     }}
                     style={{
                       width: '100%',
@@ -2167,7 +2102,7 @@ export default function WhatsappSummaryClient({
                       onClick={() => {
                         setAutoSummaryEnabled(true);
                         setIsChoiceModalOpen(false);
-                        setIsQrModalOpen(true);
+                        openQrModal();
                       }}
                       style={{
                         flex: 2,
@@ -2601,9 +2536,12 @@ export default function WhatsappSummaryClient({
               )}
 
               {qrStatus === 'qrcode' && qrCodeImage && (
-                <img 
-                  src={qrCodeImage} 
-                  alt="QR Code do WhatsApp" 
+                <Image
+                  src={qrCodeImage}
+                  alt="QR Code do WhatsApp"
+                  width={240}
+                  height={240}
+                  unoptimized
                   style={{
                     width: '240px',
                     height: '240px',

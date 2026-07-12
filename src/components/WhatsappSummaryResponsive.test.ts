@@ -19,7 +19,10 @@ describe('WhatsappSummaryClient responsive layout', () => {
       /@media \(max-width: 1024px\)[\s\S]*?\.whatsappSummaryMain\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*height:\s*auto;/
     );
     expect(dashboardCss).toMatch(
-      /@media \(max-width: 768px\)[\s\S]*?\.whatsappSummaryHistoryPanel > \.custom-scroll\s*\{[^}]*flex-direction:\s*row !important;[^}]*overflow-x:\s*auto !important;/
+      /@media \(max-width: 768px\)[\s\S]*?\.whatsappSummaryHistoryList\s*\{[^}]*display:\s*none !important;/
+    );
+    expect(dashboardCss).toMatch(
+      /@media \(max-width: 768px\)[\s\S]*?\.whatsappSummaryMobileHistoryPicker\s*\{[^}]*display:\s*flex;/
     );
     expect(dashboardCss).toContain("height: calc(100dvh - 2rem) !important;");
   });
@@ -33,6 +36,18 @@ describe('WhatsappSummaryClient responsive layout', () => {
     );
     expect(dashboardCss).toMatch(
       /@media \(max-width: 1024px\)[\s\S]*?grid-template-areas:\s*'header'\s*'history'\s*'workspace';/
+    );
+  });
+
+  it('places the compact mobile history after the new-summary action bar', () => {
+    expect(componentSource).toContain('whatsappSummaryMobileHistoryPicker');
+    expect(componentSource).toContain('Selecionar outro resumo');
+    expect(componentSource).toContain('activeSavedSummary');
+    expect(dashboardCss).toMatch(
+      /\.whatsappSummaryWorkspace > \.whatsappSummaryActionBar\s*\{\s*order:\s*2;/
+    );
+    expect(dashboardCss).toMatch(
+      /\.whatsappSummaryHistoryPanel\s*\{[^}]*order:\s*3;/
     );
   });
 

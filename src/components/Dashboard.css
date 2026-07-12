@@ -1448,6 +1448,10 @@ textarea.formInput {
   gap: 0.6rem;
 }
 
+.whatsappSummaryMobileHistoryPicker {
+  display: none;
+}
+
 .whatsappSummarySkeletonGrid {
   width: 100%;
   display: grid;
@@ -1625,25 +1629,66 @@ textarea.formInput {
   }
 
   .whatsappSummaryMain {
+    display: grid;
+    grid-template-areas: none;
+    grid-template-rows: none;
     gap: 1rem;
     padding: 1rem;
   }
 
+  .whatsappSummaryPageHeader {
+    grid-area: auto;
+    order: 0;
+  }
+
+  .whatsappSummaryWorkspace {
+    display: contents;
+  }
+
+  .whatsappSummaryWorkspace > * {
+    order: 4;
+  }
+
+  .whatsappSummaryWorkspace > .whatsappStatusPanel {
+    order: 1;
+  }
+
+  .whatsappSummaryWorkspace > .whatsappSummaryActionBar {
+    order: 2;
+  }
+
   .whatsappSummaryHistoryPanel {
+    grid-area: auto;
+    order: 3;
     padding: 1rem !important;
     gap: 0.85rem !important;
     max-height: none;
   }
 
-  .whatsappSummaryHistoryPanel > .custom-scroll {
-    flex-direction: row !important;
-    overflow-x: auto !important;
-    overflow-y: hidden !important;
-    padding-bottom: 0.25rem;
+  .whatsappSummaryHistoryList {
+    display: none !important;
   }
 
-  .whatsappSummaryHistoryPanel .historyItem {
-    flex: 0 0 min(15rem, 78vw);
+  .whatsappSummaryMobileHistoryPicker {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .whatsappSummaryMobileHistoryPicker .formInput {
+    min-width: 0;
+  }
+
+  .whatsappSummaryMobileDelete {
+    flex: 0 0 2.75rem;
+    width: 2.75rem;
+    height: 2.75rem;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: var(--radius-md);
+    background: rgba(239, 68, 68, 0.08);
+    color: #f87171;
+    cursor: pointer;
+    font-size: 1rem;
   }
 
   .whatsappSummaryHeading {
