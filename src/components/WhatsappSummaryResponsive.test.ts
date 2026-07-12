@@ -8,6 +8,11 @@ const componentSource = readFileSync(
 const dashboardCss = readFileSync(new URL('./Dashboard.css', import.meta.url), 'utf8');
 
 describe('WhatsappSummaryClient responsive layout', () => {
+  it('identifies the saved summaries section clearly', () => {
+    expect(componentSource).toContain('>Resumos Salvos</h3>');
+    expect(componentSource).not.toContain('>Histórico Diário</h3>');
+  });
+
   it('keeps the current desktop grid as the base layout', () => {
     expect(dashboardCss).toMatch(
       /\.whatsappSummaryMain\s*\{[^}]*grid-template-columns:\s*300px minmax\(0, 1fr\);[^}]*gap:\s*2rem;[^}]*padding:\s*2\.5rem;/s

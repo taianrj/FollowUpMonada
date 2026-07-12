@@ -21,6 +21,7 @@ import {
   recordWhatsappStatusFailure,
   recordWhatsappStatusSuccess
 } from '@/lib/whatsapp/status-health';
+import { playSummaryCompletionSound } from '@/lib/summary-completion-sound';
 import './Dashboard.css'; // Reutiliza estilos globais de layout e botões
 
 function MessageBody({ text }: { text: string }) {
@@ -83,10 +84,6 @@ interface CollaboratorOption {
   id?: string;
   name: string;
 }
-
-type WindowWithWebkitAudioContext = Window & {
-  webkitAudioContext?: typeof AudioContext;
-};
 
 interface WhatsappSummaryClientProps {
   profile: Profile | null;
@@ -739,29 +736,11 @@ export default function WhatsappSummaryClient({
     }
   };
 
-  // Função para tocar um alerta sonoro harmônico e piscar o título da aba caso o usuário esteja em outra aba
+  // Toca um alerta sonoro curto e pisca o título da aba caso o usuário esteja em outra aba
   const triggerCompletionAlert = () => {
-    // 1. Toca o som de notificação harmônico sutil usando Web Audio API nativa
+    // 1. Toca um alerta de duas notas usando a Web Audio API nativa
     try {
-      const AudioContext = window.AudioContext || (window as WindowWithWebkitAudioContext).webkitAudioContext;
-      if (AudioContext) {
-        const ctx = new AudioContext();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // Ré 5 (som suave)
-        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // Lá 5
-        
-        gain.gain.setValueAtTime(0.12, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5); // Fade-out em 0.5s
-        
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        
-        osc.start();
-        osc.stop(ctx.currentTime + 0.5);
-      }
+      playSummaryCompletionSound();
     } catch (e) {
       console.error('Falha ao reproduzir áudio de notificação:', e);
     }
@@ -1121,7 +1100,7 @@ export default function WhatsappSummaryClient({
           overflowY: 'auto'
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>Histórico Diário</h3>
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>Resumos Salvos</h3>
             <span style={{ fontSize: '0.75rem', backgroundColor: 'var(--border-color)', color: 'var(--text-secondary)', padding: '0.15rem 0.5rem', borderRadius: '9999px', fontWeight: 600 }}>
               {summaries.length} salvos
             </span>
