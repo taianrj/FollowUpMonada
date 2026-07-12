@@ -77,6 +77,24 @@ function ConversationTextViewer({ text }: { text: string }) {
   );
 }
 
+const changeDateByDays = (dateStr: string, days: number): string => {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr;
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1; // 0-indexed
+  const day = parseInt(parts[2], 10);
+  
+  const date = new Date(year, month, day);
+  date.setDate(date.getDate() + days);
+  
+  const nextYear = date.getFullYear();
+  const nextMonth = String(date.getMonth() + 1).padStart(2, '0');
+  const nextDay = String(date.getDate()).padStart(2, '0');
+  
+  return `${nextYear}-${nextMonth}-${nextDay}`;
+};
+
 interface WhatsappSummaryClientProps {
   profile: Profile | null;
   initialClients: Client[];
@@ -1553,23 +1571,69 @@ export default function WhatsappSummaryClient({
                     )}
                     :
                   </h3>
-                  <input
-                    type="date"
-                    value={summaryDate}
-                    onChange={(e) => setSummaryDate(e.target.value)}
-                    disabled={isActionBarDisabled}
-                    style={{
-                      backgroundColor: 'var(--bg-primary)',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-primary)',
-                      padding: '0.4rem 0.65rem',
-                      borderRadius: 'var(--radius-md)',
-                      fontSize: '0.82rem',
-                      outline: 'none',
-                      opacity: isActionBarDisabled ? 0.6 : 1,
-                      cursor: isActionBarDisabled ? 'not-allowed' : 'default'
-                    }}
-                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => setSummaryDate(prev => changeDateByDays(prev, -1))}
+                      disabled={isActionBarDisabled}
+                      style={{
+                        backgroundColor: 'transparent',
+                        border: 'none',
+                        color: 'var(--text-primary)',
+                        padding: '0.4rem',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: isActionBarDisabled ? 'not-allowed' : 'pointer',
+                        opacity: isActionBarDisabled ? 0.5 : 0.8,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '0.9rem',
+                        transition: 'opacity 0.2s',
+                      }}
+                      title="Voltar um dia"
+                    >
+                      ◀️
+                    </button>
+                    <input
+                      type="date"
+                      value={summaryDate}
+                      onChange={(e) => setSummaryDate(e.target.value)}
+                      disabled={isActionBarDisabled}
+                      style={{
+                        backgroundColor: 'var(--bg-primary)',
+                        border: '1px solid var(--border-color)',
+                        color: 'var(--text-primary)',
+                        padding: '0.4rem 0.65rem',
+                        borderRadius: 'var(--radius-md)',
+                        fontSize: '0.82rem',
+                        outline: 'none',
+                        opacity: isActionBarDisabled ? 0.6 : 1,
+                        cursor: isActionBarDisabled ? 'not-allowed' : 'default'
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSummaryDate(prev => changeDateByDays(prev, 1))}
+                      disabled={isActionBarDisabled}
+                      style={{
+                        backgroundColor: 'transparent',
+                        border: 'none',
+                        color: 'var(--text-primary)',
+                        padding: '0.4rem',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: isActionBarDisabled ? 'not-allowed' : 'pointer',
+                        opacity: isActionBarDisabled ? 0.5 : 0.8,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '0.9rem',
+                        transition: 'opacity 0.2s',
+                      }}
+                      title="Avançar um dia"
+                    >
+                      ▶️
+                    </button>
+                  </div>
                 </div>
 
                 {/* Botões de Ação */}
@@ -2017,23 +2081,63 @@ export default function WhatsappSummaryClient({
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', alignItems: 'center' }}>
-                  <input
-                    type="date"
-                    value={autoSummaryDate}
-                    onChange={(e) => setAutoSummaryDate(e.target.value)}
-                    style={{
-                      backgroundColor: 'var(--bg-primary)',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-primary)',
-                      padding: '0.5rem 0.75rem',
-                      borderRadius: 'var(--radius-md)',
-                      fontSize: '0.9rem',
-                      outline: 'none',
-                      width: '100%',
-                      maxWidth: '220px',
-                      textAlign: 'center'
-                    }}
-                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', maxWidth: '260px', justifyContent: 'center' }}>
+                    <button
+                      type="button"
+                      onClick={() => setAutoSummaryDate(prev => changeDateByDays(prev, -1))}
+                      style={{
+                        backgroundColor: 'transparent',
+                        border: 'none',
+                        color: 'var(--text-primary)',
+                        padding: '0.5rem',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '1rem',
+                      }}
+                      title="Voltar um dia"
+                    >
+                      ◀️
+                    </button>
+                    <input
+                      type="date"
+                      value={autoSummaryDate}
+                      onChange={(e) => setAutoSummaryDate(e.target.value)}
+                      style={{
+                        backgroundColor: 'var(--bg-primary)',
+                        border: '1px solid var(--border-color)',
+                        color: 'var(--text-primary)',
+                        padding: '0.5rem 0.75rem',
+                        borderRadius: 'var(--radius-md)',
+                        fontSize: '0.9rem',
+                        outline: 'none',
+                        width: '100%',
+                        maxWidth: '220px',
+                        textAlign: 'center'
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setAutoSummaryDate(prev => changeDateByDays(prev, 1))}
+                      style={{
+                        backgroundColor: 'transparent',
+                        border: 'none',
+                        color: 'var(--text-primary)',
+                        padding: '0.5rem',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '1rem',
+                      }}
+                      title="Avançar um dia"
+                    >
+                      ▶️
+                    </button>
+                  </div>
 
 
 
