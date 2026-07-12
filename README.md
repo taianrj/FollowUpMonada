@@ -65,6 +65,17 @@ curl -fsS https://seu-dominio.example/healthz
 
 Na Vercel, `NEXT_PUBLIC_WHATSAPP_SERVICE_URL` deve apontar para `https://seu-dominio.example`. Qualquer alteração nessa variável requer uma nova publicação de produção.
 
+### Deploy Automático (CI/CD via GitHub Actions)
+
+O deploy do microsserviço de WhatsApp é realizado automaticamente a cada push na branch `main` através do workflow configurado em [.github/workflows/deploy.yml](file:///.github/workflows/deploy.yml).
+
+Para que o deploy funcione corretamente, as seguintes **Secrets** precisam ser cadastradas nas configurações do seu repositório no GitHub (*Settings > Secrets and variables > Actions*):
+
+1. **`SSH_HOST`**: `seu-dominio.example` (ou o IP público correspondente da sua VM Oracle).
+2. **`SSH_USER`**: `ubuntu`
+3. **`SSH_KEY`**: O conteúdo textual da chave privada correspondente que você utiliza para acessar a VM.
+   - **Dica de Localização**: No seu computador local, você pode obter o conteúdo desta chave abrindo o arquivo `~/.ssh/deploy-key` com um editor de texto (como o Bloco de Notas). Copie todo o conteúdo (incluindo as linhas `-----BEGIN ...-----` e `-----END ...-----`) e cole no GitHub.
+
 ---
 
 ## 🤖 Guia Técnico para IAs Agênticas e Desenvolvedores

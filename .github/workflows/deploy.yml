@@ -1,0 +1,41 @@
+name: Deploy Automático na Oracle Cloud
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do Código
+        uses: actions/checkout@v4
+
+      - name: Executar comandos de Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /home/ubuntu/followup
+            git pull origin main
+            
+            # Reconstrói a imagem Docker para o microsserviço de WhatsApp
+            sudo docker build -t followup-whatsapp ./whatsapp-service
+            
+            # Para e remove o contêiner anterior se ele existir
+            sudo docker stop followup-whatsapp || true
+            sudo docker rm followup-whatsapp || true
+            
+            # Inicializa o novo contêiner com as mesmas configurações de persistência, porta e ambiente
+            sudo docker run -d \
+              --name followup-whatsapp \
+              --restart always \
+              -p 127.0.0.1:8080:8080 \
+              -v /home/ubuntu/followup/whatsapp-service/data:/app/data \
+              --env-file /home/ubuntu/followup/whatsapp-service/.env \
+              followup-whatsapp
