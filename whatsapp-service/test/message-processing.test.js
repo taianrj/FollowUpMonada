@@ -340,3 +340,51 @@ test('valida cookies e origens CORS', () => {
   assert.equal(service.isAllowedCorsOrigin('http://localhost:3000'), true);
   assert.equal(service.isAllowedCorsOrigin('https://evil.example'), false);
 });
+
+test('permite enfileirar transcricao de audio e imagem quando apenas GEMINI_API_KEY esta configurada', () => {
+  // Salva o estado original do ambiente
+  const oldGroq = process.env.GROQ_API_KEY;
+  const oldOpenai = process.env.OPENAI_API_KEY;
+  const oldGemini = process.env.GEMINI_API_KEY;
+  const oldExplicitUrl = process.env.AUDIO_TRANSCRIPTION_URL;
+  const oldExplicitKey = process.env.AUDIO_TRANSCRIPTION_API_KEY;
+  const oldImageExplicitUrl = process.env.IMAGE_INTERPRETATION_URL;
+  const oldImageExplicitKey = process.env.IMAGE_INTERPRETATION_API_KEY;
+
+  try {
+    // Caso 1: Nenhuma chave configurada
+    delete process.env.GROQ_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.AUDIO_TRANSCRIPTION_URL;
+    delete process.env.AUDIO_TRANSCRIPTION_API_KEY;
+    delete process.env.IMAGE_INTERPRETATION_URL;
+    delete process.env.IMAGE_INTERPRETATION_API_KEY;
+
+    assert.equal(service.getAudioTranscriptionConfig(), null);
+    assert.equal(service.getImageInterpretationConfig(), null);
+
+    const msgObj = stored({ text: '[Áudio]' });
+    assert.equal(service.shouldQueueAudioTranscription('user1', msgObj, new Set()), false);
+    assert.equal(service.shouldQueueImageInterpretation('user1', msgObj, new Set()), false);
+
+    // Caso 2: Apenas GEMINI_API_KEY configurada
+    process.env.GEMINI_API_KEY = 'fake-gemini-key';
+
+    assert.equal(service.getAudioTranscriptionConfig(), null);
+    assert.equal(service.getImageInterpretationConfig(), null);
+
+    // Agora deve permitir enfileirar
+    assert.equal(service.shouldQueueAudioTranscription('user1', msgObj, new Set()), true);
+    assert.equal(service.shouldQueueImageInterpretation('user1', stored({ text: '[Imagem]' }), new Set()), true);
+  } finally {
+    // Restaura o estado do ambiente
+    if (oldGroq) process.env.GROQ_API_KEY = oldGroq;
+    if (oldOpenai) process.env.OPENAI_API_KEY = oldOpenai;
+    if (oldGemini) process.env.GEMINI_API_KEY = oldGemini;
+    if (oldExplicitUrl) process.env.AUDIO_TRANSCRIPTION_URL = oldExplicitUrl;
+    if (oldExplicitKey) process.env.AUDIO_TRANSCRIPTION_API_KEY = oldExplicitKey;
+    if (oldImageExplicitUrl) process.env.IMAGE_INTERPRETATION_URL = oldImageExplicitUrl;
+    if (oldImageExplicitKey) process.env.IMAGE_INTERPRETATION_API_KEY = oldImageExplicitKey;
+  }
+});

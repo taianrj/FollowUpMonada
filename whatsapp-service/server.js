@@ -1687,7 +1687,7 @@ function findStoredMessageByDedupeKey(userId, messageObject) {
 }
 
 function shouldQueueAudioTranscription(userId, messageObject, savedKeys) {
-  if (!getAudioTranscriptionConfig()) return false;
+  if (!getAudioTranscriptionConfig() && !process.env.GEMINI_API_KEY) return false;
 
   const instance = instances[userId];
   if (instance && instance.transcribeAudioSetting === false) {
@@ -1704,7 +1704,7 @@ function shouldQueueAudioTranscription(userId, messageObject, savedKeys) {
 }
 
 function queueAudioTranscriptions(items) {
-  if (!getAudioTranscriptionConfig()) return 0;
+  if (!getAudioTranscriptionConfig() && !process.env.GEMINI_API_KEY) return 0;
   const affectedUsers = new Set();
   let added = 0;
 
@@ -2171,7 +2171,7 @@ function isImageInterpretationText(text) {
 }
 
 function shouldQueueImageInterpretation(userId, messageObject, savedKeys) {
-  if (!getImageInterpretationConfig()) return false;
+  if (!getImageInterpretationConfig() && !process.env.GEMINI_API_KEY) return false;
 
   const instance = instances[userId];
   if (instance && instance.interpretImagesSetting === false) {
@@ -2188,7 +2188,7 @@ function shouldQueueImageInterpretation(userId, messageObject, savedKeys) {
 }
 
 function queueImageInterpretations(items) {
-  if (!getImageInterpretationConfig()) return 0;
+  if (!getImageInterpretationConfig() && !process.env.GEMINI_API_KEY) return 0;
   const affectedUsers = new Set();
   let added = 0;
 
@@ -6019,7 +6019,7 @@ app.get('/status', checkAuth, async (req, res) => {
       fallbackSnapshots: true
     },
     audioTranscription: {
-      configured: !!getAudioTranscriptionConfig(),
+      configured: !!getAudioTranscriptionConfig() || !!process.env.GEMINI_API_KEY,
       queueLength: audioTranscriptionQueue.filter(x => x.userId === cleanUserId).length,
       retrying: countScheduledRetriesForUser(audioTranscriptionQueue, cleanUserId),
       nextRetryInMs: nextRetryInMsForUser(audioTranscriptionQueue, cleanUserId, audioTranscriptionBackoffUntil),
@@ -6036,7 +6036,7 @@ app.get('/status', checkAuth, async (req, res) => {
       lastError: instance.transcriptionLastError || null
     },
     imageInterpretation: {
-      configured: !!getImageInterpretationConfig(),
+      configured: !!getImageInterpretationConfig() || !!process.env.GEMINI_API_KEY,
       compressorAvailable: !!sharp,
       queueLength: imageInterpretationQueue.filter(x => x.userId === cleanUserId).length,
       retrying: countScheduledRetriesForUser(imageInterpretationQueue, cleanUserId),
@@ -6772,6 +6772,12 @@ module.exports = {
     retryDelayMsForError,
     shouldPauseMediaQueueForError,
     stringifyMediaState,
-    unwrapMessageContent
+    unwrapMessageContent,
+    shouldQueueAudioTranscription,
+    shouldQueueImageInterpretation,
+    queueAudioTranscriptions,
+    queueImageInterpretations,
+    getAudioTranscriptionConfig,
+    getImageInterpretationConfig
   }
 };
