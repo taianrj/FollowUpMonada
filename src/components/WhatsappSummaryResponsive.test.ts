@@ -13,6 +13,13 @@ describe('WhatsappSummaryClient responsive layout', () => {
     expect(componentSource).not.toContain('>Histórico Diário</h3>');
   });
 
+  it('shows the selected date while loading the daily conversations', () => {
+    expect(componentSource).toContain(
+      "`Carregando conversas do dia ${summaryDate.split('-').reverse().join('/')}...`"
+    );
+    expect(componentSource).not.toContain('Carregando conversas brutas do servidor...');
+  });
+
   it('keeps the current desktop grid as the base layout', () => {
     expect(dashboardCss).toMatch(
       /\.whatsappSummaryMain\s*\{[^}]*grid-template-columns:\s*300px minmax\(0, 1fr\);[^}]*gap:\s*2rem;[^}]*padding:\s*2\.5rem;/s

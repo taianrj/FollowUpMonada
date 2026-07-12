@@ -615,7 +615,7 @@ export default function WhatsappSummaryClient({
   const handleOpenMessagesModal = async () => {
     setIsMessagesModalOpen(true);
     setIsLoadingModalMessages(true);
-    setModalMessagesText('Carregando conversas brutas do servidor...');
+    setModalMessagesText(`Carregando conversas do dia ${summaryDate.split('-').reverse().join('/')}...`);
     setChatConversations([]);
     setSelectedChatKey(null);
     setSearchQuery('');
