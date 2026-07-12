@@ -10,7 +10,7 @@ O ecossistema está implantado e integrado na nuvem nos seguintes endereços:
 
 * **Frontend (Aplicação Web)**: [Vercel](https://vercel.com) — [https://followupmonada.vercel.app/](https://followupmonada.vercel.app/)
 * **Banco de Dados & Auth**: [Supabase](https://supabase.com) — [https://seu-projeto.supabase.co](https://seu-projeto.supabase.co)
-* **Microsserviço de WhatsApp**: Fly.io, aplicação `monada-whatsapp-service`, região `gru`, com volume persistente montado em `/app/data`.
+* **Microsserviço de WhatsApp**: Oracle Cloud Always Free, publicado em [https://seu-dominio.example](https://seu-dominio.example) com HTTPS.
 
 ---
 
@@ -24,13 +24,46 @@ O ecossistema está implantado e integrado na nuvem nos seguintes endereços:
 ### Microsserviço de Integração (WhatsApp)
 - **Motor de Conexão**: `baileys@7.0.0-rc13` (Multi-device API do WhatsApp Web, com aliases PN/LID)
 - **Servidor HTTP**: Node.js + Express
-- **Persistência**: arquivos JSON no volume do Fly.io + Supabase (tabelas relacionais e blobs de contingência)
+- **Persistência**: arquivos JSON persistentes na VM Oracle + Supabase (tabelas relacionais e blobs de contingência)
 - **Auth state do Baileys 7**: `useMultiFileAuthState` com suporte a `lid-mapping`, `device-list` e `tctoken`; o snapshot remoto é consolidado em um único bundle `gzip-base64` para não gerar uma chamada por chave.
 - **Conclusão do histórico**: somente o evento oficial `messaging-history.status` de `RECENT` com confirmação explícita de 100%, seguido do processamento do lote final, pode marcar a sincronização como concluída. Pausas inferidas permanecem visíveis como `stalled`.
 - **Mídia protobuf**: filas persistentes de áudio/imagem usam `BufferJSON` para preservar `Buffer`/`Uint8Array` exigidos pelo Baileys 7.
 
 ### Inteligência Artificial
 - **Extração Semântica**: API do Gemini (`gemini-2.5-flash`) e Groq API (`llama-3.3-70b-versatile`) como provedor de fallback.
+
+---
+
+## ☁️ Produção: Oracle Cloud Always Free
+
+O microsserviço de WhatsApp é executado em uma VM Ubuntu Always Free da Oracle Cloud, com Docker e reinício automático dos contêineres.
+
+* **Aplicação**: contêiner `followup-whatsapp`, escutando internamente em `127.0.0.1:8080`.
+* **Proxy público**: contêiner `followup-proxy` (Caddy), responsável pelo proxy reverso, redirecionamento HTTP para HTTPS e renovação automática do certificado Let's Encrypt.
+* **Endpoint público**: `https://seu-dominio.example`.
+* **Portas expostas**: somente `80` e `443` para o Caddy; a porta `8080` do microsserviço não é pública. O SSH permanece protegido por chave.
+* **Dados locais**: persistidos no host em `/home/ubuntu/followup/whatsapp-service/data`, montado como `/app/data` no contêiner.
+* **Recuperação de sessão**: as credenciais do Baileys também são restauradas do Supabase. Por isso, uma reinstalação/reinicialização normalmente não exige novo QR Code, desde que a sessão não tenha sido desconectada.
+* **DNS dinâmico**: um timer `followup-duckdns.timer` atualiza `seu-dominio.example` na inicialização e a cada cinco minutos, evitando intervenção manual se o IPv4 efêmero da VM mudar.
+
+### Operação e verificação
+
+Na VM, os comandos abaixo ajudam a verificar o estado da implantação:
+
+```bash
+sudo docker ps
+sudo docker logs --tail 100 followup-whatsapp
+sudo docker logs --tail 100 followup-proxy
+systemctl status followup-duckdns.timer
+```
+
+O endpoint público de saúde não exige autenticação e pode ser consultado com:
+
+```bash
+curl -fsS https://seu-dominio.example/healthz
+```
+
+Na Vercel, `NEXT_PUBLIC_WHATSAPP_SERVICE_URL` deve apontar para `https://seu-dominio.example`. Qualquer alteração nessa variável requer uma nova publicação de produção.
 
 ---
 
