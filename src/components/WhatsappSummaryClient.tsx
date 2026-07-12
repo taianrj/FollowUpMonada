@@ -21,6 +21,7 @@ import {
   recordWhatsappStatusFailure,
   recordWhatsappStatusSuccess
 } from '@/lib/whatsapp/status-health';
+import { formatSummaryDate } from '@/lib/whatsapp/summary-date';
 import { playSummaryCompletionSound } from '@/lib/summary-completion-sound';
 import './Dashboard.css'; // Reutiliza estilos globais de layout e botões
 
@@ -157,6 +158,7 @@ export default function WhatsappSummaryClient({
     initialSummaries.length > 0 ? initialSummaries[0] : null
   );
   const activeSavedSummary = summaries.find((summary) => summary.id === activeSummary?.id);
+  const activeSummaryDate = activeSummary ? formatSummaryDate(activeSummary.summary_date) : null;
 
   // Controle de tarefas já cadastradas na sessão atual para evitar múltiplos cliques
   const [createdTasksKeys, setCreatedTasksKeys] = useState<Record<string, boolean>>({});
@@ -1128,11 +1130,14 @@ export default function WhatsappSummaryClient({
               ) : (
                 <>
                   <option value="">Selecionar outro resumo</option>
-                  {summaries.map((summary) => (
-                    <option key={summary.id} value={summary.id}>
-                      {new Date(`${summary.summary_date}T00:00:00`).toLocaleDateString('pt-BR')}
-                    </option>
-                  ))}
+                  {summaries.map((summary) => {
+                    const date = formatSummaryDate(summary.summary_date);
+                    return (
+                      <option key={summary.id} value={summary.id}>
+                        {date ? `${date.numeric} - ${date.weekday}` : summary.summary_date}
+                      </option>
+                    );
+                  })}
                 </>
               )}
             </select>
@@ -1149,7 +1154,7 @@ export default function WhatsappSummaryClient({
             )}
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', overflowY: 'auto', flex: 1 }} className="custom-scroll whatsappSummaryHistoryList">
+          <div style={{ display: 'flex', flexDirection: 'column', overflowY: 'auto', flex: 1 }} className="custom-scroll whatsappSummaryHistoryList">
             {summaries.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                 Nenhum resumo salvo no banco de dados.
@@ -1157,11 +1162,12 @@ export default function WhatsappSummaryClient({
             ) : (
               summaries.map((s) => {
                 const isSelected = activeSummary?.id === s.id;
-                const formattedDate = new Date(s.summary_date + 'T00:00:00').toLocaleDateString('pt-BR', {
-                  day: '2-digit',
-                  month: 'short',
-                  year: 'numeric'
-                });
+                const date = formatSummaryDate(s.summary_date);
+                const clientCount = s.summary_data?.summaries?.length ?? 0;
+                const taskCount = s.summary_data?.summaries?.reduce(
+                  (total, summary) => total + (summary.suggested_tasks?.length ?? 0),
+                  0
+                ) ?? 0;
 
                 return (
                   <div
@@ -1170,49 +1176,37 @@ export default function WhatsappSummaryClient({
                       setActiveSummary(s);
                       setCreatedTasksKeys({});
                     }}
-                    style={{
-                      padding: '1rem',
-                      borderRadius: 'var(--radius-md)',
-                      backgroundColor: isSelected ? 'var(--bg-card)' : 'rgba(255,255,255,0.02)',
-                      border: isSelected ? '1px solid var(--accent-purple)' : '1px solid transparent',
-                      cursor: 'pointer',
-                      transition: 'all var(--transition-fast)',
-                      position: 'relative',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '0.35rem'
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setActiveSummary(s);
+                        setCreatedTasksKeys({});
+                      }
                     }}
-                    className={`historyItem ${isSelected ? 'activeHistory' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Abrir resumo de ${date?.numeric ?? s.summary_date}`}
+                    className={`historyItem whatsappSummaryHistoryItem ${isSelected ? 'activeHistory' : ''}`}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.9rem', fontWeight: 600, color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                        Resumo do dia
+                    <div className="whatsappSummaryHistoryDateRow">
+                      <span className="whatsappSummaryHistoryDate">
+                        {date?.compact ?? s.summary_date}
+                        {date && <span className="whatsappSummaryHistoryWeekday"> · {date.weekday}</span>}
                       </span>
                       {profile?.role === 'admin' && (
                         <button
                           type="button"
                           onClick={(e) => handleDeleteSummary(s.id, e)}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            color: '#ef4444',
-                            cursor: 'pointer',
-                            padding: '0.2rem',
-                            opacity: 0.6,
-                            transition: 'opacity 0.2s',
-                          }}
                           className="deleteSummaryBtn"
-                          title="Excluir do histórico"
+                          aria-label={`Excluir resumo de ${date?.numeric ?? s.summary_date}`}
+                          title="Excluir resumo"
                         >
                           ✕
                         </button>
                       )}
                     </div>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--accent-purple)', fontWeight: 500 }}>
-                      {formattedDate}
-                    </span>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
-                      {s.raw_text.substring(0, 45)}...
+                    <span className="whatsappSummaryHistoryMeta">
+                      {clientCount} {clientCount === 1 ? 'cliente' : 'clientes'} · {taskCount} {taskCount === 1 ? 'tarefa' : 'tarefas'}
                     </span>
                   </div>
                 );
@@ -1647,7 +1641,9 @@ export default function WhatsappSummaryClient({
             }}>
               <div className="whatsappSummaryResultHeader" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h2 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-                  Resumo Semântico do Dia - {new Date(activeSummary.summary_date + 'T00:00:00').toLocaleDateString('pt-BR')}
+                  {activeSummaryDate
+                    ? `Resumo do Dia - ${activeSummaryDate.numeric} - ${activeSummaryDate.weekday}`
+                    : `Resumo do Dia - ${activeSummary.summary_date}`}
                 </h2>
               </div>
 

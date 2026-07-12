@@ -20,6 +20,25 @@ describe('WhatsappSummaryClient responsive layout', () => {
     expect(componentSource).not.toContain('Carregando conversas brutas do servidor...');
   });
 
+  it('uses compact, useful saved-summary cards with keyboard access', () => {
+    expect(componentSource).not.toContain('Resumo do dia');
+    expect(componentSource).not.toContain('s.raw_text.substring');
+    expect(componentSource).toContain('whatsappSummaryHistoryWeekday');
+    expect(componentSource).toContain("event.key === 'Enter' || event.key === ' '");
+    expect(componentSource).toContain("clientCount === 1 ? 'cliente' : 'clientes'");
+    expect(componentSource).toContain("taskCount === 1 ? 'tarefa' : 'tarefas'");
+    expect(dashboardCss).toMatch(
+      /\.whatsappSummaryHistoryItem\s*\{[^}]*padding:\s*0\.7rem 0\.8rem;[^}]*border-radius:/s
+    );
+  });
+
+  it('formats the result heading with date and weekday', () => {
+    expect(componentSource).toContain(
+      '`Resumo do Dia - ${activeSummaryDate.numeric} - ${activeSummaryDate.weekday}`'
+    );
+    expect(componentSource).not.toContain('Resumo Semântico do Dia -');
+  });
+
   it('keeps the current desktop grid as the base layout', () => {
     expect(dashboardCss).toMatch(
       /\.whatsappSummaryMain\s*\{[^}]*grid-template-columns:\s*300px minmax\(0, 1fr\);[^}]*gap:\s*2rem;[^}]*padding:\s*2\.5rem;/s
