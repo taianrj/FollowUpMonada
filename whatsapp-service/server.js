@@ -3273,10 +3273,76 @@ function isValidConversationDisplayName(name) {
   return true;
 }
 
-function buildMessageConversations(messages, contactsCache, ownerJid = '', ownerLid = '', ownerPushName = 'Você') {
+function expandPersistedChatAliases(message, jidAliasCache = {}) {
+  const aliases = uniqueJids([message.chatJid, ...(message.chatAliases || [])]);
+  const expanded = [...aliases];
+
+  for (const alias of aliases) {
+    const mappedAlias = cleanJid(jidAliasCache?.[alias] || '');
+    if (mappedAlias) expanded.push(mappedAlias);
+  }
+
+  return uniqueJids(expanded);
+}
+
+function buildConversationAliasComponents(messages, jidAliasCache = {}) {
+  const parent = new Map();
+  const directAliasByNumber = new Map();
+
+  const find = alias => {
+    if (!parent.has(alias)) parent.set(alias, alias);
+    const currentParent = parent.get(alias);
+    if (currentParent !== alias) parent.set(alias, find(currentParent));
+    return parent.get(alias);
+  };
+
+  const union = (first, second) => {
+    const firstRoot = find(first);
+    const secondRoot = find(second);
+    if (firstRoot !== secondRoot) parent.set(secondRoot, firstRoot);
+  };
+
+  const aliasesByMessage = messages.map(message => {
+    const aliases = expandPersistedChatAliases(message, jidAliasCache);
+    for (const alias of aliases) find(alias);
+    for (let index = 1; index < aliases.length; index++) union(aliases[0], aliases[index]);
+
+    for (const alias of aliases) {
+      if (!messageDomain.isPnJid(alias) && !messageDomain.isLidJid(alias)) continue;
+      const number = jidNumber(alias);
+      const existingAlias = directAliasByNumber.get(number);
+      if (existingAlias) union(existingAlias, alias);
+      else directAliasByNumber.set(number, alias);
+    }
+
+    return aliases;
+  });
+
+  const componentAliases = new Map();
+  for (const alias of parent.keys()) {
+    const root = find(alias);
+    if (!componentAliases.has(root)) componentAliases.set(root, []);
+    componentAliases.get(root).push(alias);
+  }
+
+  return aliasesByMessage.map(aliases => {
+    if (aliases.length === 0) return [];
+    return uniqueJids(componentAliases.get(find(aliases[0])) || aliases);
+  });
+}
+
+function buildMessageConversations(
+  messages,
+  contactsCache,
+  ownerJid = '',
+  ownerLid = '',
+  ownerPushName = 'Você',
+  jidAliasCache = {}
+) {
   const normalizedMessages = (messages || [])
     .map(normalizeStoredMessage)
     .filter(message => !messageDomain.isStoredStatusMessage(message));
+  const conversationAliases = buildConversationAliasComponents(normalizedMessages, jidAliasCache);
   const ownerJids = uniqueJids([
     ensureUserJid(String(ownerJid || ''), 's.whatsapp.net'),
     ensureUserJid(String(ownerLid || ''), 'lid')
@@ -3287,8 +3353,8 @@ function buildMessageConversations(messages, contactsCache, ownerJid = '', owner
   ));
   const grouped = new Map();
 
-  for (const message of normalizedMessages) {
-    const aliases = uniqueJids([message.chatJid, ...(message.chatAliases || [])]);
+  for (const [messageIndex, message] of normalizedMessages.entries()) {
+    const aliases = conversationAliases[messageIndex];
     const isOwnerChat = aliases.some(alias => ownerSet.has(alias));
     const unresolved = corruptedOwnerConversation && isOwnerChat;
     const canonicalJid = unresolved
@@ -6330,7 +6396,14 @@ app.get('/messages', checkAuth, async (req, res) => {
     const ownName = activeInstance?.myPushName || 'Você';
 
     if (requestedFormat === 'json_grouped') {
-      const conversations = buildMessageConversations(messages, contactsCache, ownJid, ownLid, ownName);
+      const conversations = buildMessageConversations(
+        messages,
+        contactsCache,
+        ownJid,
+        ownLid,
+        ownName,
+        activeInstance?.jidAliasCache
+      );
       const formattedConversations = conversations.map(chat => {
         return {
           chatKey: chat.chatKey,
@@ -6380,7 +6453,14 @@ app.get('/messages', checkAuth, async (req, res) => {
     }
 
     if (requestedFormat === 'text' || requestedFormat === 'markdown' || requestedFormat === 'md') {
-      const conversations = buildMessageConversations(messages, contactsCache, ownJid, ownLid, ownName);
+      const conversations = buildMessageConversations(
+        messages,
+        contactsCache,
+        ownJid,
+        ownLid,
+        ownName,
+        activeInstance?.jidAliasCache
+      );
 
       if (requestedFormat === 'markdown' || requestedFormat === 'md') {
         res.type('text/markdown');

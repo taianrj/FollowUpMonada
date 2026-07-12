@@ -72,8 +72,8 @@ test('ressincronizacao substitui rota ambigua pela rota corrigida sem duplicar',
 
 test('nao mistura duas pessoas diferentes que possuem o mesmo nome', () => {
   const conversations = service.buildMessageConversations([
-    stored({ id: 'A', chatJid: '111@s.whatsapp.net', sender: '111', chatName: 'Arthur' }),
-    stored({ id: 'B', chatJid: '222@s.whatsapp.net', sender: '222', participantJid: '222@s.whatsapp.net', chatName: 'Arthur' })
+    stored({ id: 'A', chatJid: '111@s.whatsapp.net', chatAliases: ['111@s.whatsapp.net'], sender: '111', chatName: 'Arthur' }),
+    stored({ id: 'B', chatJid: '222@s.whatsapp.net', chatAliases: ['222@s.whatsapp.net'], sender: '222', participantJid: '222@s.whatsapp.net', chatName: 'Arthur' })
   ], {
     '111@s.whatsapp.net': 'Arthur',
     '222@s.whatsapp.net': 'Arthur'
@@ -81,6 +81,62 @@ test('nao mistura duas pessoas diferentes que possuem o mesmo nome', () => {
 
   assert.equal(conversations.length, 2);
   assert.deepEqual(conversations.map(chat => chat.chatKey).sort(), ['111', '222']);
+});
+
+test('reune as duas direcoes da conversa quando PN e LID foram persistidos separadamente', () => {
+  const conversations = service.buildMessageConversations([
+    stored({
+      id: 'INCOMING',
+      chatJid: '5521988377896@s.whatsapp.net',
+      chatAliases: ['5521988377896@s.whatsapp.net'],
+      participantJid: '5521988377896@s.whatsapp.net',
+      participantAliases: ['5521988377896@s.whatsapp.net'],
+      sender: '5521988377896',
+      participant: '5521988377896',
+      chatName: 'Naldo',
+      name: 'Naldo',
+      fromMe: false
+    }),
+    stored({
+      id: 'OUTGOING',
+      chatJid: '5521988377896@lid',
+      chatAliases: ['5521988377896@lid'],
+      participantJid: ownerPn,
+      participantAliases: [ownerPn, ownerLid],
+      sender: '5521988377896',
+      participant: '5521983088576',
+      chatName: 'Naldo',
+      name: 'Taian Monsores',
+      fromMe: true
+    })
+  ], {
+    '5521988377896@s.whatsapp.net': 'Naldo',
+    '5521988377896@lid': 'Naldo'
+  }, ownerPn, ownerLid, 'Taian Monsores');
+
+  assert.equal(conversations.length, 1);
+  assert.equal(conversations[0].chatKey, '5521988377896');
+  assert.deepEqual(conversations[0].messages.map(message => message.id), ['INCOMING', 'OUTGOING']);
+  assert.deepEqual(conversations[0].messages.map(message => message.fromMe), [false, true]);
+});
+
+test('reune PN e LID de numeros diferentes usando o mapeamento oficial em cache', () => {
+  const peerPn = '4915165158984@s.whatsapp.net';
+  const peerLid = '203216780316843@lid';
+  const conversations = service.buildMessageConversations([
+    stored({ id: 'PN', chatJid: peerPn, chatAliases: [peerPn], sender: '4915165158984' }),
+    stored({ id: 'LID', chatJid: peerLid, chatAliases: [peerLid], sender: '203216780316843', fromMe: true })
+  ], {
+    [peerPn]: 'Arthur Vidal',
+    [peerLid]: 'Arthur Vidal'
+  }, ownerPn, ownerLid, 'Taian Monsores', {
+    [peerPn]: peerLid,
+    [peerLid]: peerPn
+  });
+
+  assert.equal(conversations.length, 1);
+  assert.equal(conversations[0].chatKey, '4915165158984');
+  assert.deepEqual(conversations[0].chatAliases.sort(), [peerLid, peerPn].sort());
 });
 
 test('nao cria conversa para status legado salvo com alias status@broadcast', () => {
