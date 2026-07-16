@@ -90,4 +90,9 @@ describe('WhatsappSummaryClient responsive layout', () => {
       /\.chatSidebarWithSelection,[\s\S]*?\.chatArea:not\(\.chatAreaWithSelection\)\s*\{\s*display:\s*none !important;/
     );
   });
+
+  it('does not expose the legacy WhatsApp service redirect in the browser', () => {
+    expect(componentSource).not.toContain('/api/whatsapp-service/redirect');
+    expect(componentSource).not.toContain('Acessar serviço (avançado)');
+  });
 });

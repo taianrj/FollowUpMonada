@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { buildWhatsappUpstreamUrl, getWhatsappProxyAllowedMethods } from '@/lib/whatsapp/proxy';
+import { createWhatsappServiceAuthHeaders } from '@/lib/whatsapp/service-auth';
 
 const UPSTREAM_TIMEOUT_MS = 30_000;
+
+export const runtime = 'nodejs';
 
 type ProxyContext = {
   params: Promise<{
@@ -71,21 +74,37 @@ async function proxyWhatsappRequest(request: NextRequest, context: ProxyContext)
   const headers = new Headers();
   const contentType = request.headers.get('content-type');
   if (contentType) headers.set('content-type', contentType);
-  headers.set('x-api-key', user.id);
   if (ownerName) headers.set('x-owner-name', ownerName);
 
-  const serviceToken = process.env.WHATSAPP_SERVICE_SECRET || process.env.WHATSAPP_SERVICE_TOKEN;
-  if (!serviceToken) {
+  const serviceSecret = process.env.WHATSAPP_SERVICE_SECRET;
+  if (!serviceSecret) {
     return NextResponse.json({ error: 'Integracao do WhatsApp nao configurada' }, { status: 503 });
   }
-  headers.set('x-service-token', serviceToken);
+
+  const body = request.method === 'GET' || request.method === 'HEAD'
+    ? ''
+    : await request.text();
+
+  let authHeaders: ReturnType<typeof createWhatsappServiceAuthHeaders>;
+  try {
+    authHeaders = createWhatsappServiceAuthHeaders({
+      secret: serviceSecret,
+      userId: user.id,
+      method: request.method,
+      url: targetUrl.toString(),
+      body
+    });
+  } catch {
+    return NextResponse.json({ error: 'Integracao do WhatsApp configurada de forma insegura' }, { status: 503 });
+  }
+  Object.entries(authHeaders).forEach(([key, value]) => headers.set(key, value));
 
   let upstream: Response;
   try {
     upstream = await fetch(targetUrl, {
       method: request.method,
       headers,
-      body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text(),
+      body: body || undefined,
       cache: 'no-store',
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });

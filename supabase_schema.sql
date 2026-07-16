@@ -52,29 +52,22 @@ create index idx_tasks_client_id on public.tasks(client_id);
 create index idx_tasks_status on public.tasks(status);
 
 -- 6. FUNÇÃO E TRIGGER PARA CRIAÇÃO AUTOMÁTICA DE PERFIL
--- Esta função é disparada quando um novo usuário se registra no Supabase Auth.
--- Se for o primeiro usuário do banco, ele é automaticamente 'admin'.
--- Caso contrário, ele assume a role enviada nos metadados ou 'collaborator' por padrão.
+-- Esta funcao e disparada quando um novo usuario se registra no Supabase Auth.
+-- Metadados enviados pelo proprio cadastro nunca podem conceder privilegios.
 create or replace function public.handle_new_user()
 returns trigger as $$
-declare
-    user_count integer;
-    assigned_role text;
 begin
-    select count(*) into user_count from public.profiles;
-    
-    if user_count = 0 then
-        assigned_role := 'admin';
-    else
-        assigned_role := coalesce(new.raw_user_meta_data->>'role', 'collaborator');
-    end if;
-
     insert into public.profiles (id, email, role)
-    values (new.id, new.email, assigned_role);
+    values (new.id, new.email, 'collaborator')
+    on conflict (id) do nothing;
     
     return new;
 end;
-$$ language plpgsql security definer;
+$$ language plpgsql security definer set search_path = public;
+
+revoke all on function public.handle_new_user() from public;
+revoke all on function public.handle_new_user() from anon;
+revoke all on function public.handle_new_user() from authenticated;
 
 -- Trigger que roda após o insert em auth.users
 create or replace trigger on_auth_user_created

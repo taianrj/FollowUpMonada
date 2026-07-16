@@ -1,28 +1,27 @@
 FROM node:20-alpine
 
-# Cria e define o diretório de trabalho
 WORKDIR /app
 
-# Instala o git necessário para dependências que usam repositórios git no package.json
+# Dependencias do lockfile podem referenciar repositorios Git.
 RUN apk add --no-cache git
 
-# Copia os arquivos de dependências
-COPY package.json package-lock.json ./
-
-# Instala apenas as dependências de produção de forma limpa
+COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-# Copia o código da aplicação
-COPY server.js ./
-COPY lib ./lib
+COPY --chown=node:node server.js ./
+COPY --chown=node:node lib ./lib
 
-# Configurações de ambiente padrão
+RUN mkdir -p /app/data && chown -R node:node /app
+
 ENV PORT=8080
 ENV DATA_DIR=/app/data
 ENV NODE_ENV=production
 
-# Expõe a porta HTTP
 EXPOSE 8080
 
-# Inicia o servidor Node.js
+USER node
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+
 CMD ["npm", "start"]

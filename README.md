@@ -4,13 +4,12 @@ O **FollowUp Mônada** é um ecossistema corporativo de alta performance desenvo
 
 ---
 
-## 🌐 Ambientes e Links do Projeto
+## 🌐 Ambientes do Projeto
 
-O ecossistema está implantado e integrado na nuvem nos seguintes endereços:
-
-* **Frontend (Aplicação Web)**: [Vercel](https://vercel.com) — [https://followupmonada.vercel.app/](https://followupmonada.vercel.app/)
-* **Banco de Dados & Auth**: [Supabase](https://supabase.com) — [https://seu-projeto.supabase.co](https://seu-projeto.supabase.co)
-* **Microsserviço de WhatsApp**: Oracle Cloud Always Free, publicado em [https://seu-dominio.example](https://seu-dominio.example) com HTTPS.
+O frontend pode ser publicado na Vercel, com Supabase para banco/autenticação e um
+microsserviço Node.js atrás de proxy HTTPS para a integração com WhatsApp. Endereços,
+identificadores de projeto e dados de infraestrutura devem ser mantidos nas variáveis
+de ambiente e nos secrets do provedor, não na documentação pública.
 
 ---
 
@@ -34,17 +33,15 @@ O ecossistema está implantado e integrado na nuvem nos seguintes endereços:
 
 ---
 
-## ☁️ Produção: Oracle Cloud Always Free
+## ☁️ Produção
 
-O microsserviço de WhatsApp é executado em uma VM Ubuntu Always Free da Oracle Cloud, com Docker e reinício automático dos contêineres.
+O microsserviço de WhatsApp pode ser executado em uma VM com Docker e reinício automático.
 
 * **Aplicação**: contêiner `followup-whatsapp`, escutando internamente em `127.0.0.1:8080`.
-* **Proxy público**: contêiner `followup-proxy` (Caddy), responsável pelo proxy reverso, redirecionamento HTTP para HTTPS e renovação automática do certificado Let's Encrypt.
-* **Endpoint público**: `https://seu-dominio.example`.
+* **Proxy público**: proxy reverso HTTPS com renovação automática de certificado.
 * **Portas expostas**: somente `80` e `443` para o Caddy; a porta `8080` do microsserviço não é pública. O SSH permanece protegido por chave.
-* **Dados locais**: persistidos no host em `/home/ubuntu/followup/whatsapp-service/data`, montado como `/app/data` no contêiner.
+* **Dados locais**: persistidos em volume dedicado, montado como `/app/data` no contêiner.
 * **Recuperação de sessão**: as credenciais do Baileys também são restauradas do Supabase. Por isso, uma reinstalação/reinicialização normalmente não exige novo QR Code, desde que a sessão não tenha sido desconectada.
-* **DNS dinâmico**: um timer `followup-duckdns.timer` atualiza `seu-dominio.example` na inicialização e a cada cinco minutos, evitando intervenção manual se o IPv4 efêmero da VM mudar.
 
 ### Operação e verificação
 
@@ -53,8 +50,6 @@ Na VM, os comandos abaixo ajudam a verificar o estado da implantação:
 ```bash
 sudo docker ps
 sudo docker logs --tail 100 followup-whatsapp
-sudo docker logs --tail 100 followup-proxy
-systemctl status followup-duckdns.timer
 ```
 
 O endpoint público de saúde não exige autenticação e pode ser consultado com:
@@ -63,7 +58,7 @@ O endpoint público de saúde não exige autenticação e pode ser consultado co
 curl -fsS https://seu-dominio.example/healthz
 ```
 
-Na Vercel, `NEXT_PUBLIC_WHATSAPP_SERVICE_URL` deve apontar para `https://seu-dominio.example`. Qualquer alteração nessa variável requer uma nova publicação de produção.
+Na Vercel, prefira `WHATSAPP_SERVICE_URL` para que o endereço upstream permaneça server-side.
 
 ### Deploy Automático (CI/CD via GitHub Actions)
 
@@ -71,10 +66,13 @@ O deploy do microsserviço de WhatsApp é realizado automaticamente a cada push 
 
 Para que o deploy funcione corretamente, as seguintes **Secrets** precisam ser cadastradas nas configurações do seu repositório no GitHub (*Settings > Secrets and variables > Actions*):
 
-1. **`SSH_HOST`**: `seu-dominio.example` (ou o IP público correspondente da sua VM Oracle).
-2. **`SSH_USER`**: `ubuntu`
+1. **`SSH_HOST`**: domínio ou IP do servidor.
+2. **`SSH_USER`**: usuário restrito de implantação.
 3. **`SSH_KEY`**: O conteúdo textual da chave privada correspondente que você utiliza para acessar a VM.
-   - **Dica de Localização**: No seu computador local, você pode obter o conteúdo desta chave abrindo o arquivo `~/.ssh/deploy-key` com um editor de texto (como o Bloco de Notas). Copie todo o conteúdo (incluindo as linhas `-----BEGIN ...-----` e `-----END ...-----`) e cole no GitHub.
+
+Proteja o ambiente `production` com aprovação obrigatória e mantenha a branch `main`
+protegida. As Actions do workflow são fixadas por SHA imutável e possuem apenas
+permissão de leitura do conteúdo.
 
 ---
 
@@ -84,7 +82,7 @@ Para que o deploy funcione corretamente, as seguintes **Secrets** precisam ser c
 
 O frontend Next.js não acessa o microsserviço de WhatsApp diretamente no cliente. Ele utiliza uma rota de proxy dinâmico para blindagem de chaves e controle de sessão:
 * **Rota Proxy**: `/api/whatsapp-service/[...path]`, mapeada para `WHATSAPP_SERVICE_URL`/`NEXT_PUBLIC_WHATSAPP_SERVICE_URL` e protegida por autenticação administrativa.
-* **Segurança de Serviço**: Toda chamada do proxy para o microsserviço anexa o header `x-service-token` (segredo `WHATSAPP_SERVICE_SECRET` do `.env.local`) e `x-api-key` (UUID do usuário Supabase logado). O microsserviço rejeita conexões que não possuam ambos os cabeçalhos.
+* **Segurança de Serviço**: o proxy assina cada chamada com HMAC-SHA256 usando `WHATSAPP_SERVICE_SECRET`, incluindo identidade, método, caminho, query, timestamp, nonce e hash do corpo. O segredo não trafega, credenciais em query string são rejeitadas e nonces não podem ser reutilizados.
 
 ### 2. Endpoints do Microsserviço de WhatsApp (Permitidos no Proxy)
 
@@ -122,13 +120,14 @@ npm install
 ### Passo 2: Configurar variáveis no `.env.local`
 Crie o arquivo na raiz do projeto e configure as seguintes variáveis:
 ```env
+APP_URL=http://localhost:3000
 NEXT_PUBLIC_SUPABASE_URL=https://seu-projeto.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=sua_chave_anonima_supabase
 SUPABASE_SERVICE_ROLE_KEY=sua_service_role_key_supabase
 GEMINI_API_KEY=sua_gemini_api_key
 GROQ_API_KEY=sua_groq_api_key
-NEXT_PUBLIC_WHATSAPP_SERVICE_URL=http://localhost:8080
-WHATSAPP_SERVICE_SECRET=gere_um_segredo_longo_e_exclusivo
+WHATSAPP_SERVICE_URL=http://localhost:8080
+WHATSAPP_SERVICE_SECRET=gere_um_segredo_aleatorio_com_no_minimo_32_caracteres
 ```
 
 ### Passo 3: Rodar o Frontend Next.js
@@ -160,5 +159,10 @@ Para o correto funcionamento do ecossistema, o banco de dados do Supabase conta 
 * `supabase_schema.sql` — Tabelas de perfis, clientes, colaboradores, tarefas e histórico de auditoria (Kanban).
 * `supabase_whatsapp_persistence.sql` — Tabelas de armazenamento de contatos, mensagens e sessões/blobs do WhatsApp.
 * `supabase_security_isolation.sql` — Políticas de segurança RLS (Row Level Security) aplicadas a perfis e acessos corporativos.
+* `supabase_auth_hardening.sql` — Migração aditiva que impede autoelevação de papel e remove leitura client-side de credenciais do WhatsApp.
 
 Após atualizar o microsserviço, execute novamente `supabase_whatsapp_persistence.sql` para adicionar `chat_aliases`, os diagnósticos de roteamento e a chave canônica por `message_id`.
+
+Para ambientes existentes, aplique também `supabase_auth_hardening.sql`. Novos usuários
+sempre entram como `collaborator`; o primeiro administrador deve ser promovido por uma
+operação controlada no SQL Editor ou por ferramenta server-side com service role.

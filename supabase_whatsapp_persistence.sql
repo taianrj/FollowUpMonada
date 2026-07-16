@@ -110,10 +110,7 @@ alter table public.whatsapp_messages enable row level security;
 -- mantendo a separacao por user_id/id.
 drop policy if exists "Usuarios autenticados podem ler sua sessao whatsapp"
     on public.whatsapp_sessions;
-create policy "Usuarios autenticados podem ler sua sessao whatsapp"
-    on public.whatsapp_sessions for select
-    to authenticated
-    using (id = auth.uid()::text);
+revoke select on public.whatsapp_sessions from authenticated;
 
 drop policy if exists "Usuarios autenticados podem ler seus contatos whatsapp"
     on public.whatsapp_contacts;

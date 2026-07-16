@@ -1,49 +1,66 @@
-name: Deploy Automático na Oracle Cloud
+name: Deploy automatico na Oracle Cloud
 
 on:
   push:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
-    name: Build & Deploy
+    name: Verificar e publicar
     runs-on: ubuntu-latest
+    environment: production
 
     steps:
-      - name: Checkout do Código
-        uses: actions/checkout@v4
+      - name: Checkout do codigo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Executar comandos de Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Configurar Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Verificar testes e build
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Publicar via SSH
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          script_stop: true
           script: |
             cd /home/ubuntu/followup
 
-            # Se não estiver inicializado como repositório Git, inicializa de forma resiliente
             if [ ! -d ".git" ]; then
               git init
-              git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/taianrj/FollowUpMonada.git
-              git fetch origin main
-              git checkout -f main
+              git remote add origin https://github.com/taianrj/FollowUpMonada.git
             else
-              # Atualiza a URL remota com o token temporário de autenticação do GitHub Actions
-              git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/taianrj/FollowUpMonada.git
-              git fetch origin main
-              git checkout -f main
+              git remote set-url origin https://github.com/taianrj/FollowUpMonada.git
             fi
-            
-            # Reconstrói a imagem Docker para o microsserviço de WhatsApp
+            git fetch --prune origin main
+            git checkout -B main origin/main
+
             sudo docker build -t followup-whatsapp ./whatsapp-service
-            
-            # Para e remove o contêiner anterior se ele existir
             sudo docker stop followup-whatsapp || true
             sudo docker rm followup-whatsapp || true
-            
-            # Inicializa o novo contêiner com as mesmas configurações de persistência, porta e ambiente
+
+            # O container executa sem root e escreve somente no volume persistente.
+            sudo mkdir -p /home/ubuntu/followup/whatsapp-service/data
+            sudo chown -R 1000:1000 /home/ubuntu/followup/whatsapp-service/data
+
             sudo docker run -d \
               --name followup-whatsapp \
               --restart always \

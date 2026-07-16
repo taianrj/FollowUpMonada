@@ -1,149 +1,151 @@
-import { NextResponse } from 'next/server';
-import { createClient as createServerClient } from '@/lib/supabase/server';
 import { createClient } from '@supabase/supabase-js';
+import { NextResponse } from 'next/server';
+import { getTrustedAppOrigin } from '@/lib/security/app-origin';
+import { normalizeManagedUserRole } from '@/lib/security/roles';
+import { createClient as createServerClient } from '@/lib/supabase/server';
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function POST(request: Request) {
   try {
     const supabase = await createServerClient();
-
-    // 1. Verifica se usuário está autenticado
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
-      return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+      return NextResponse.json({ error: 'Nao autorizado' }, { status: 401 });
     }
 
-    // 2. Valida se o usuário é um Administrador
     const { data: profile } = await supabase
       .from('profiles')
-      .select('role')
+      .select('role, is_active')
       .eq('id', user.id)
       .single();
 
-    if (!profile || profile.role !== 'admin') {
-      return NextResponse.json({ error: 'Acesso negado. Apenas administradores podem criar usuários.' }, { status: 403 });
+    if (!profile || profile.is_active === false || profile.role !== 'admin') {
+      return NextResponse.json({ error: 'Acesso negado' }, { status: 403 });
     }
 
-    const { email, name, role } = await request.json();
+    const body = await request.json().catch(() => null);
+    const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    const role = normalizeManagedUserRole(body?.role);
 
-    if (!email || !email.trim() || !name || !name.trim() || !role) {
-      return NextResponse.json({ error: 'Campos obrigatórios ausentes.' }, { status: 400 });
+    if (!EMAIL_PATTERN.test(email) || email.length > 320 || !name || name.length > 160 || !role) {
+      return NextResponse.json({ error: 'Dados de usuario invalidos.' }, { status: 400 });
     }
 
-    // 3. Inicializa o cliente Supabase Admin (Service Role)
-    const supabaseAdmin = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false
-        }
-      }
-    );
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!supabaseUrl || !serviceRoleKey) {
+      return NextResponse.json({ error: 'Administracao de usuarios nao configurada.' }, { status: 503 });
+    }
 
-    // 4. Configura redirecionamento para definição de senha no primeiro acesso
-    const origin = new URL(request.url).origin;
-    const redirectTo = `${origin}/login?mode=reset`;
+    const origin = getTrustedAppOrigin({
+      requestUrl: request.url,
+      nodeEnv: process.env.NODE_ENV,
+      appUrl: process.env.APP_URL,
+      vercelProductionUrl: process.env.VERCEL_PROJECT_PRODUCTION_URL
+    });
+    if (!origin) {
+      return NextResponse.json({ error: 'Origem da aplicacao nao configurada.' }, { status: 503 });
+    }
 
-    // Verificar se existe no profiles primeiro
-    const { data: existingProfile } = await supabaseAdmin
+    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    });
+    const redirectTo = new URL('/login?mode=reset', origin).toString();
+
+    const { data: existingProfile, error: profileLookupError } = await supabaseAdmin
       .from('profiles')
       .select('id, email')
-      .eq('email', email.trim())
+      .eq('email', email)
       .maybeSingle();
+    if (profileLookupError) {
+      console.error('Erro ao consultar perfil para convite:', profileLookupError);
+      return NextResponse.json({ error: 'Nao foi possivel consultar o usuario.' }, { status: 502 });
+    }
 
-    let linkData: any = null;
-    let isNewUser = true;
+    let linkData;
+    let isNewUser = !existingProfile;
 
     if (existingProfile) {
-      isNewUser = false;
-      const { data: recoveryData, error: recoveryError } = await supabaseAdmin.auth.admin.generateLink({
+      const { data, error } = await supabaseAdmin.auth.admin.generateLink({
         type: 'recovery',
-        email: email.trim(),
-        options: {
-          redirectTo
-        }
+        email,
+        options: { redirectTo }
       });
-
-      if (recoveryError) {
-        return NextResponse.json({ error: 'Erro ao gerar link de recuperação para usuário existente: ' + recoveryError.message }, { status: 500 });
+      if (error) {
+        console.error('Erro ao gerar link de recuperacao:', error);
+        return NextResponse.json({ error: 'Nao foi possivel gerar o link de acesso.' }, { status: 502 });
       }
-      linkData = recoveryData;
+      linkData = data;
     } else {
-      const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.generateLink({
+      const { data, error } = await supabaseAdmin.auth.admin.generateLink({
         type: 'invite',
-        email: email.trim(),
-        options: {
-          redirectTo,
-          data: {
-            name: name.trim(),
-            role: role
-          }
-        }
+        email,
+        options: { redirectTo, data: { name } }
       });
 
-      if (inviteError) {
-        // Fallback caso o usuário já esteja cadastrado no Auth do Supabase mas não no profiles
-        if (inviteError.message && (
-          inviteError.message.includes('already been registered') || 
-          inviteError.message.includes('already exists')
-        )) {
-          isNewUser = false;
-          const { data: recoveryData, error: recoveryError } = await supabaseAdmin.auth.admin.generateLink({
-            type: 'recovery',
-            email: email.trim(),
-            options: {
-              redirectTo
-            }
-          });
-
-          if (recoveryError) {
-            return NextResponse.json({ error: 'Erro ao gerar link de recuperação (fallback): ' + recoveryError.message }, { status: 500 });
-          }
-          linkData = recoveryData;
-        } else {
-          return NextResponse.json({ error: 'Erro ao gerar link de convite: ' + inviteError.message }, { status: 500 });
+      if (error && /already (been registered|exists)/i.test(error.message || '')) {
+        isNewUser = false;
+        const recovery = await supabaseAdmin.auth.admin.generateLink({
+          type: 'recovery',
+          email,
+          options: { redirectTo }
+        });
+        if (recovery.error) {
+          console.error('Erro ao gerar link de recuperacao alternativo:', recovery.error);
+          return NextResponse.json({ error: 'Nao foi possivel gerar o link de acesso.' }, { status: 502 });
         }
+        linkData = recovery.data;
+      } else if (error) {
+        console.error('Erro ao gerar link de convite:', error);
+        return NextResponse.json({ error: 'Nao foi possivel gerar o convite.' }, { status: 502 });
       } else {
-        linkData = inviteData;
+        linkData = data;
       }
     }
 
+    const linkedUserId = linkData?.user?.id;
     const tokenHash = linkData?.properties?.hashed_token;
     const verificationType = linkData?.properties?.verification_type || (isNewUser ? 'invite' : 'recovery');
-    if (!tokenHash) {
-      return NextResponse.json({ error: 'Não foi possível obter o token de acesso.' }, { status: 500 });
+    if (!linkedUserId || !tokenHash) {
+      return NextResponse.json({ error: 'Nao foi possivel preparar o acesso do usuario.' }, { status: 502 });
     }
 
-    const appActionLink = `${origin}/login?mode=reset&token_hash=${tokenHash}&type=${verificationType}`;
+    // O trigger sempre cria collaborator. Somente esta rota administrativa pode elevar o papel.
+    const { error: roleError } = await supabaseAdmin
+      .from('profiles')
+      .upsert({ id: linkedUserId, email, role }, { onConflict: 'id' });
+    if (roleError) {
+      console.error('Erro ao aplicar papel administrativo:', roleError);
+      return NextResponse.json({ error: 'Nao foi possivel aplicar o papel do usuario.' }, { status: 502 });
+    }
 
-    // 5. Adiciona na lista de colaboradores se for um novo usuário e não estiver cadastrado
+    const actionUrl = new URL('/login', origin);
+    actionUrl.searchParams.set('mode', 'reset');
+    actionUrl.searchParams.set('token_hash', tokenHash);
+    actionUrl.searchParams.set('type', verificationType);
+
     if (isNewUser) {
-      const { data: existingCollab } = await supabaseAdmin
+      const { data: existingCollaborator } = await supabaseAdmin
         .from('collaborators')
         .select('id')
-        .eq('name', name.trim())
+        .eq('name', name)
         .maybeSingle();
-
-      if (!existingCollab) {
-        const { error: collabInsertErr } = await supabaseAdmin
-          .from('collaborators')
-          .insert({ name: name.trim() });
-        
-        if (collabInsertErr) {
-          console.error('Erro ao registrar novo colaborador na lista:', collabInsertErr);
-        }
+      if (!existingCollaborator) {
+        const { error } = await supabaseAdmin.from('collaborators').insert({ name });
+        if (error) console.error('Erro ao registrar colaborador:', error);
       }
     }
 
-    return NextResponse.json({ 
-      success: true, 
-      link: appActionLink, 
-      isNewUser, 
-      user: linkData.user 
+    return NextResponse.json({
+      success: true,
+      link: actionUrl.toString(),
+      isNewUser,
+      user: { id: linkedUserId, email }
     });
-  } catch (error: any) {
-    console.error('Erro na API de criação de usuário:', error);
-    return NextResponse.json({ error: error.message || 'Erro interno do servidor.' }, { status: 500 });
+  } catch (error) {
+    console.error('Erro na API de criacao de usuario:', error);
+    return NextResponse.json({ error: 'Erro interno do servidor.' }, { status: 500 });
   }
 }

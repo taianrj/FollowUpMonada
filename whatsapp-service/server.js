@@ -1,5 +1,6 @@
 // WhatsApp Gateway do FollowUp Mônada
 const express = require('express');
+const nodeCrypto = require('node:crypto');
 // Polyfill para garantir que a Web Crypto API esteja no escopo global (necessário para versões do Node < 19)
 if (!global.crypto) {
   try {
@@ -82,7 +83,12 @@ try {
 
 const app = express();
 const port = process.env.PORT || 8080;
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({
+  limit: '1mb',
+  verify(req, _res, buffer) {
+    req.rawBody = Buffer.from(buffer);
+  }
+}));
 
 // Configuração do diretório de dados persistentes
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -106,7 +112,7 @@ try {
       if (parts.length >= 2) {
         const key = parts[0].trim();
         const val = parts.slice(1).join('=').trim().replace(/^['"]|['"]$/g, '');
-        if (key) process.env[key] = val;
+        if (key && !process.env[key]) process.env[key] = val;
       }
     });
   }
@@ -5074,6 +5080,10 @@ function isAllowedCorsOrigin(origin) {
 
 // O app em produção usa o proxy do Next.js; CORS direto fica restrito ao desenvolvimento local.
 app.use((req, res, next) => {
+  res.header('Cache-Control', 'no-store');
+  res.header('Referrer-Policy', 'no-referrer');
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'DENY');
   const origin = req.headers.origin;
   if (!isAllowedCorsOrigin(origin)) {
     return res.status(403).json({ error: 'Origem nao permitida.' });
@@ -5095,7 +5105,6 @@ app.get('/healthz', (req, res) => {
     ok: true,
     service: 'whatsapp-service',
     uptimeSeconds: Math.floor(process.uptime()),
-    activeInstances: Object.keys(instances).length,
     generatedAt: new Date().toISOString()
   });
 });
@@ -5113,63 +5122,115 @@ function parseCookies(cookieHeader) {
   return list;
 }
 
-// Middleware de verificacao de API Key para seguranca de dados
-const API_KEY = process.env.WHATSAPP_API_KEY;
-const SERVICE_TOKEN = process.env.WHATSAPP_SERVICE_SECRET || process.env.WHATSAPP_SERVICE_TOKEN;
-const ALLOW_LEGACY_UUID_AUTH = process.env.WHATSAPP_ALLOW_LEGACY_UUID_AUTH === 'true';
-const REQUIRE_SERVICE_TOKEN = process.env.WHATSAPP_REQUIRE_SERVICE_TOKEN === 'true'
-  || (process.env.NODE_ENV === 'production' && !ALLOW_LEGACY_UUID_AUTH);
+// Autenticacao entre o proxy Next.js e o microsservico.
+// O segredo nunca trafega: cada chamada usa HMAC, timestamp, nonce e hash do corpo.
+const SERVICE_SECRET = process.env.WHATSAPP_SERVICE_SECRET || '';
+const SERVICE_AUTH_VERSION = 'v1';
+const SERVICE_AUTH_MAX_AGE_MS = 60_000;
+const seenServiceNonces = new Map();
+const failedAuthWindows = new Map();
+const FAILED_AUTH_WINDOW_MS = 60_000;
+const FAILED_AUTH_LIMIT = 30;
+
+function headerString(req, name) {
+  const value = req.headers[name];
+  return typeof value === 'string' ? value : '';
+}
+
+function requestBodyHash(req) {
+  return nodeCrypto.createHash('sha256').update(req.rawBody || Buffer.alloc(0)).digest('hex');
+}
+
+function serviceCanonicalRequest({ timestamp, nonce, userId, method, pathAndQuery, bodyHash }) {
+  return [
+    SERVICE_AUTH_VERSION,
+    String(timestamp),
+    nonce,
+    userId,
+    String(method).toUpperCase(),
+    pathAndQuery,
+    bodyHash
+  ].join('\n');
+}
+
+function secureHexEqual(left, right) {
+  if (!/^[0-9a-f]{64}$/i.test(left) || !/^[0-9a-f]{64}$/i.test(right)) return false;
+  return nodeCrypto.timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
+}
+
+function consumeServiceNonce(nonce, now) {
+  for (const [storedNonce, expiresAt] of seenServiceNonces) {
+    if (expiresAt <= now) seenServiceNonces.delete(storedNonce);
+  }
+  if (seenServiceNonces.has(nonce)) return false;
+  seenServiceNonces.set(nonce, now + SERVICE_AUTH_MAX_AGE_MS);
+  return true;
+}
 
 function checkAuth(req, res, next) {
-  if (REQUIRE_SERVICE_TOKEN && !SERVICE_TOKEN) {
+  if (SERVICE_SECRET.length < 32) return denyAccess(req, res);
+
+  const userId = headerString(req, 'x-api-key');
+  const timestampText = headerString(req, 'x-service-timestamp');
+  const nonce = headerString(req, 'x-service-nonce');
+  const suppliedBodyHash = headerString(req, 'x-service-body-sha256');
+  const suppliedSignature = headerString(req, 'x-service-signature');
+  const timestamp = Number(timestampText);
+  const now = Date.now();
+
+  if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(userId)) {
+    return denyAccess(req, res);
+  }
+  if (!Number.isSafeInteger(timestamp) || Math.abs(now - timestamp) > SERVICE_AUTH_MAX_AGE_MS) {
+    return denyAccess(req, res);
+  }
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) {
     return denyAccess(req, res);
   }
 
-  // Permite ler estritamente do header ou da query string
-  const serviceToken = req.headers['x-service-token'] || req.query.service_token;
+  const bodyHash = requestBodyHash(req);
+  if (!secureHexEqual(suppliedBodyHash, bodyHash)) {
+    return denyAccess(req, res);
+  }
 
-  if (SERVICE_TOKEN && serviceToken !== SERVICE_TOKEN) {
+  const canonicalRequest = serviceCanonicalRequest({
+    timestamp,
+    nonce,
+    userId,
+    method: req.method,
+    pathAndQuery: req.originalUrl,
+    bodyHash
+  });
+  const expectedSignature = nodeCrypto.createHmac('sha256', SERVICE_SECRET)
+    .update(canonicalRequest, 'utf8')
+    .digest('hex');
+
+  if (!secureHexEqual(suppliedSignature, expectedSignature) || !consumeServiceNonce(nonce, now)) {
     return denyAccess(req, res);
   }
-  
-  // Lê a chave de API do Header ou da Query string
-  const token = req.headers['x-api-key'] || req.query.key;
-  
-  if (!token) {
-    return denyAccess(req, res);
-  }
-  
-  // Valida se o token é a API_KEY global do servidor ou um formato UUID válido (usuário do Supabase)
-  const isMasterKey = API_KEY && token === API_KEY;
-  const isUuidKey = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(token);
-  
-  if (!isMasterKey && !isUuidKey) {
-    return denyAccess(req, res);
-  }
-  
+
+  req.authUserId = userId;
   next();
 }
 
+function readAuthenticatedUserId(req) {
+  return req.authUserId || '';
+}
+
 function denyAccess(req, res) {
-  return res.status(401).send(`
-    <html>
-      <head>
-        <title>Não Autorizado</title>
-        <style>
-          body { font-family: sans-serif; background: #0f172a; color: #f8fafc; text-align: center; padding-top: 5rem; }
-          .card { max-width: 500px; margin: 0 auto; background: #1e293b; padding: 2.5rem; border-radius: 12px; border: 1px solid #ef4444; }
-          h2 { color: #ef4444; margin-top: 0; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h2>⚠️ Acesso Não Autorizado</h2>
-          <p>Este gateway do WhatsApp está protegido por chaves de segurança da aplicação.</p>
-          <p>Por favor, acesse o painel principal do FollowUp Mônada para fazer a integração.</p>
-        </div>
-      </body>
-    </html>
-  `);
+  const key = String(req.ip || req.socket?.remoteAddress || 'unknown');
+  const now = Date.now();
+  const current = failedAuthWindows.get(key);
+  const windowState = !current || current.resetAt <= now
+    ? { count: 1, resetAt: now + FAILED_AUTH_WINDOW_MS }
+    : { count: current.count + 1, resetAt: current.resetAt };
+  failedAuthWindows.set(key, windowState);
+
+  if (windowState.count > FAILED_AUTH_LIMIT) {
+    res.set('Retry-After', String(Math.max(1, Math.ceil((windowState.resetAt - now) / 1000))));
+    return res.status(429).json({ error: 'Muitas tentativas de autenticacao.' });
+  }
+  return res.status(401).json({ error: 'Nao autorizado.' });
 }
 
 function readLocalMessagesForDate(userId, dateStr) {
@@ -5356,7 +5417,7 @@ function clearLocalMessageFiles(userId, dateStr) {
 }
 
 async function handleMaintenanceResync(req, res) {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   if (!userId) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
@@ -5443,16 +5504,21 @@ async function handleMaintenanceResync(req, res) {
 
 // --- ROTAS DO SERVIDOR HTTP ---
 
+// O painel HTML legado dependia de credenciais na URL. Toda operacao agora passa
+// exclusivamente pelo proxy autenticado do Next.js.
+app.get(['/', '/qr'], (_req, res) => {
+  res.status(404).json({ error: 'Use o painel autenticado do FollowUp Monada.' });
+});
+
 // Rota principal (Home/Dashboard simples) - protegida
 app.get('/', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   const instance = await getOrCreateInstance(userId);
   
   const connStatus = instance ? instance.connectionStatus : 'disconnected';
   const syncStatusVal = instance ? instance.syncStatus : 'pending';
   
-  const serviceTokenVal = req.headers['x-service-token'] || req.query.service_token || '';
-  const queryParam = userId ? `?key=${userId}${serviceTokenVal ? `&service_token=${encodeURIComponent(serviceTokenVal)}` : ''}` : '';
+  const queryParam = '';
   const todayVal = messageDomain.dateInTimeZone();
   res.send(`
     <html>
@@ -5957,7 +6023,7 @@ app.get('/', checkAuth, async (req, res) => {
 
 // Retorna o status da conexão em JSON
 app.get('/status', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   const instance = await getOrCreateInstance(userId);
   if (!instance) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
@@ -6068,7 +6134,7 @@ app.get('/status', checkAuth, async (req, res) => {
 
 // Atualiza as configurações de processamento de mídia (áudio e imagem) do usuário em memória
 app.post('/settings', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
   const { transcribe_audio, interpret_images } = req.body;
   if (transcribe_audio === undefined && interpret_images === undefined) {
@@ -6098,7 +6164,7 @@ app.post('/settings', checkAuth, async (req, res) => {
 
 // Retorna a lista de contatos sincronizados em JSON
 app.get('/contacts', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   if (!userId) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
@@ -6124,7 +6190,7 @@ app.get('/contacts', checkAuth, async (req, res) => {
 
 // Busca diagnostica pontual no cache de contatos sem despejar a lista completa
 app.get('/diagnostics/contact-lookup', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   if (!userId) {
     return res.status(400).json({ error: 'Identificacao de usuario necessaria.' });
   }
@@ -6162,7 +6228,7 @@ app.get('/diagnostics/contact-lookup', checkAuth, async (req, res) => {
 
 // Diagnostico de integridade para dar confianca sobre ordem, duplicidade e nomes
 app.get('/diagnostics', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   if (!userId) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
@@ -6176,7 +6242,7 @@ app.get('/diagnostics', checkAuth, async (req, res) => {
 
 // Diagnostico pontual de aliases de participantes de um grupo
 app.get('/diagnostics/group-aliases', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   if (!userId) {
     return res.status(400).json({ error: 'Identificacao de usuario necessaria.' });
   }
@@ -6226,12 +6292,11 @@ app.get('/diagnostics/group-aliases', checkAuth, async (req, res) => {
 });
 
 // Ressincronizacao leve sem apagar credenciais nem exigir novo QR Code
-app.get('/maintenance/resync', checkAuth, handleMaintenanceResync);
 app.post('/maintenance/resync', checkAuth, handleMaintenanceResync);
 
 // Retorna o QR Code em base64 ou status da conexão em JSON para modais
 app.get('/qr-code', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   const instance = await getOrCreateInstance(userId);
   if (!instance) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
@@ -6256,15 +6321,14 @@ app.get('/qr-code', checkAuth, async (req, res) => {
 
 // Renderiza a página web com o QR Code de autenticação
 app.get('/qr', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   const instance = await getOrCreateInstance(userId);
   if (!instance) {
     return res.status(400).send('Erro: Identificação do usuário inválida.');
   }
   applyOwnerNameHint(userId.replace(/[^a-zA-Z0-9-_]/g, ''), instance, readOwnerNameHint(req));
 
-  const serviceTokenVal = req.headers['x-service-token'] || req.query.service_token || '';
-  const keyParam = userId ? `?key=${userId}${serviceTokenVal ? `&service_token=${encodeURIComponent(serviceTokenVal)}` : ''}` : '';
+  const keyParam = '';
 
   if (instance.connectionStatus === 'connected') {
     return res.send(`
@@ -6341,7 +6405,7 @@ app.get('/qr', checkAuth, async (req, res) => {
 
 // Retorna as mensagens de um dia específico
 app.get('/messages', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   if (!userId) {
     return res.status(400).json({ error: 'Identificação de usuário necessária.' });
   }
@@ -6606,7 +6670,7 @@ app.get('/messages', checkAuth, async (req, res) => {
 
 // Limpa todos os logs/snapshots de mensagens do usuário, localmente e no Supabase.
 app.post('/clear-logs', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   if (!userId) {
     return res.status(400).send('Identificação de usuário necessária.');
   }
@@ -6628,7 +6692,7 @@ app.post('/clear-logs', checkAuth, async (req, res) => {
 
 // Desconecta a sessão do WhatsApp no servidor e zera as credenciais locais do usuário
 app.post('/logout', checkAuth, async (req, res) => {
-  const userId = req.headers['x-api-key'] || req.query.key;
+  const userId = readAuthenticatedUserId(req);
   if (!userId) {
     return res.status(400).send('Identificação de usuário necessária.');
   }
