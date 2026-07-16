@@ -19,4 +19,11 @@ describe('workflow de deploy', () => {
     expect(workflow).toContain('NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder');
     expect(workflow).not.toContain('SUPABASE_SERVICE_ROLE_KEY');
   });
+
+  it('autentica o fetch privado sem persistir token na URL remota', () => {
+    expect(workflow).toContain('GITHUB_TOKEN: ${{ github.token }}');
+    expect(workflow).toContain('envs: GITHUB_TOKEN');
+    expect(workflow).toContain('credential.helper=!f()');
+    expect(workflow).not.toMatch(/https:\/\/[^/\s]+@github\.com/);
+  });
 });

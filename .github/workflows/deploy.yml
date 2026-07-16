@@ -39,11 +39,14 @@ jobs:
           npm run build
 
       - name: Publicar via SSH
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          envs: GITHUB_TOKEN
           script_stop: true
           script: |
             cd /home/ubuntu/followup
@@ -54,7 +57,10 @@ jobs:
             else
               git remote set-url origin https://github.com/taianrj/FollowUpMonada.git
             fi
-            git fetch --prune origin main
+            git \
+              -c credential.helper= \
+              -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f' \
+              fetch --prune origin main
             git checkout -B main origin/main
 
             sudo docker build -t followup-whatsapp ./whatsapp-service
