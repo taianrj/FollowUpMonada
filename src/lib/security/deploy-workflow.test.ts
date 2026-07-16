@@ -13,4 +13,10 @@ describe('workflow de deploy', () => {
     expect(serviceInstall).toBeGreaterThan(rootInstall);
     expect(tests).toBeGreaterThan(serviceInstall);
   });
+
+  it('usa apenas valores ficticios do Supabase no build de validacao', () => {
+    expect(workflow).toContain('NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co');
+    expect(workflow).toContain('NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder');
+    expect(workflow).not.toContain('SUPABASE_SERVICE_ROLE_KEY');
+  });
 });

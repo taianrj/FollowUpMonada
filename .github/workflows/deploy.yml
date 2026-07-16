@@ -29,6 +29,9 @@ jobs:
           cache: npm
 
       - name: Verificar testes e build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder
         run: |
           npm ci
           npm --prefix whatsapp-service ci
