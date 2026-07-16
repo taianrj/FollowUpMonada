@@ -41,29 +41,30 @@ jobs:
       - name: Publicar via SSH
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          DEPLOY_SHA: ${{ github.sha }}
         uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: GITHUB_TOKEN
+          envs: GITHUB_TOKEN,DEPLOY_SHA
           script_stop: true
           script: |
-            cd /home/ubuntu/followup
+            set -eu
 
-            if [ ! -d ".git" ]; then
-              git init
-              git remote add origin https://github.com/taianrj/FollowUpMonada.git
-            else
-              git remote set-url origin https://github.com/taianrj/FollowUpMonada.git
-            fi
-            git \
-              -c credential.helper= \
-              -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f' \
-              fetch --prune origin main
-            git checkout -B main origin/main
+            deploy_source="$(mktemp -d)"
+            archive_path="$deploy_source/source.tar.gz"
+            trap 'rm -rf "$deploy_source"' EXIT
 
-            sudo docker build -t followup-whatsapp ./whatsapp-service
+            curl --fail --silent --show-error --location \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/taianrj/FollowUpMonada/tarball/$DEPLOY_SHA" \
+              --output "$archive_path"
+            tar -xzf "$archive_path" --strip-components=1 --directory "$deploy_source"
+            rm -f "$archive_path"
+
+            sudo docker build -t followup-whatsapp "$deploy_source/whatsapp-service"
             sudo docker stop followup-whatsapp || true
             sudo docker rm followup-whatsapp || true
 

@@ -20,10 +20,13 @@ describe('workflow de deploy', () => {
     expect(workflow).not.toContain('SUPABASE_SERVICE_ROLE_KEY');
   });
 
-  it('autentica o fetch privado sem persistir token na URL remota', () => {
+  it('baixa o commit privado sem persistir token na URL remota', () => {
     expect(workflow).toContain('GITHUB_TOKEN: ${{ github.token }}');
-    expect(workflow).toContain('envs: GITHUB_TOKEN');
-    expect(workflow).toContain('credential.helper=!f()');
+    expect(workflow).toContain('DEPLOY_SHA: ${{ github.sha }}');
+    expect(workflow).toContain('envs: GITHUB_TOKEN,DEPLOY_SHA');
+    expect(workflow).toContain('Authorization: Bearer $GITHUB_TOKEN');
+    expect(workflow).toContain('tarball/$DEPLOY_SHA');
+    expect(workflow).not.toContain('git fetch');
     expect(workflow).not.toMatch(/https:\/\/[^/\s]+@github\.com/);
   });
 });
