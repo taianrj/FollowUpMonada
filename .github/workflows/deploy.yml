@@ -57,6 +57,10 @@ jobs:
             trap 'rm -rf "$deploy_source"' EXIT
 
             curl --fail --silent --show-error --location \
+              --retry 8 \
+              --retry-delay 5 \
+              --retry-max-time 120 \
+              --retry-all-errors \
               --header "Accept: application/vnd.github+json" \
               --header "Authorization: Bearer $GITHUB_TOKEN" \
               "https://api.github.com/repos/taianrj/FollowUpMonada/tarball/$DEPLOY_SHA" \

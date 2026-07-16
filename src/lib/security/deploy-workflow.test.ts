@@ -29,4 +29,11 @@ describe('workflow de deploy', () => {
     expect(workflow).not.toContain('git fetch');
     expect(workflow).not.toMatch(/https:\/\/[^/\s]+@github\.com/);
   });
+
+  it('repete o download do commit quando o GitHub falha temporariamente', () => {
+    expect(workflow).toContain('--retry 8');
+    expect(workflow).toContain('--retry-delay 5');
+    expect(workflow).toContain('--retry-max-time 120');
+    expect(workflow).toContain('--retry-all-errors');
+  });
 });
