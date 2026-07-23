@@ -158,6 +158,8 @@ try {
       'MEDIA_LONG_TERM_RETRY_MAX_MS',
       'MEDIA_MAX_LONG_TERM_ATTEMPTS',
       'MEDIA_STATE_PERSIST_DELAY_MS',
+      'MEDIA_DOWNLOAD_TIMEOUT_MS',
+      'MEDIA_PROVIDER_TIMEOUT_MS',
       'AUTH_STATE_PERSIST_DELAY_MS',
       'AUTH_STATE_MAX_FILE_BYTES',
       'RESYNC_POLL_INTERVAL_MS',
@@ -579,6 +581,8 @@ const MEDIA_LONG_TERM_RETRY_STEP_MS = Math.max(1000, parseInt(process.env.MEDIA_
 const MEDIA_LONG_TERM_RETRY_MAX_MS = Math.max(MEDIA_LONG_TERM_RETRY_STEP_MS, parseInt(process.env.MEDIA_LONG_TERM_RETRY_MAX_MS || String(30 * 60 * 1000), 10));
 const MEDIA_MAX_LONG_TERM_ATTEMPTS = Math.max(1, parseInt(process.env.MEDIA_MAX_LONG_TERM_ATTEMPTS || '10', 10));
 const MEDIA_STATE_PERSIST_DELAY_MS = Math.max(100, parseInt(process.env.MEDIA_STATE_PERSIST_DELAY_MS || '250', 10));
+const MEDIA_DOWNLOAD_TIMEOUT_MS = Math.max(5000, parseInt(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS || '60000', 10));
+const MEDIA_PROVIDER_TIMEOUT_MS = Math.max(10000, parseInt(process.env.MEDIA_PROVIDER_TIMEOUT_MS || '120000', 10));
 const IMAGE_INTERPRETATION_ENABLED = process.env.IMAGE_INTERPRETATION_ENABLED !== 'false';
 const IMAGE_INTERPRETATION_MAX_BYTES = Math.max(256 * 1024, parseInt(process.env.IMAGE_INTERPRETATION_MAX_BYTES || String(3 * 1024 * 1024), 10));
 const IMAGE_INTERPRETATION_QUEUE_MAX = Math.max(1, parseInt(process.env.IMAGE_INTERPRETATION_QUEUE_MAX || '200', 10));
@@ -1002,6 +1006,22 @@ function formatRetryDelay(ms) {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.round(seconds % 60);
   return remainingSeconds > 0 ? `${minutes}m${remainingSeconds}s` : `${minutes}m`;
+}
+
+async function withMediaTimeout(promise, timeoutMs, operationLabel) {
+  const boundedTimeoutMs = Math.max(1, Number(timeoutMs) || 1);
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${operationLabel} excedeu o tempo limite de ${formatRetryDelay(boundedTimeoutMs)}.`));
+    }, boundedTimeoutMs);
+  });
+
+  try {
+    return await Promise.race([Promise.resolve(promise), timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function shiftReadyQueueItem(queue) {
@@ -1583,7 +1603,8 @@ async function transcribeAudioBuffer(buffer, mimetype) {
       headers: {
         Authorization: `Bearer ${config.key}`
       },
-      body: form
+      body: form,
+      signal: AbortSignal.timeout(MEDIA_PROVIDER_TIMEOUT_MS)
     });
 
     if (!response.ok) {
@@ -1646,7 +1667,8 @@ async function transcribeAudioWithGemini(buffer, mimetype) {
       generationConfig: {
         temperature: 0.0
       }
-    })
+    }),
+    signal: AbortSignal.timeout(MEDIA_PROVIDER_TIMEOUT_MS)
   });
 
   if (!response.ok) {
@@ -1873,7 +1895,11 @@ async function transcribeQueuedAudio(item) {
   const downloadContext = typeof updateMediaMessage === 'function'
     ? { logger, reuploadRequest: updateMediaMessage.bind(item.instance.sock) }
     : undefined;
-  const buffer = await downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext);
+  const buffer = await withMediaTimeout(
+    downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext),
+    MEDIA_DOWNLOAD_TIMEOUT_MS,
+    'Download do audio'
+  );
   if (!buffer || buffer.length === 0) {
     throw new Error('Download do audio retornou vazio.');
   }
@@ -2088,7 +2114,8 @@ async function interpretImageBuffer(buffer) {
         ],
         temperature: 0.1,
         max_completion_tokens: 500
-      })
+      }),
+      signal: AbortSignal.timeout(MEDIA_PROVIDER_TIMEOUT_MS)
     });
 
     if (!response.ok) {
@@ -2150,7 +2177,8 @@ async function interpretImageWithGemini(compressed) {
         temperature: 0.1,
         maxOutputTokens: 500
       }
-    })
+    }),
+    signal: AbortSignal.timeout(MEDIA_PROVIDER_TIMEOUT_MS)
   });
 
   if (!response.ok) {
@@ -2373,7 +2401,11 @@ async function interpretQueuedImage(item) {
   const downloadContext = typeof updateMediaMessage === 'function'
     ? { logger, reuploadRequest: updateMediaMessage.bind(item.instance.sock) }
     : undefined;
-  const buffer = await downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext);
+  const buffer = await withMediaTimeout(
+    downloadMediaMessage(item.rawMessage, 'buffer', {}, downloadContext),
+    MEDIA_DOWNLOAD_TIMEOUT_MS,
+    'Download da imagem'
+  );
   if (!buffer || buffer.length === 0) {
     throw new Error('Download da imagem retornou vazio.');
   }
@@ -6836,6 +6868,7 @@ module.exports = {
     retryDelayMsForError,
     shouldPauseMediaQueueForError,
     stringifyMediaState,
+    withMediaTimeout,
     unwrapMessageContent,
     shouldQueueAudioTranscription,
     shouldQueueImageInterpretation,

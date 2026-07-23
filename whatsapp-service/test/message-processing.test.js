@@ -303,6 +303,16 @@ test('aplica backoff de fila e distingue erros permanentes', () => {
   assert.ok(service.longTermRetryDelayMs(2) >= service.longTermRetryDelayMs(1));
 });
 
+test('libera o worker quando uma operacao de midia fica pendente', async () => {
+  const neverSettles = new Promise(() => {});
+
+  await assert.rejects(
+    service.withMediaTimeout(neverSettles, 10, 'Download do audio'),
+    /Download do audio excedeu o tempo limite/
+  );
+  assert.equal(await service.withMediaTimeout(Promise.resolve('ok'), 100, 'Transcricao do audio'), 'ok');
+});
+
 test('formata texto e markdown com aviso de roteamento', () => {
   const conversations = [{
     chatKey: 'nao-identificada',
