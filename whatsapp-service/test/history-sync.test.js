@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const historySync = require('../lib/history-sync');
+const { __test: service } = require('../server');
 
 test('nao conclui primeira sincronizacao por inatividade ou bootstrap isolado', () => {
   const state = historySync.createHistorySyncState({ expectsHistory: true, now: 1 });
@@ -27,6 +28,26 @@ test('conclui somente apos progresso RECENT 100 e processamento do ultimo lote',
   assert.equal(historySync.finalizeHistorySync(state, 123), true);
   assert.equal(state.completedAt, 123);
   assert.equal(state.completionSource, 'baileys-recent-progress-100');
+});
+
+test('preserva RECENT 100 recebido antes de connection.open', () => {
+  const instance = {};
+  service.initializeUserSyncState(instance, true);
+  const generationState = instance.historySyncState;
+
+  historySync.applyHistoryStatus(generationState, {
+    isRecent: true,
+    status: 'complete',
+    explicit: true
+  });
+
+  service.markUserSyncConnected(instance, true);
+  historySync.beginHistoryBatch(instance.historySyncState);
+  historySync.finishHistoryBatch(instance.historySyncState);
+
+  assert.equal(instance.historySyncState, generationState);
+  assert.equal(instance.historySyncState.explicitRecentComplete, true);
+  assert.equal(historySync.finalizeHistorySync(instance.historySyncState), true);
 });
 
 test('nao conclui entre o status RECENT e o download do lote final', () => {

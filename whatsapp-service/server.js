@@ -3836,6 +3836,10 @@ async function connectUserWhatsApp(userId) {
 
   const { state, saveCreds } = await useMultiFileAuthState(userAuthDir);
   const expectsHistorySync = instance.forceHistorySync || Number(state.creds.accountSyncCounter || 0) === 0;
+  // O Baileys pode emitir messaging-history.status antes de connection=open.
+  // Inicialize o estado desta geração antes de registrar/receber esses eventos
+  // para que a abertura da conexão não apague a confirmação RECENT 100%.
+  initializeUserSyncState(instance, expectsHistorySync);
   if (state?.creds?.me) {
     instance.myJid = jidNumber(state.creds.me.id || '');
     instance.myLid = jidNumber(state.creds.me.lid || '');
@@ -3986,7 +3990,7 @@ async function connectUserWhatsApp(userId) {
     } else if (connection === 'open') {
       instance.currentQr = null;
       instance.connectionStatus = 'connected';
-      initializeUserSyncState(instance, expectsHistorySync);
+      markUserSyncConnected(instance, expectsHistorySync);
       instance.lastConnectionOpenAt = new Date().toISOString();
       instance.lastDisconnectCode = null;
       instance.lastDisconnectError = '';
@@ -4938,6 +4942,15 @@ function initializeUserSyncState(instance, expectsHistory) {
   instance.historySyncState = historySync.createHistorySyncState({ expectsHistory });
   instance.syncStatus = 'syncing';
   instance.lastSyncActivity = Date.now();
+  instance.syncCompletedAt = null;
+}
+
+function markUserSyncConnected(instance, expectsHistory, now = Date.now()) {
+  if (!instance.historySyncState) {
+    initializeUserSyncState(instance, expectsHistory);
+  }
+  instance.syncStatus = 'syncing';
+  instance.lastSyncActivity = now;
   instance.syncCompletedAt = null;
 }
 
@@ -6857,6 +6870,8 @@ module.exports = {
     mediaText,
     mergeMessages,
     mergeMediaStats,
+    initializeUserSyncState,
+    markUserSyncConnected,
     normalizeBoolean,
     normalizeDisplayName,
     normalizeStoredMessage,
