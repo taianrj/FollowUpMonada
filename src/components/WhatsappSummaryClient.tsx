@@ -22,6 +22,12 @@ import {
   recordWhatsappStatusSuccess
 } from '@/lib/whatsapp/status-health';
 import { formatSummaryDate } from '@/lib/whatsapp/summary-date';
+import {
+  buildSummaryCalendarDays,
+  formatCalendarMonth,
+  getCalendarMonthStart,
+  shiftCalendarMonth,
+} from '@/lib/whatsapp/summary-calendar';
 import { playSummaryCompletionSound } from '@/lib/summary-completion-sound';
 import { resolveClientForSuggestedTask } from '@/lib/clients/resolve-client';
 import './Dashboard.css'; // Reutiliza estilos globais de layout e botões
@@ -82,6 +88,9 @@ const getErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : 'Erro desconhecido.'
 );
 
+const getCurrentTimestamp = (): number => Date.now();
+const createTemporarySummaryId = (): string => `temporary-${crypto.randomUUID()}`;
+
 class SummaryRequestError extends Error {
   constructor(message: string, public readonly status?: number) {
     super(message);
@@ -106,6 +115,7 @@ interface WhatsappSummaryClientProps {
   initialClients: Client[];
   initialStatuses: Status[];
   initialSummaries: WhatsappSummary[];
+  initialSummaryDates: string[];
 }
 
 export default function WhatsappSummaryClient({
@@ -113,6 +123,7 @@ export default function WhatsappSummaryClient({
   initialClients,
   initialStatuses,
   initialSummaries,
+  initialSummaryDates,
 }: WhatsappSummaryClientProps) {
   const router = useRouter();
   const { showToast } = useNotification();
@@ -158,10 +169,16 @@ export default function WhatsappSummaryClient({
   const [clients, setClients] = useState<Client[]>(initialClients);
   const [statuses] = useState<Status[]>(initialStatuses);
   const [summaries, setSummaries] = useState<WhatsappSummary[]>(initialSummaries);
+  const [summaryDateCatalog, setSummaryDateCatalog] = useState(initialSummaryDates);
   
   // Entrada do usuário
   const [rawText, setRawText] = useState('');
-  const [summaryDate, setSummaryDate] = useState(getSaoPauloDateString);
+  const [summaryDate, setSummaryDate] = useState(
+    () => initialSummaries[0]?.summary_date ?? getSaoPauloDateString()
+  );
+  const [calendarMonth, setCalendarMonth] = useState(
+    () => getCalendarMonthStart(initialSummaries[0]?.summary_date ?? getSaoPauloDateString())
+  );
   const saveToDb = true;
   
   // Status de processamento
@@ -173,9 +190,60 @@ export default function WhatsappSummaryClient({
   const [activeSummary, setActiveSummary] = useState<WhatsappSummary | null>(
     initialSummaries.length > 0 ? initialSummaries[0] : null
   );
-  const activeSavedSummary = summaries.find((summary) => summary.id === activeSummary?.id);
+  const selectedDateSummary = summaries.find((summary) => summary.summary_date === summaryDate);
+  const selectedDateLabels = formatSummaryDate(summaryDate);
   const activeSummaryDate = activeSummary ? formatSummaryDate(activeSummary.summary_date) : null;
   const summaryErrorDate = summaryError ? formatSummaryDate(summaryError.date) : null;
+  const savedSummaryDates = useMemo(
+    () => new Set([
+      ...summaryDateCatalog,
+      ...summaries.map((summary) => summary.summary_date),
+    ]),
+    [summaries, summaryDateCatalog]
+  );
+  const calendarDays = useMemo(
+    () => buildSummaryCalendarDays(calendarMonth, getSaoPauloDateString()),
+    [calendarMonth]
+  );
+
+  const calendarSelectionRequestRef = useRef(0);
+  const [isCalendarSummaryLoading, setIsCalendarSummaryLoading] = useState(false);
+
+  const handleCalendarDateSelect = async (date: string) => {
+    const requestId = ++calendarSelectionRequestRef.current;
+    setIsCalendarSummaryLoading(false);
+    const savedSummary = summaries.find((summary) => summary.summary_date === date) ?? null;
+    setSummaryDate(date);
+    setCalendarMonth(getCalendarMonthStart(date));
+    setActiveSummary(savedSummary);
+    setSummaryError(null);
+    setCreatedTasksKeys({});
+
+    if (savedSummary || !savedSummaryDates.has(date) || !profile?.id) return;
+
+    setIsCalendarSummaryLoading(true);
+    const { data, error } = await supabase
+      .from('whatsapp_summaries')
+      .select('*')
+      .eq('created_by', profile.id)
+      .eq('summary_date', date)
+      .single();
+
+    if (requestId !== calendarSelectionRequestRef.current) return;
+    setIsCalendarSummaryLoading(false);
+
+    if (error || !data) {
+      showToast('Não foi possível carregar o resumo desta data.', 'error');
+      return;
+    }
+
+    const loadedSummary = data as WhatsappSummary;
+    setSummaries((previous) => [
+      loadedSummary,
+      ...previous.filter((summary) => summary.id !== loadedSummary.id),
+    ]);
+    setActiveSummary(loadedSummary);
+  };
 
   // Controle de tarefas já cadastradas na sessão atual para evitar múltiplos cliques
   const [createdTasksKeys, setCreatedTasksKeys] = useState<Record<string, boolean>>({});
@@ -289,15 +357,15 @@ export default function WhatsappSummaryClient({
     timeoutMs: number,
     intervalMs: number
   ) => {
-    const startedAt = Date.now();
+    const startedAt = getCurrentTimestamp();
     let latestResponse = await fetchWhatsappMessages(date, format);
 
     while (
       latestResponse.ok &&
       await isEmptyMessagesResponse(latestResponse, format) &&
-      Date.now() - startedAt < timeoutMs
+      getCurrentTimestamp() - startedAt < timeoutMs
     ) {
-      await wait(Math.min(intervalMs, Math.max(0, timeoutMs - (Date.now() - startedAt))));
+      await wait(Math.min(intervalMs, Math.max(0, timeoutMs - (getCurrentTimestamp() - startedAt))));
       latestResponse = await fetchWhatsappMessages(date, format);
     }
 
@@ -862,7 +930,7 @@ export default function WhatsappSummaryClient({
 
       // Estrutura um objeto de resumo para a UI
       const newSummary: WhatsappSummary = {
-        id: result.summaryId || Math.random().toString(),
+        id: result.summaryId || createTemporarySummaryId(),
         summary_date: targetDate,
         raw_text: textToProcess,
         summary_data: result.data,
@@ -878,6 +946,9 @@ export default function WhatsappSummaryClient({
           newSummary,
           ...prev.filter(summary => summary.summary_date !== targetDate),
         ]);
+        setSummaryDateCatalog((previous) => (
+          previous.includes(targetDate) ? previous : [targetDate, ...previous]
+        ));
       }
 
       setActiveSummary(newSummary);
@@ -923,6 +994,7 @@ export default function WhatsappSummaryClient({
     const timer = window.setTimeout(() => {
       setAutoSummaryEnabled(false);
       setSummaryDate(dateToGenerate);
+      setCalendarMonth(getCalendarMonthStart(dateToGenerate));
       setAutoSummaryDate('');
       generateAutoSummaryEffect(dateToGenerate);
     }, 250);
@@ -1104,15 +1176,15 @@ export default function WhatsappSummaryClient({
   };
 
   // Deleta um resumo salvo no banco de dados (Apenas Admin)
-  const handleDeleteSummary = async (summaryId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleDeleteSummary = async (summaryId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
 
     if (profile?.role !== 'admin') {
-      showToast('Apenas administradores podem excluir resumos históricos.', 'warning');
+      showToast('Apenas administradores podem excluir resumos salvos.', 'warning');
       return;
     }
 
-    const confirmed = await showCustomConfirm('Excluir Resumo', 'Tem certeza de que deseja excluir permanentemente este resumo do histórico?');
+    const confirmed = await showCustomConfirm('Excluir resumo desta data', 'Tem certeza de que deseja excluir permanentemente o resumo da data selecionada?');
     if (!confirmed) {
       return;
     }
@@ -1132,15 +1204,22 @@ export default function WhatsappSummaryClient({
       
       const remainingSummaries = summaries.filter(s => s.id !== summaryId);
       setSummaries(remainingSummaries);
+      setSummaryDateCatalog((previous) => previous.filter((date) => date !== summaryDate));
 
       if (activeSummary?.id === summaryId) {
-        setActiveSummary(remainingSummaries.length > 0 ? remainingSummaries[0] : null);
+        setActiveSummary(null);
       }
     } catch (error: unknown) {
       console.error(error);
       showToast('Erro ao deletar resumo: ' + getErrorMessage(error), 'error');
     }
   };
+
+  const isSummaryActionDisabled = (
+    !integrationConnected
+    || whatsappStatus !== 'connected'
+    || whatsappSyncStatus !== 'completed'
+  );
 
   return (
     <div className="dashboardLayout">
@@ -1160,137 +1239,133 @@ export default function WhatsappSummaryClient({
             <div>
               <h1 className="headerTitle">Resumos Diários do WhatsApp</h1>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
-                Processe logs de conversas do dia para obter relatórios semânticos automáticos separados por cliente.
+                Escolha uma data no calendário para consultar conversas, abrir um resumo salvo ou gerar um novo relatório.
               </p>
             </div>
           </div>
         </div>
 
-        {/* Painel Lateral Secundário - Histórico de Resumos */}
-        <section className="historyPanel whatsappSummaryHistoryPanel" style={{
+        {/* Calendário centraliza a data usada para consultar, gerar ou abrir resumos */}
+        <section className="historyPanel whatsappSummaryHistoryPanel whatsappSummaryCalendarPanel" style={{
           backgroundColor: 'var(--bg-secondary)',
           borderRadius: 'var(--radius-lg)',
           border: '1px solid var(--border-color)',
-          padding: '1.5rem',
+          padding: '1rem',
           display: 'flex',
           flexDirection: 'column',
-          gap: '1.25rem',
-          height: 'calc(100vh - 5rem)',
-          overflowY: 'auto'
+          gap: '0.75rem',
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>Resumos Salvos</h3>
-            <span style={{ fontSize: '0.75rem', backgroundColor: 'var(--border-color)', color: 'var(--text-secondary)', padding: '0.15rem 0.5rem', borderRadius: '9999px', fontWeight: 600 }}>
-              {summaries.length} salvos
-            </span>
+          <div className="whatsappSummaryCalendarNavigation">
+            <button
+              type="button"
+              onClick={() => setCalendarMonth((month) => shiftCalendarMonth(month, -1))}
+              aria-label="Mostrar mês anterior"
+              title="Mês anterior"
+            >
+              ‹
+            </button>
+            <strong aria-live="polite">{formatCalendarMonth(calendarMonth)}</strong>
+            <button
+              type="button"
+              onClick={() => setCalendarMonth((month) => shiftCalendarMonth(month, 1))}
+              aria-label="Mostrar próximo mês"
+              title="Próximo mês"
+            >
+              ›
+            </button>
           </div>
 
-          <div className="whatsappSummaryMobileHistoryPicker">
-            <label className="visually-hidden" htmlFor="whatsapp-summary-history">
-              Selecionar resumo do histórico
-            </label>
-            <select
-              id="whatsapp-summary-history"
-              className="formInput"
-              value={activeSavedSummary?.id || ''}
-              onChange={(event) => {
-                const selectedSummary = summaries.find((summary) => summary.id === event.target.value);
-                if (selectedSummary) {
-                  setActiveSummary(selectedSummary);
-                  setSummaryError(null);
-                  setCreatedTasksKeys({});
-                }
-              }}
-              disabled={summaries.length === 0}
+          <div className="whatsappSummaryCalendar" role="grid" aria-label={`Calendário de ${formatCalendarMonth(calendarMonth)}`}>
+            {[
+              ['D', 'Domingo'],
+              ['S', 'Segunda-feira'],
+              ['T', 'Terça-feira'],
+              ['Q', 'Quarta-feira'],
+              ['Q', 'Quinta-feira'],
+              ['S', 'Sexta-feira'],
+              ['S', 'Sábado'],
+            ].map(([shortLabel, fullLabel]) => (
+              <span key={fullLabel} className="whatsappSummaryCalendarWeekday" title={fullLabel} aria-label={fullLabel}>
+                {shortLabel}
+              </span>
+            ))}
+
+            {calendarDays.map((day) => {
+              const hasSummary = savedSummaryDates.has(day.date);
+              const isSelected = summaryDate === day.date;
+              const dayLabel = formatSummaryDate(day.date)?.numeric ?? day.date;
+
+              return (
+                <button
+                  key={day.date}
+                  type="button"
+                  role="gridcell"
+                  className={[
+                    'whatsappSummaryCalendarDay',
+                    !day.isCurrentMonth ? 'outsideMonth' : '',
+                    day.isToday ? 'today' : '',
+                    hasSummary ? 'hasSummary' : '',
+                    isSelected ? 'selectedDate' : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => void handleCalendarDateSelect(day.date)}
+                  aria-label={hasSummary
+                    ? `${dayLabel}, resumo salvo. Abrir resumo.`
+                    : `${dayLabel}, sem resumo. Selecionar data.`}
+                  aria-selected={isSelected}
+                  title={hasSummary ? 'Resumo salvo — clique para abrir' : 'Selecionar esta data'}
+                >
+                  <span>{day.dayNumber}</span>
+                  {hasSummary && <i aria-hidden="true" />}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="whatsappSummaryCalendarSelection">
+            <div className="whatsappSummaryCalendarSelectionHeader">
+              <div>
+                <span>Data selecionada</span>
+                <strong>
+                  {selectedDateLabels
+                    ? `${selectedDateLabels.numeric} · ${selectedDateLabels.weekday}`
+                    : summaryDate}
+                </strong>
+              </div>
+              <span className={savedSummaryDates.has(summaryDate) ? 'summarySaved' : 'summaryMissing'}>
+                {isCalendarSummaryLoading
+                  ? 'Carregando...'
+                  : savedSummaryDates.has(summaryDate) ? 'Resumo salvo' : 'Sem resumo'}
+              </span>
+            </div>
+          </div>
+
+          <div className="whatsappSummaryCalendarActions">
+            <button
+              type="button"
+              className="btn btnPrimary"
+              onClick={() => handleSyncAndGenerateSummary()}
+              disabled={isSummaryActionDisabled || isLoading || !apiToken}
             >
-              {summaries.length === 0 ? (
-                <option value="">Nenhum resumo salvo</option>
-              ) : (
-                <>
-                  <option value="">Selecionar outro resumo</option>
-                  {summaries.map((summary) => {
-                    const date = formatSummaryDate(summary.summary_date);
-                    return (
-                      <option key={summary.id} value={summary.id}>
-                        {date ? `${date.numeric} - ${date.weekday}` : summary.summary_date}
-                      </option>
-                    );
-                  })}
-                </>
-              )}
-            </select>
-            {profile?.role === 'admin' && activeSavedSummary && (
+              {isLoading ? '⚙️ Processando...' : '⚡ Gerar Resumo'}
+            </button>
+
+            <button
+              type="button"
+              className="btn btnSecondary"
+              onClick={handleOpenMessagesModal}
+              disabled={isSummaryActionDisabled || isLoading || !apiToken}
+            >
+              👁️ Consultar Conversas
+            </button>
+
+            {profile?.role === 'admin' && selectedDateSummary && (
               <button
                 type="button"
-                className="whatsappSummaryMobileDelete"
-                onClick={(event) => handleDeleteSummary(activeSavedSummary.id, event)}
-                aria-label="Excluir resumo selecionado"
-                title="Excluir resumo selecionado"
+                className="btn whatsappSummaryCalendarDelete"
+                onClick={(event) => handleDeleteSummary(selectedDateSummary.id, event)}
               >
-                ✕
+                Excluir Resumo
               </button>
-            )}
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', overflowY: 'auto', flex: 1 }} className="custom-scroll whatsappSummaryHistoryList">
-            {summaries.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                Nenhum resumo salvo no banco de dados.
-              </div>
-            ) : (
-              summaries.map((s) => {
-                const isSelected = activeSummary?.id === s.id;
-                const date = formatSummaryDate(s.summary_date);
-                const clientCount = s.summary_data?.summaries?.length ?? 0;
-                const taskCount = s.summary_data?.summaries?.reduce(
-                  (total, summary) => total + (summary.suggested_tasks?.length ?? 0),
-                  0
-                ) ?? 0;
-
-                return (
-                  <div
-                    key={s.id}
-                    onClick={() => {
-                      setActiveSummary(s);
-                      setSummaryError(null);
-                      setCreatedTasksKeys({});
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        setActiveSummary(s);
-                        setSummaryError(null);
-                        setCreatedTasksKeys({});
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Abrir resumo de ${date?.numeric ?? s.summary_date}`}
-                    className={`historyItem whatsappSummaryHistoryItem ${isSelected ? 'activeHistory' : ''}`}
-                  >
-                    <div className="whatsappSummaryHistoryDateRow">
-                      <span className="whatsappSummaryHistoryDate">
-                        {date?.compact ?? s.summary_date}
-                        {date && <span className="whatsappSummaryHistoryWeekday"> · {date.weekday}</span>}
-                      </span>
-                      {profile?.role === 'admin' && (
-                        <button
-                          type="button"
-                          onClick={(e) => handleDeleteSummary(s.id, e)}
-                          className="deleteSummaryBtn"
-                          aria-label={`Excluir resumo de ${date?.numeric ?? s.summary_date}`}
-                          title="Excluir resumo"
-                        >
-                          ✕
-                        </button>
-                      )}
-                    </div>
-                    <span className="whatsappSummaryHistoryMeta">
-                      {clientCount} {clientCount === 1 ? 'cliente' : 'clientes'} · {taskCount} {taskCount === 1 ? 'tarefa' : 'tarefas'}
-                    </span>
-                  </div>
-                );
-              })
             )}
           </div>
         </section>
@@ -1525,150 +1600,6 @@ export default function WhatsappSummaryClient({
           )}
 
           {/* Configurações de processamento movidas para o modal acessível via engrenagem */}
-
-          {/* Card de Configuração de Processamento Simples - Sempre visível */}
-          {(() => {
-            const isActionBarDisabled = !integrationConnected || whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed';
-            return (
-              <div className="whatsappSummaryActionBar" style={{
-                backgroundColor: 'var(--bg-secondary)',
-                borderRadius: 'var(--radius-lg)',
-                border: '1px solid var(--border-color)',
-                padding: '0.75rem 1.25rem',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                flexWrap: 'wrap',
-                gap: '1rem',
-                animation: 'fadeIn 0.3s ease-out',
-                opacity: isActionBarDisabled ? 0.65 : 1
-              }}>
-                <div className="whatsappSummaryDateControls">
-                  <h3 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-                    Gerar Novo Resumo
-                    {whatsappStatus !== 'connected' && (
-                      <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 'normal', marginLeft: '0.35rem' }}>
-                        (WhatsApp desconectado)
-                      </span>
-                    )}
-                    {whatsappStatus === 'connected' && whatsappSyncStatus !== 'completed' && (
-                      <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 'normal', marginLeft: '0.35rem' }}>
-                        (Sincronizando histórico...)
-                      </span>
-                    )}
-                    :
-                  </h3>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                    <button
-                      type="button"
-                      className="btn btnSecondary"
-                      onClick={() => setSummaryDate(prev => changeDateByDays(prev, -1))}
-                      disabled={isActionBarDisabled}
-                      style={{
-                        padding: '0.4rem 0.65rem',
-                        fontSize: '0.82rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        borderRadius: 'var(--radius-md)',
-                        cursor: isActionBarDisabled ? 'not-allowed' : 'pointer',
-                        opacity: isActionBarDisabled ? 0.5 : 1,
-                        height: '32px',
-                        width: '32px',
-                        minWidth: 'auto',
-                      }}
-                      title="Voltar um dia"
-                    >
-                      ←
-                    </button>
-                    <input
-                      type="date"
-                      value={summaryDate}
-                      onChange={(e) => setSummaryDate(e.target.value)}
-                      disabled={isActionBarDisabled}
-                      style={{
-                        backgroundColor: 'var(--bg-primary)',
-                        border: '1px solid var(--border-color)',
-                        color: 'var(--text-primary)',
-                        padding: '0.4rem 0.65rem',
-                        borderRadius: 'var(--radius-md)',
-                        fontSize: '0.82rem',
-                        outline: 'none',
-                        opacity: isActionBarDisabled ? 0.6 : 1,
-                        cursor: isActionBarDisabled ? 'not-allowed' : 'default',
-                        height: '32px',
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btnSecondary"
-                      onClick={() => setSummaryDate(prev => changeDateByDays(prev, 1))}
-                      disabled={isActionBarDisabled}
-                      style={{
-                        padding: '0.4rem 0.65rem',
-                        fontSize: '0.82rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        borderRadius: 'var(--radius-md)',
-                        cursor: isActionBarDisabled ? 'not-allowed' : 'pointer',
-                        opacity: isActionBarDisabled ? 0.5 : 1,
-                        height: '32px',
-                        width: '32px',
-                        minWidth: 'auto',
-                      }}
-                      title="Avançar um dia"
-                    >
-                      →
-                    </button>
-                  </div>
-                </div>
-
-                {/* Botões de Ação */}
-                <div className="whatsappSummaryActionButtons">
-                  <button
-                    type="button"
-                    className="btn btnSecondary"
-                    onClick={handleOpenMessagesModal}
-                    disabled={isActionBarDisabled || isLoading || !apiToken}
-                    style={{
-                      padding: '0.45rem 1rem',
-                      fontSize: '0.82rem',
-                      fontWeight: 600,
-                      border: '1px solid var(--border-color)',
-                      cursor: (isActionBarDisabled || !apiToken) ? 'not-allowed' : 'pointer',
-                      opacity: (isActionBarDisabled || !apiToken) ? 0.5 : 1,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.4rem'
-                    }}
-                  >
-                    👁️ Ver Mensagens
-                  </button>
-
-                  <button
-                    type="button"
-                    className="btn btnPrimary"
-                    onClick={() => handleSyncAndGenerateSummary()}
-                    disabled={isActionBarDisabled || isLoading || !apiToken}
-                    style={{
-                      padding: '0.45rem 1rem',
-                      fontSize: '0.82rem',
-                      fontWeight: 700,
-                      background: 'linear-gradient(135deg, var(--accent-purple) 0%, #4f46e5 100%)',
-                      boxShadow: isActionBarDisabled ? 'none' : '0 4px 10px rgba(99, 102, 241, 0.2)',
-                      cursor: (isActionBarDisabled || !apiToken) ? 'not-allowed' : 'pointer',
-                      opacity: (isActionBarDisabled || !apiToken) ? 0.5 : 1
-                    }}
-                  >
-                    {isLoading ? '⚙️ Processando...' : '⚡ Gerar Resumo'}
-                  </button>
-                </div>
-              </div>
-            );
-          })()}
-
-
 
           {/* Estado de Carregamento Premium com Skeleton */}
           {isLoading && (
@@ -2010,9 +1941,9 @@ export default function WhatsappSummaryClient({
                 </svg>
               </div>
               <div>
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>Nenhum Resumo Carregado</h3>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>Nenhum resumo para esta data</h3>
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', maxWidth: '400px', margin: '0 auto', lineHeight: 1.5 }}>
-                  Coloque as mensagens do dia acima e clique em &quot;Gerar Resumo Semântico&quot;, ou selecione um resumo histórico para visualizar.
+                  Use &quot;Consultar Conversas&quot; para revisar as mensagens ou &quot;Gerar Resumo&quot; para criar o primeiro resumo da data selecionada.
                 </p>
               </div>
             </div>
@@ -2716,7 +2647,7 @@ export default function WhatsappSummaryClient({
                 💬 Conversas Coletadas do WhatsApp
               </h3>
               <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: 0 }}>
-                Logs de mensagens importadas para o dia: <strong>{new Date(summaryDate + 'T00:00:00').toLocaleDateString('pt-BR')}</strong>
+                Conversas da data selecionada: <strong>{new Date(summaryDate + 'T00:00:00').toLocaleDateString('pt-BR')}</strong>
               </p>
             </div>
 

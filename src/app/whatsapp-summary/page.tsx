@@ -47,17 +47,28 @@ export default async function WhatsappSummaryPage() {
 
   // 5. Busca os resumos de WhatsApp anteriores (tratamos caso a tabela ainda não exista)
   let initialSummaries: WhatsappSummary[] = [];
+  let initialSummaryDates: string[] = [];
   try {
-    const { data: summariesData, error: summariesErr } = await supabase
-      .from('whatsapp_summaries')
-      .select('*')
-      .eq('created_by', user.id)
-      .order('summary_date', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(30);
+    const [summariesResult, datesResult] = await Promise.all([
+      supabase
+        .from('whatsapp_summaries')
+        .select('*')
+        .eq('created_by', user.id)
+        .order('summary_date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(30),
+      supabase
+        .from('whatsapp_summaries')
+        .select('summary_date')
+        .eq('created_by', user.id)
+        .order('summary_date', { ascending: false }),
+    ]);
 
-    if (!summariesErr && summariesData) {
-      initialSummaries = summariesData as WhatsappSummary[];
+    if (!summariesResult.error && summariesResult.data) {
+      initialSummaries = summariesResult.data as WhatsappSummary[];
+    }
+    if (!datesResult.error && datesResult.data) {
+      initialSummaryDates = datesResult.data.map((summary) => summary.summary_date);
     }
   } catch (err) {
     console.warn('Tabela whatsapp_summaries ainda não foi criada no banco de dados.', err);
@@ -69,6 +80,7 @@ export default async function WhatsappSummaryPage() {
       initialClients={(clients || []) as Client[]}
       initialStatuses={(statuses || []) as Status[]}
       initialSummaries={initialSummaries}
+      initialSummaryDates={initialSummaryDates}
     />
   );
 }
