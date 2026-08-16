@@ -23,6 +23,7 @@ import {
 } from '@/lib/whatsapp/status-health';
 import { formatSummaryDate } from '@/lib/whatsapp/summary-date';
 import { playSummaryCompletionSound } from '@/lib/summary-completion-sound';
+import { resolveClientForSuggestedTask } from '@/lib/clients/resolve-client';
 import './Dashboard.css'; // Reutiliza estilos globais de layout e botões
 
 function MessageBody({ text }: { text: string }) {
@@ -953,41 +954,52 @@ export default function WhatsappSummaryClient({
     }
 
     try {
-      let finalClientId = clientSummary.client_id;
+      const resolvedClient = await resolveClientForSuggestedTask({
+        clientId: clientSummary.client_id,
+        clientName: clientSummary.client_name,
+        knownClients: clients,
+        findByExactName: async (name) => {
+          const { data, error } = await supabase
+            .from('clients')
+            .select('*')
+            .eq('name', name)
+            .maybeSingle();
+          return { data: data as Client | null, error };
+        },
+        create: async (name) => {
+          const { data, error } = await supabase
+            .from('clients')
+            .insert({ name })
+            .select('*')
+            .single();
+          return { data: data as Client | null, error };
+        },
+        onCreate: (name) => showToast(`Cadastrando novo cliente "${name}"...`, 'info'),
+      });
+      const finalClientId = resolvedClient.clientId;
 
-      // 1. Se o cliente não estiver cadastrado no banco, criamos ele primeiro!
-      if (!finalClientId) {
-        showToast(`Cadastrando novo cliente "${clientSummary.client_name}"...`, 'info');
-        
-        const { data: newClient, error: clientErr } = await supabase
-          .from('clients')
-          .insert({ name: clientSummary.client_name.trim() })
-          .select('*')
-          .single();
+      if (resolvedClient.client) {
+        const clientToAdd = resolvedClient.client;
+        setClients((currentClients) => {
+          if (currentClients.some((client) => client.id === clientToAdd.id)) {
+            return currentClients;
+          }
+          return [...currentClients, clientToAdd].sort((a, b) => a.name.localeCompare(b.name));
+        });
+      }
 
-        if (clientErr) {
-          throw new Error('Falha ao cadastrar o cliente automaticamente: ' + clientErr.message);
-        }
-
-        finalClientId = newClient.id;
-        
-        // Atualiza a lista de clientes localmente
-        const updatedClients = [...clients, newClient].sort((a, b) => a.name.localeCompare(b.name));
-        setClients(updatedClients);
-        
-        // Atualiza também o client_id no resumo ativo
-        if (activeSummary) {
-          const updatedSummaries = activeSummary.summary_data.summaries.map(s => {
-            if (s.client_name === clientSummary.client_name) {
-              return { ...s, client_id: newClient.id };
-            }
-            return s;
-          });
-          setActiveSummary({
-            ...activeSummary,
-            summary_data: { summaries: updatedSummaries }
-          });
-        }
+      // Corrige também resumos antigos nos quais a IA omitiu o ID de um cliente já cadastrado.
+      if (!clientSummary.client_id && activeSummary) {
+        const updatedSummaries = activeSummary.summary_data.summaries.map((summary) => {
+          if (summary === clientSummary) {
+            return { ...summary, client_id: finalClientId };
+          }
+          return summary;
+        });
+        setActiveSummary({
+          ...activeSummary,
+          summary_data: { summaries: updatedSummaries }
+        });
       }
 
       // 2. Valida o status da tarefa sugerida
