@@ -84,3 +84,12 @@ comment on column public.whatsapp_summaries.ai_provider is
     'Provedor que gerou o resumo (gemini ou groq).';
 comment on column public.whatsapp_summaries.ai_model is
     'ID exato do modelo que gerou o resumo.';
+
+alter table public.task_history
+    add column if not exists ai_provider text,
+    add column if not exists ai_model text;
+
+comment on column public.task_history.ai_provider is
+    'Provedor que gerou a demanda (gemini ou groq).';
+comment on column public.task_history.ai_model is
+    'ID exato do modelo que gerou a demanda.';

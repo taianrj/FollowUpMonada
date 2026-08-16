@@ -259,19 +259,24 @@ describe('fallback dos provedores de IA', () => {
   it('mantém o fallback Groq usado por parse-tasks quando o Gemini falha', async () => {
     const generateGeminiText = vi.fn().mockRejectedValue(new Error('Gemini indisponível'));
     const generateGroqText = vi.fn().mockResolvedValue(validResponse);
+    const schema = buildParseTasksSchema(statuses);
 
     const result = await generateStructuredWithFallback({
       geminiApiKey: 'gemini-test-key',
       groqApiKey: 'groq-test-key',
       geminiModel: AI_MODELS.parseTasks,
       prompt: 'prompt',
-      schema: buildParseTasksSchema(statuses),
+      schema,
       thinkingLevel: ThinkingLevel.MINIMAL,
       validate: (value) => parseTasksOutput(value, statuses),
     }, { generateGeminiText, generateGroqText });
 
     expect(generateGeminiText).toHaveBeenCalledOnce();
-    expect(generateGroqText).toHaveBeenCalledOnce();
+    expect(generateGroqText).toHaveBeenCalledWith({
+      apiKey: 'groq-test-key',
+      prompt: 'prompt',
+      schema,
+    });
     expect(result.provider).toBe('groq');
     expect(result.model).toBe(AI_MODELS.groqFallback);
     expect(result.data.tasks).toHaveLength(1);
@@ -293,16 +298,78 @@ describe('fallback dos provedores de IA', () => {
 
     expect(result).toMatchObject({ provider: 'groq', data: { tasks: [] } });
   });
+
+  it('rejeita pela validação comum uma resposta inválida da Groq', async () => {
+    const generateGeminiText = vi.fn().mockRejectedValue(new Error('Gemini indisponível'));
+    const generateGroqText = vi.fn().mockResolvedValue(JSON.stringify({
+      tasks: [{
+        client_name: 'Acme',
+        description: 'Enviar relatório',
+        responsibles: [],
+        status: 'status inexistente',
+        observations: '',
+      }],
+    }));
+
+    await expect(generateStructuredWithFallback({
+      geminiApiKey: 'gemini-test-key',
+      groqApiKey: 'groq-test-key',
+      geminiModel: AI_MODELS.parseTasks,
+      prompt: 'prompt',
+      schema: buildParseTasksSchema(statuses),
+      thinkingLevel: ThinkingLevel.MINIMAL,
+      validate: (value) => parseTasksOutput(value, statuses),
+    }, { generateGeminiText, generateGroqText })).rejects.toMatchObject({
+      provider: 'groq',
+      category: 'invalid_response',
+    });
+  });
 });
 
 describe('detalhes de erro dos provedores', () => {
+  it('chama o GPT-OSS 120B com JSON Schema estrito e temperatura compatível', async () => {
+    const schema = buildParseTasksSchema(statuses);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: validResponse } }],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await expect(generateGroqText({
+        apiKey: 'groq-test-key',
+        prompt: 'prompt',
+        schema,
+      })).resolves.toBe(validResponse);
+
+      const request = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(JSON.parse(request.body as string)).toMatchObject({
+        model: AI_MODELS.groqFallback,
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'parse_tasks_response',
+            strict: true,
+            schema,
+          },
+        },
+        temperature: 0.1,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('preserva a mensagem de erro retornada pela Groq', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: { message: 'O modelo solicitado foi descontinuado' },
     }), { status: 400 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(generateGroqText({ apiKey: 'groq-test-key', prompt: 'prompt' })).rejects.toMatchObject({
+    await expect(generateGroqText({
+      apiKey: 'groq-test-key',
+      prompt: 'prompt',
+      schema: buildParseTasksSchema(statuses),
+    })).rejects.toMatchObject({
       provider: 'groq',
       status: 400,
       message: 'A Groq respondeu com HTTP 400: O modelo solicitado foi descontinuado.',

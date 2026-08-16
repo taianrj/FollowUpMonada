@@ -19,10 +19,14 @@ describe('migration de embeddings de demandas', () => {
     expect(migration).toMatch(/description_embedding_model = match_embedding_model/i);
   });
 
-  it('invalida o vetor quando a descrição muda e registra auditoria do resumo', () => {
+  it('invalida o vetor quando a descrição muda e registra provedor e modelo nas auditorias', () => {
     expect(migration).toMatch(/before update of description on public\.tasks/i);
     expect(migration).toMatch(/new\.description_embedding = null/i);
-    expect(migration).toMatch(/add column if not exists ai_provider text/i);
-    expect(migration).toMatch(/add column if not exists ai_model text/i);
+    expect(migration).toMatch(
+      /alter table public\.whatsapp_summaries[\s\S]*add column if not exists ai_provider text,[\s\S]*add column if not exists ai_model text/i,
+    );
+    expect(migration).toMatch(
+      /alter table public\.task_history[\s\S]*add column if not exists ai_provider text,[\s\S]*add column if not exists ai_model text/i,
+    );
   });
 });

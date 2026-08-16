@@ -48,6 +48,7 @@ interface GeminiGenerationOptions {
 interface GroqGenerationOptions {
   apiKey: string;
   prompt: string;
+  schema: JsonSchema;
 }
 
 interface StructuredGenerationDependencies {
@@ -287,7 +288,14 @@ export async function generateGroqText(options: GroqGenerationOptions): Promise<
     },
     body: JSON.stringify({
       model: AI_MODELS.groqFallback,
-      response_format: { type: 'json_object' },
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'parse_tasks_response',
+          strict: true,
+          schema: options.schema,
+        },
+      },
       messages: [{ role: 'user', content: options.prompt }],
       temperature: 0.1,
     }),
@@ -366,6 +374,7 @@ export async function generateStructuredWithFallback<T>(
     const text = await dependencies.generateGroqText({
       apiKey: options.groqApiKey,
       prompt: options.prompt,
+      schema: options.schema,
     });
     return {
       data: options.validate(parseJsonResponse(text)),

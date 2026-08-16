@@ -33,7 +33,7 @@ de ambiente e nos secrets do provedor, não na documentação pública.
 - **Resumo de WhatsApp**: Gemini 3.7 Flash (`gemini-3.7-flash`), com nível de raciocínio médio para interpretação contextual.
 - **Saídas estruturadas**: JSON Schema dinâmico (incluindo os status cadastrados) e validação server-side comum ao Gemini e à Groq.
 - **Deduplicação semântica**: Gemini Embedding 2 (`gemini-embedding-2`) com vetores de 768 dimensões e comparação cosseno via `pgvector`.
-- **SDK**: `@google/genai`. A Groq (`llama-3.3-70b-versatile`) permanece como fallback quando o Gemini falha ou devolve uma resposta inválida.
+- **SDK**: `@google/genai`. No `parse-tasks`, o fallback Groq usa `openai/gpt-oss-120b` quando o Gemini falha ou devolve uma resposta inválida; o resumo do WhatsApp permanece Gemini-only.
 
 ---
 

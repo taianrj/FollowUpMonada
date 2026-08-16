@@ -307,7 +307,8 @@ Retorne somente o objeto JSON solicitado pelo schema, com a propriedade tasks.
         changed_by: user.id,
         action: 'create',
         created_by_ai: true,
-        ai_provider: generation.model,
+        ai_provider: generation.provider,
+        ai_model: generation.model,
       });
       if (historyError) {
         console.error('Erro ao gravar histórico da IA.', { code: historyError.code });

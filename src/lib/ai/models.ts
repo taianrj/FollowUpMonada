@@ -4,7 +4,7 @@ export const AI_MODELS = {
   whatsappSummaryFallback: 'gemini-3.6-flash',
   whatsappSummaryLastFallback: 'gemini-3.5-flash',
   embeddings: 'gemini-embedding-2',
-  groqFallback: 'llama-3.3-70b-versatile',
+  groqFallback: 'openai/gpt-oss-120b',
 } as const;
 
 export const AI_PROVIDER_LABELS = {
