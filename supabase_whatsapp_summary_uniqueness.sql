@@ -1,5 +1,8 @@
 -- Garante no banco que cada usuário tenha no máximo um resumo por dia.
--- Antes de aplicar em uma base existente, confirme que não há duplicidades:
+-- Em uma base que já possui duplicidades, execute primeiro:
+-- supabase_whatsapp_summary_deduplicate.sql
+--
+-- Depois, confirme que não restaram duplicidades:
 -- select created_by, summary_date, count(*)
 -- from public.whatsapp_summaries
 -- where created_by is not null
