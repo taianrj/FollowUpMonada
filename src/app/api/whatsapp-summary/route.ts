@@ -5,7 +5,7 @@ import { AI_MODELS } from '@/lib/ai/models';
 import {
   AiProviderError,
   describeAiError,
-  generateStructuredWithFallback,
+  generateStructuredWithGeminiFallbacks,
   getPublicAiErrorDetails,
   type PublicAiErrorDetails,
 } from '@/lib/ai/providers';
@@ -145,17 +145,44 @@ Sem pista clara, use "${validStatusIds[0]}".
 Retorne somente o objeto JSON solicitado pelo schema, com a propriedade summaries.
 `;
 
-    const generation = await generateStructuredWithFallback({
+    const generation = await generateStructuredWithGeminiFallbacks({
       geminiApiKey: process.env.GEMINI_API_KEY,
-      groqApiKey: process.env.GROQ_API_KEY,
-      geminiModel: AI_MODELS.whatsappSummary,
+      models: [
+        { model: AI_MODELS.whatsappSummary, retries: 3 },
+        { model: AI_MODELS.whatsappSummaryFallback, retries: 1 },
+        { model: AI_MODELS.whatsappSummaryLastFallback, retries: 0 },
+      ],
       prompt,
       schema: buildWhatsappSummarySchema(validStatusIds),
       thinkingLevel: ThinkingLevel.MEDIUM,
       validate: (value) => parseWhatsappSummaryOutput(value, validStatusIds),
-      onGeminiFailure: (error) => {
-        console.warn('Falha no Gemini para resumo; tentando fallback Groq.', describeAiError(error));
-        aiAttempts.push(getPublicAiErrorDetails(error));
+      onAttemptFailure: ({
+        model,
+        attempt,
+        maxAttempts,
+        error,
+        willRetry,
+        retryDelayMs,
+      }) => {
+        console.warn('Falha em tentativa de geração do resumo de WhatsApp.', {
+          requestId,
+          model,
+          attempt,
+          maxAttempts,
+          httpStatus: error.status,
+          willRetry,
+          retryDelayMs,
+          ...describeAiError(error),
+        });
+        aiAttempts.push(getPublicAiErrorDetails(error, model));
+      },
+      onModelFallback: ({ fromModel, toModel, error }) => {
+        console.warn('Trocando o modelo Gemini do resumo de WhatsApp.', {
+          requestId,
+          fromModel,
+          toModel,
+          httpStatus: error.status,
+        });
       },
     });
 
@@ -243,21 +270,25 @@ Retorne somente o objeto JSON solicitado pelo schema, com a propriedade summarie
   } catch (error) {
     if (error instanceof AiProviderError) {
       const finalAttempt = getPublicAiErrorDetails(error);
-      const attempts = [...aiAttempts, finalAttempt].filter((attempt, index, all) => (
+      const attempts = [
+        ...aiAttempts,
+        ...(aiAttempts.length === 0 ? [finalAttempt] : []),
+      ].filter((attempt, index, all) => (
         all.findIndex((candidate) => (
           candidate.provider === attempt.provider
+          && candidate.model === attempt.model
           && candidate.category === attempt.category
           && candidate.status === attempt.status
           && candidate.message === attempt.message
         )) === index
       ));
-      console.error('Falha dos provedores na rota whatsapp-summary.', {
+      console.error('Falha dos modelos de IA na rota whatsapp-summary.', {
         requestId,
         ...describeAiError(error),
       });
       return NextResponse.json(
         {
-          error: 'Os provedores de IA não conseguiram gerar o resumo.',
+          error: 'Não foi possível gerar o resumo com os modelos de IA disponíveis.',
           code: 'AI_PROVIDER_FAILURE',
           details: { type: 'ai_provider', attempts },
           requestId,

@@ -25,6 +25,7 @@ export class AiProviderError extends Error {
 
 export interface PublicAiErrorDetails {
   provider: AiProvider;
+  model?: string;
   category: AiErrorCategory;
   status?: number;
   message: string;
@@ -65,6 +66,43 @@ interface StructuredGenerationOptions<T> {
   onGeminiFailure?: (error: AiProviderError) => void;
 }
 
+export interface GeminiFallbackModel {
+  model: string;
+  retries: number;
+}
+
+export interface GeminiAttemptFailure {
+  model: string;
+  attempt: number;
+  maxAttempts: number;
+  error: AiProviderError;
+  willRetry: boolean;
+  retryDelayMs?: number;
+}
+
+export interface GeminiModelFallback {
+  fromModel: string;
+  toModel: string;
+  error: AiProviderError;
+}
+
+interface GeminiFallbackOptions<T> {
+  geminiApiKey: string | undefined;
+  models: readonly GeminiFallbackModel[];
+  prompt: string;
+  schema: JsonSchema;
+  thinkingLevel: ThinkingLevel;
+  validate: (value: unknown) => T;
+  onAttemptFailure?: (failure: GeminiAttemptFailure) => void;
+  onModelFallback?: (fallback: GeminiModelFallback) => void;
+}
+
+interface GeminiFallbackDependencies {
+  generateGeminiText: (options: GeminiGenerationOptions) => Promise<string>;
+  sleep: (milliseconds: number) => Promise<void>;
+  random: () => number;
+}
+
 function getStatus(error: unknown): number | undefined {
   if (typeof error === 'object' && error !== null && 'status' in error) {
     const status = (error as { status?: unknown }).status;
@@ -89,15 +127,6 @@ function toProviderError(provider: AiProvider, error: unknown): AiProviderError 
   return new AiProviderError(provider, category, message, status, { cause: error });
 }
 
-export function describeAiError(error: AiProviderError): Record<string, unknown> {
-  return {
-    provider: error.provider,
-    category: error.category,
-    status: error.status,
-    message: error.message,
-  };
-}
-
 const MAX_PUBLIC_ERROR_MESSAGE_LENGTH = 800;
 
 function sanitizePublicErrorMessage(message: string): string {
@@ -108,9 +137,22 @@ function sanitizePublicErrorMessage(message: string): string {
     .slice(0, MAX_PUBLIC_ERROR_MESSAGE_LENGTH);
 }
 
-export function getPublicAiErrorDetails(error: AiProviderError): PublicAiErrorDetails {
+export function describeAiError(error: AiProviderError): Record<string, unknown> {
   return {
     provider: error.provider,
+    category: error.category,
+    status: error.status,
+    message: sanitizePublicErrorMessage(error.message),
+  };
+}
+
+export function getPublicAiErrorDetails(
+  error: AiProviderError,
+  model?: string,
+): PublicAiErrorDetails {
+  return {
+    provider: error.provider,
+    ...(model ? { model } : {}),
     category: error.category,
     status: error.status,
     message: sanitizePublicErrorMessage(error.message),
@@ -128,6 +170,11 @@ export async function generateGeminiText(options: GeminiGenerationOptions): Prom
       thinkingConfig: {
         thinkingLevel: options.thinkingLevel,
       },
+      // Os retries deste fluxo são controlados pela aplicação para preservar
+      // a contagem, o backoff e a auditoria por modelo.
+      httpOptions: {
+        retryOptions: { attempts: 1 },
+      },
     },
   });
 
@@ -136,6 +183,99 @@ export async function generateGeminiText(options: GeminiGenerationOptions): Prom
     throw new AiProviderError('gemini', 'empty_response', 'O Gemini retornou uma resposta vazia.');
   }
   return text;
+}
+
+const TRANSIENT_GEMINI_STATUSES = new Set([429, 503]);
+const GEMINI_RETRY_BASE_DELAY_MS = 1_000;
+const GEMINI_RETRY_JITTER_RATIO = 0.2;
+
+function getGeminiRetryDelayMs(retryNumber: number, random: () => number): number {
+  const exponentialDelay = GEMINI_RETRY_BASE_DELAY_MS * (2 ** (retryNumber - 1));
+  const jitterMultiplier = 1 - GEMINI_RETRY_JITTER_RATIO
+    + (random() * GEMINI_RETRY_JITTER_RATIO * 2);
+  return Math.round(exponentialDelay * jitterMultiplier);
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export async function generateStructuredWithGeminiFallbacks<T>(
+  options: GeminiFallbackOptions<T>,
+  dependencies: GeminiFallbackDependencies = {
+    generateGeminiText,
+    sleep,
+    random: Math.random,
+  },
+): Promise<StructuredGenerationResult<T>> {
+  if (!isConfiguredApiKey(options.geminiApiKey, 'your-gemini-api-key')) {
+    throw new AiProviderError('gemini', 'configuration', 'GEMINI_API_KEY não configurada.');
+  }
+  if (options.models.length === 0) {
+    throw new AiProviderError('gemini', 'configuration', 'Nenhum modelo Gemini foi configurado.');
+  }
+
+  for (let modelIndex = 0; modelIndex < options.models.length; modelIndex += 1) {
+    const modelConfig = options.models[modelIndex];
+    const maxAttempts = modelConfig.retries + 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const text = await dependencies.generateGeminiText({
+          apiKey: options.geminiApiKey,
+          model: modelConfig.model,
+          prompt: options.prompt,
+          schema: options.schema,
+          thinkingLevel: options.thinkingLevel,
+        });
+        return {
+          data: options.validate(parseJsonResponse(text)),
+          provider: 'gemini',
+          model: modelConfig.model,
+        };
+      } catch (error) {
+        const providerError = toProviderError('gemini', error);
+        const isTransient = providerError.status !== undefined
+          && TRANSIENT_GEMINI_STATUSES.has(providerError.status);
+        const willRetry = isTransient && attempt < maxAttempts;
+        const retryDelayMs = willRetry
+          ? getGeminiRetryDelayMs(attempt, dependencies.random)
+          : undefined;
+
+        options.onAttemptFailure?.({
+          model: modelConfig.model,
+          attempt,
+          maxAttempts,
+          error: providerError,
+          willRetry,
+          retryDelayMs,
+        });
+
+        if (willRetry && retryDelayMs !== undefined) {
+          await dependencies.sleep(retryDelayMs);
+          continue;
+        }
+
+        const nextModel = options.models[modelIndex + 1];
+        if (isTransient && nextModel) {
+          options.onModelFallback?.({
+            fromModel: modelConfig.model,
+            toModel: nextModel.model,
+            error: providerError,
+          });
+          break;
+        }
+
+        throw providerError;
+      }
+    }
+  }
+
+  throw new AiProviderError(
+    'gemini',
+    'provider_error',
+    'Não foi possível gerar o resumo com os modelos Gemini configurados.',
+  );
 }
 
 export async function generateGroqText(options: GroqGenerationOptions): Promise<string> {

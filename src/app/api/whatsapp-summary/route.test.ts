@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   createClient: vi.fn(),
-  generateStructuredWithFallback: vi.fn(),
+  generateStructuredWithGeminiFallbacks: vi.fn(),
   insertSummary: vi.fn(),
   updateSummary: vi.fn(),
 }));
@@ -15,12 +15,13 @@ vi.mock('@/lib/ai/providers', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/lib/ai/providers')>();
   return {
     ...original,
-    generateStructuredWithFallback: mocks.generateStructuredWithFallback,
+    generateStructuredWithGeminiFallbacks: mocks.generateStructuredWithGeminiFallbacks,
   };
 });
 
 import { POST } from './route';
 import { AiProviderError } from '@/lib/ai/providers';
+import { AI_MODELS } from '@/lib/ai/models';
 
 const USER_ID = '0bb5af37-1d24-4e0c-8596-80f582906674';
 const SUMMARY_DATE = '2026-08-16';
@@ -104,10 +105,10 @@ function summaryRequest(replaceExisting?: boolean) {
 describe('POST /api/whatsapp-summary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.generateStructuredWithFallback.mockResolvedValue({
+    mocks.generateStructuredWithGeminiFallbacks.mockResolvedValue({
       data: { summaries: [] },
       provider: 'gemini',
-      model: 'gemini-test',
+      model: AI_MODELS.whatsappSummary,
     });
   });
 
@@ -124,7 +125,7 @@ describe('POST /api/whatsapp-summary', () => {
     });
     expect(lookupFilters).toContainEqual(['created_by', USER_ID]);
     expect(lookupFilters).toContainEqual(['summary_date', SUMMARY_DATE]);
-    expect(mocks.generateStructuredWithFallback).not.toHaveBeenCalled();
+    expect(mocks.generateStructuredWithGeminiFallbacks).not.toHaveBeenCalled();
     expect(mocks.insertSummary).not.toHaveBeenCalled();
     expect(mocks.updateSummary).not.toHaveBeenCalled();
   });
@@ -141,14 +142,23 @@ describe('POST /api/whatsapp-summary', () => {
       replacedExisting: true,
       summaryId: 'existing-summary-id',
     });
-    expect(mocks.generateStructuredWithFallback).toHaveBeenCalledOnce();
+    expect(mocks.generateStructuredWithGeminiFallbacks).toHaveBeenCalledOnce();
     expect(mocks.updateSummary).toHaveBeenCalledOnce();
     expect(mocks.insertSummary).not.toHaveBeenCalled();
   });
 
-  it('insere normalmente quando ainda não existe resumo para a data', async () => {
+  it.each([
+    AI_MODELS.whatsappSummary,
+    AI_MODELS.whatsappSummaryFallback,
+    AI_MODELS.whatsappSummaryLastFallback,
+  ])('registra em ai_model o modelo que realmente gerou a resposta: %s', async (model) => {
     const { supabase } = createSupabaseMock(null);
     mocks.createClient.mockResolvedValue(supabase);
+    mocks.generateStructuredWithGeminiFallbacks.mockResolvedValue({
+      data: { summaries: [] },
+      provider: 'gemini',
+      model,
+    });
 
     const response = await POST(summaryRequest(false));
 
@@ -158,21 +168,56 @@ describe('POST /api/whatsapp-summary', () => {
       replacedExisting: false,
       summaryId: 'new-summary-id',
     });
-    expect(mocks.insertSummary).toHaveBeenCalledOnce();
+    expect(mocks.insertSummary).toHaveBeenCalledWith(expect.objectContaining({
+      ai_provider: 'gemini',
+      ai_model: model,
+    }));
     expect(mocks.updateSummary).not.toHaveBeenCalled();
   });
 
-  it('retorna os detalhes seguros de cada provedor de IA que falhou', async () => {
+  it('configura somente os três modelos Gemini centralizados para o resumo', async () => {
     const { supabase } = createSupabaseMock(null);
     mocks.createClient.mockResolvedValue(supabase);
-    mocks.generateStructuredWithFallback.mockImplementation(async (options) => {
-      options.onGeminiFailure?.(new AiProviderError(
-        'gemini',
-        'rate_limit',
-        'Cota excedida; api_key=segredo-nao-pode-vazar',
-        429,
-      ));
-      throw new AiProviderError('groq', 'provider_error', 'Modelo temporariamente indisponível.', 503);
+
+    await POST(summaryRequest(false));
+
+    expect(mocks.generateStructuredWithGeminiFallbacks).toHaveBeenCalledWith(expect.objectContaining({
+      geminiApiKey: process.env.GEMINI_API_KEY,
+      models: [
+        { model: AI_MODELS.whatsappSummary, retries: 3 },
+        { model: AI_MODELS.whatsappSummaryFallback, retries: 1 },
+        { model: AI_MODELS.whatsappSummaryLastFallback, retries: 0 },
+      ],
+    }));
+    const generationOptions = mocks.generateStructuredWithGeminiFallbacks.mock.calls[0][0];
+    expect(generationOptions).not.toHaveProperty('groqApiKey');
+    expect(JSON.stringify(generationOptions.models)).not.toContain('groq');
+  });
+
+  it('retorna erro amigável e detalhes seguros quando todos os modelos falham', async () => {
+    const { supabase } = createSupabaseMock(null);
+    mocks.createClient.mockResolvedValue(supabase);
+    mocks.generateStructuredWithGeminiFallbacks.mockImplementation(async (options) => {
+      const failures = [
+        { model: AI_MODELS.whatsappSummary, status: 429 as const },
+        { model: AI_MODELS.whatsappSummaryFallback, status: 503 as const },
+        { model: AI_MODELS.whatsappSummaryLastFallback, status: 503 as const },
+      ];
+      failures.forEach(({ model, status }) => {
+        options.onAttemptFailure?.({
+          model,
+          attempt: 1,
+          maxAttempts: 1,
+          error: new AiProviderError(
+            'gemini',
+            status === 429 ? 'rate_limit' : 'provider_error',
+            `Falha HTTP ${status}; api_key=segredo-nao-pode-vazar`,
+            status,
+          ),
+          willRetry: false,
+        });
+      });
+      throw new AiProviderError('gemini', 'provider_error', 'Modelo temporariamente indisponível.', 503);
     });
 
     const response = await POST(summaryRequest(false));
@@ -180,22 +225,31 @@ describe('POST /api/whatsapp-summary', () => {
 
     expect(response.status).toBe(502);
     expect(body).toMatchObject({
-      error: 'Os provedores de IA não conseguiram gerar o resumo.',
+      error: 'Não foi possível gerar o resumo com os modelos de IA disponíveis.',
       code: 'AI_PROVIDER_FAILURE',
       details: {
         type: 'ai_provider',
         attempts: [
           {
             provider: 'gemini',
+            model: AI_MODELS.whatsappSummary,
             category: 'rate_limit',
             status: 429,
-            message: 'Cota excedida; api_key=[REMOVIDO]',
+            message: 'Falha HTTP 429; api_key=[REMOVIDO]',
           },
           {
-            provider: 'groq',
+            provider: 'gemini',
+            model: AI_MODELS.whatsappSummaryFallback,
             category: 'provider_error',
             status: 503,
-            message: 'Modelo temporariamente indisponível.',
+            message: 'Falha HTTP 503; api_key=[REMOVIDO]',
+          },
+          {
+            provider: 'gemini',
+            model: AI_MODELS.whatsappSummaryLastFallback,
+            category: 'provider_error',
+            status: 503,
+            message: 'Falha HTTP 503; api_key=[REMOVIDO]',
           },
         ],
       },
