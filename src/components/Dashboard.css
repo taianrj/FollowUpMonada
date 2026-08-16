@@ -1944,6 +1944,7 @@ textarea.formInput {
 
   .whatsappSummaryLoadingCard,
   .whatsappSummaryResultCard,
+  .whatsappSummaryErrorCard,
   .whatsappSummaryClientCard,
   .whatsappSummaryEmptyResult {
     padding: 1rem !important;

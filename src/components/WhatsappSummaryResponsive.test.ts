@@ -39,6 +39,19 @@ describe('WhatsappSummaryClient responsive layout', () => {
     expect(componentSource).not.toContain('Resumo Semântico do Dia -');
   });
 
+  it('replaces a stale summary with useful error details after a failed attempt', () => {
+    expect(componentSource).toContain('{!isLoading && summaryError && (');
+    expect(componentSource).toContain('{!isLoading && !summaryError && activeSummary && (');
+    expect(componentSource).toContain('{!isLoading && !summaryError && !activeSummary && (');
+    expect(componentSource).toContain('O resumo anterior foi ocultado');
+    expect(componentSource).toContain('Status HTTP');
+    expect(componentSource).toContain('role="alert"');
+    expect(componentSource).toContain('Ver resumo anterior');
+    expect(dashboardCss).toMatch(
+      /\.whatsappSummaryResultCard,[\s\S]*?\.whatsappSummaryErrorCard,[\s\S]*?padding:\s*1rem !important;/
+    );
+  });
+
   it('keeps the current desktop grid as the base layout', () => {
     expect(dashboardCss).toMatch(
       /\.whatsappSummaryMain\s*\{[^}]*grid-template-columns:\s*300px minmax\(0, 1fr\);[^}]*gap:\s*2rem;[^}]*padding:\s*2\.5rem;/s

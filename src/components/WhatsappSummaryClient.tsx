@@ -81,6 +81,20 @@ const getErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : 'Erro desconhecido.'
 );
 
+class SummaryRequestError extends Error {
+  constructor(message: string, public readonly status?: number) {
+    super(message);
+    this.name = 'SummaryRequestError';
+  }
+}
+
+interface SummaryErrorDetails {
+  date: string;
+  message: string;
+  stage: 'Importação das conversas' | 'Análise pela IA';
+  status?: number;
+}
+
 interface CollaboratorOption {
   id?: string;
   name: string;
@@ -152,6 +166,7 @@ export default function WhatsappSummaryClient({
   // Status de processamento
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
+  const [summaryError, setSummaryError] = useState<SummaryErrorDetails | null>(null);
   
   // Resumo atualmente exibido na tela
   const [activeSummary, setActiveSummary] = useState<WhatsappSummary | null>(
@@ -159,6 +174,7 @@ export default function WhatsappSummaryClient({
   );
   const activeSavedSummary = summaries.find((summary) => summary.id === activeSummary?.id);
   const activeSummaryDate = activeSummary ? formatSummaryDate(activeSummary.summary_date) : null;
+  const summaryErrorDate = summaryError ? formatSummaryDate(summaryError.date) : null;
 
   // Controle de tarefas já cadastradas na sessão atual para evitar múltiplos cliques
   const [createdTasksKeys, setCreatedTasksKeys] = useState<Record<string, boolean>>({});
@@ -699,6 +715,7 @@ export default function WhatsappSummaryClient({
 
     setIsLoading(true);
     setLoadingStep(0);
+    setSummaryError(null);
     const targetDate = customDate || summaryDate;
     
     try {
@@ -713,9 +730,9 @@ export default function WhatsappSummaryClient({
       
       if (!response.ok) {
         if (response.status === 401) {
-          throw new Error('Chave de Segurança inválida ou expirada.');
+          throw new SummaryRequestError('Chave de Segurança inválida ou expirada.', response.status);
         }
-        throw new Error(`Erro ao importar mensagens: HTTP ${response.status}`);
+        throw new SummaryRequestError('O serviço do WhatsApp não conseguiu importar as conversas.', response.status);
       }
       
       const textMessages = await response.text();
@@ -734,7 +751,14 @@ export default function WhatsappSummaryClient({
       
     } catch (error: unknown) {
       setIsLoading(false);
-      showToast('Falha no processo: ' + getErrorMessage(error), 'error');
+      const message = getErrorMessage(error);
+      setSummaryError({
+        date: targetDate,
+        message,
+        stage: 'Importação das conversas',
+        status: error instanceof SummaryRequestError ? error.status : undefined,
+      });
+      showToast('Falha no processo: ' + message, 'error');
     }
   };
 
@@ -780,6 +804,7 @@ export default function WhatsappSummaryClient({
 
     setIsLoading(true);
     setLoadingStep(textOverride ? 1 : 0); // Se for override, já começa no passo de análise da IA
+    setSummaryError(null);
     const targetDate = dateOverride || summaryDate;
 
     try {
@@ -793,10 +818,13 @@ export default function WhatsappSummaryClient({
         })
       });
 
-      const result = await response.json();
+      const result = await response.json().catch(() => null);
 
       if (!response.ok) {
-        throw new Error(result.error || 'Erro na requisição');
+        const apiMessage = typeof result?.error === 'string'
+          ? result.error
+          : 'A API não conseguiu gerar o resumo.';
+        throw new SummaryRequestError(apiMessage, response.status);
       }
 
       showToast(
@@ -837,7 +865,14 @@ export default function WhatsappSummaryClient({
       triggerCompletionAlert();
     } catch (error: unknown) {
       console.error(error);
-      showToast('Erro ao processar resumo: ' + getErrorMessage(error), 'error');
+      const message = getErrorMessage(error);
+      setSummaryError({
+        date: targetDate,
+        message,
+        stage: 'Análise pela IA',
+        status: error instanceof SummaryRequestError ? error.status : undefined,
+      });
+      showToast('Erro ao processar resumo: ' + message, 'error');
     } finally {
       setIsLoading(false);
       setLoadingStep(0);
@@ -1122,6 +1157,7 @@ export default function WhatsappSummaryClient({
                 const selectedSummary = summaries.find((summary) => summary.id === event.target.value);
                 if (selectedSummary) {
                   setActiveSummary(selectedSummary);
+                  setSummaryError(null);
                   setCreatedTasksKeys({});
                 }
               }}
@@ -1176,12 +1212,14 @@ export default function WhatsappSummaryClient({
                     key={s.id}
                     onClick={() => {
                       setActiveSummary(s);
+                      setSummaryError(null);
                       setCreatedTasksKeys({});
                     }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         setActiveSummary(s);
+                        setSummaryError(null);
                         setCreatedTasksKeys({});
                       }
                     }}
@@ -1628,8 +1666,76 @@ export default function WhatsappSummaryClient({
             </div>
           )}
 
+          {/* Erro da tentativa atual: substitui visualmente qualquer resumo anterior. */}
+          {!isLoading && summaryError && (
+            <section
+              className="whatsappSummaryErrorCard"
+              role="alert"
+              aria-live="assertive"
+              style={{
+                backgroundColor: 'var(--bg-secondary)',
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid rgba(239, 68, 68, 0.45)',
+                borderLeft: '4px solid #ef4444',
+                padding: '1.5rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1.25rem',
+                minHeight: '300px',
+                animation: 'fadeIn 0.3s ease-out',
+                boxShadow: 'var(--shadow-sm)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.85rem' }}>
+                <span aria-hidden="true" style={{ color: '#ef4444', fontSize: '1.4rem', lineHeight: 1 }}>ⓧ</span>
+                <div style={{ minWidth: 0 }}>
+                  <h2 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                    Não foi possível gerar o resumo
+                  </h2>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', lineHeight: 1.5, margin: '0.4rem 0 0' }}>
+                    O resumo anterior foi ocultado para não ser confundido com o resultado desta tentativa.
+                  </p>
+                </div>
+              </div>
+
+              <dl style={{ display: 'grid', gridTemplateColumns: 'minmax(110px, auto) minmax(0, 1fr)', gap: '0.75rem 1rem', margin: 0 }}>
+                <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 700 }}>Data solicitada</dt>
+                <dd style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', margin: 0 }}>
+                  {summaryErrorDate?.numeric || summaryError.date}
+                </dd>
+                <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 700 }}>Etapa</dt>
+                <dd style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', margin: 0 }}>{summaryError.stage}</dd>
+                {summaryError.status !== undefined && (
+                  <>
+                    <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 700 }}>Status HTTP</dt>
+                    <dd style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', margin: 0 }}>{summaryError.status}</dd>
+                  </>
+                )}
+                <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 700 }}>Detalhes</dt>
+                <dd style={{ color: '#fca5a5', fontSize: '0.9rem', lineHeight: 1.55, margin: 0, overflowWrap: 'anywhere' }}>
+                  {summaryError.message}
+                </dd>
+              </dl>
+
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', lineHeight: 1.5, margin: 0 }}>
+                Verifique a conexão dos serviços e tente gerar o resumo novamente.
+              </p>
+
+              {activeSummary && (
+                <button
+                  type="button"
+                  className="btn btnSecondary"
+                  onClick={() => setSummaryError(null)}
+                  style={{ alignSelf: 'flex-start' }}
+                >
+                  Ver resumo anterior
+                </button>
+              )}
+            </section>
+          )}
+
           {/* Exibição do Resumo Ativo */}
-          {!isLoading && activeSummary && (
+          {!isLoading && !summaryError && activeSummary && (
             <div className="whatsappSummaryResultCard" style={{
               backgroundColor: 'var(--bg-secondary)',
               borderRadius: 'var(--radius-lg)',
@@ -1834,7 +1940,7 @@ export default function WhatsappSummaryClient({
           )}
 
           {/* View Vazia quando não há Resumo Ativo */}
-          {!isLoading && !activeSummary && (
+          {!isLoading && !summaryError && !activeSummary && (
             <div style={{
               backgroundColor: 'var(--bg-secondary)',
               borderRadius: 'var(--radius-lg)',
