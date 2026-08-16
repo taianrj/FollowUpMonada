@@ -813,7 +813,9 @@ export default function WhatsappSummaryClient({
         raw_text: textToProcess,
         summary_data: result.data,
         created_by: profile?.id || null,
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        ai_provider: result.provider,
+        ai_model: result.model,
       };
 
       // Atualiza a lista de resumos se foi salvo no banco
@@ -1005,7 +1007,7 @@ export default function WhatsappSummaryClient({
         changed_by: profile?.id,
         action: 'create',
         created_by_ai: true,
-        ai_provider: 'Gemini WhatsApp Extractor (Revisado)'
+        ai_provider: activeSummary?.ai_model || 'legacy-ai-model-unrecorded'
       });
 
       // 3. Marca a tarefa como criada na UI

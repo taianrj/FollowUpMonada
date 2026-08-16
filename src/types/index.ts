@@ -73,5 +73,6 @@ export interface WhatsappSummary {
   };
   created_by: string | null;
   created_at: string;
+  ai_provider?: 'gemini' | 'groq' | null;
+  ai_model?: string | null;
 }
-

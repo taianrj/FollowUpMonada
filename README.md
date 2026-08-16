@@ -29,7 +29,11 @@ de ambiente e nos secrets do provedor, não na documentação pública.
 - **Mídia protobuf**: filas persistentes de áudio/imagem usam `BufferJSON` para preservar `Buffer`/`Uint8Array` exigidos pelo Baileys 7.
 
 ### Inteligência Artificial
-- **Extração Semântica**: API do Gemini (`gemini-2.5-flash`) e Groq API (`llama-3.3-70b-versatile`) como provedor de fallback.
+- **Extração de demandas**: Gemini 3.5 Flash-Lite (`gemini-3.5-flash-lite`), com raciocínio mínimo para reduzir latência e custo.
+- **Resumo de WhatsApp**: Gemini 3.7 Flash (`gemini-3.7-flash`), com nível de raciocínio médio para interpretação contextual.
+- **Saídas estruturadas**: JSON Schema dinâmico (incluindo os status cadastrados) e validação server-side comum ao Gemini e à Groq.
+- **Deduplicação semântica**: Gemini Embedding 2 (`gemini-embedding-2`) com vetores de 768 dimensões e comparação cosseno via `pgvector`.
+- **SDK**: `@google/genai`. A Groq (`llama-3.3-70b-versatile`) permanece como fallback quando o Gemini falha ou devolve uma resposta inválida.
 
 ---
 
@@ -157,6 +161,7 @@ O comando executa os testes Vitest da interface/proxy e a suíte nativa do micro
 
 Para o correto funcionamento do ecossistema, o banco de dados do Supabase conta com a estrutura descrita nos arquivos:
 * `supabase_schema.sql` — Tabelas de perfis, clientes, colaboradores, tarefas e histórico de auditoria (Kanban).
+* `supabase_ai_embeddings.sql` — Migração aditiva de `pgvector`, embeddings das descrições, busca por similaridade e auditoria de provedor/modelo dos resumos.
 * `supabase_whatsapp_persistence.sql` — Tabelas de armazenamento de contatos, mensagens e sessões/blobs do WhatsApp.
 * `supabase_security_isolation.sql` — Políticas de segurança RLS (Row Level Security) aplicadas a perfis e acessos corporativos.
 * `supabase_auth_hardening.sql` — Migração aditiva que impede autoelevação de papel e remove leitura client-side de credenciais do WhatsApp.
@@ -166,3 +171,18 @@ Após atualizar o microsserviço, execute novamente `supabase_whatsapp_persisten
 Para ambientes existentes, aplique também `supabase_auth_hardening.sql`. Novos usuários
 sempre entram como `collaborator`; o primeiro administrador deve ser promovido por uma
 operação controlada no SQL Editor ou por ferramenta server-side com service role.
+
+### Migração da integração de IA
+
+Execute `supabase_ai_embeddings.sql` uma vez no SQL Editor do Supabase. A migration é
+aditiva: habilita a extensão `vector`, adiciona o embedding à tabela `tasks`, cria a
+função `match_active_task_embeddings` com `security invoker` (portanto preservando RLS)
+e registra o provedor/modelo em `whatsapp_summaries`.
+
+As demandas criadas pela extração de IA recebem embedding imediatamente. Demandas
+anteriores ou editadas manualmente ficam com embedding nulo e são preenchidas de forma
+incremental, em lotes limitados e apenas para o cliente que está sendo verificado. A
+lista completa de demandas ativas não é mais enviada ao prompt.
+
+O limiar inicial de similaridade é `0.90`. Ele é propositalmente conservador e deve ser
+calibrado com exemplos reais de duplicatas e falsos positivos antes de ser reduzido.
