@@ -79,8 +79,11 @@ describe('WhatsappSummaryClient responsive layout', () => {
     expect(componentSource).toContain('{!isLoading && summaryError && (');
     expect(componentSource).toContain('{!isLoading && !summaryError && activeSummary && (');
     expect(componentSource).toContain('{!isLoading && !summaryError && !activeSummary && (');
-    expect(componentSource).toContain('O resumo anterior foi ocultado');
+    expect(componentSource).not.toContain('O resumo anterior foi ocultado');
     expect(componentSource).toContain('Status HTTP');
+    expect(componentSource).toContain('Diagnóstico');
+    expect(componentSource).toContain('readSummaryResponseError');
+    expect(componentSource).toContain('describeUnexpectedSummaryError');
     expect(componentSource).toContain('role="alert"');
     expect(componentSource).toContain('Ver resumo anterior');
     expect(dashboardCss).toMatch(

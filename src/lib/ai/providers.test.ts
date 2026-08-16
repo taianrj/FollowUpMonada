@@ -1,7 +1,12 @@
 import { ThinkingLevel } from '@google/genai';
 import { describe, expect, it, vi } from 'vitest';
 import { AI_MODELS } from './models';
-import { generateStructuredWithFallback } from './providers';
+import {
+  AiProviderError,
+  generateGroqText,
+  generateStructuredWithFallback,
+  getPublicAiErrorDetails,
+} from './providers';
 import { buildParseTasksSchema, parseTasksOutput } from './schemas';
 
 const statuses = ['aguardando cliente'];
@@ -52,5 +57,38 @@ describe('fallback dos provedores de IA', () => {
     }, { generateGeminiText, generateGroqText });
 
     expect(result).toMatchObject({ provider: 'groq', data: { tasks: [] } });
+  });
+});
+
+describe('detalhes de erro dos provedores', () => {
+  it('preserva a mensagem de erro retornada pela Groq', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'O modelo solicitado foi descontinuado' },
+    }), { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(generateGroqText({ apiKey: 'groq-test-key', prompt: 'prompt' })).rejects.toMatchObject({
+      provider: 'groq',
+      status: 400,
+      message: 'A Groq respondeu com HTTP 400: O modelo solicitado foi descontinuado.',
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it('remove credenciais dos detalhes que podem ser enviados ao navegador', () => {
+    const error = new AiProviderError(
+      'gemini',
+      'provider_error',
+      'Falha em https://example.test?key=chave-secreta Authorization: Bearer token-secreto',
+      500,
+    );
+
+    const details = getPublicAiErrorDetails(error);
+
+    expect(details.message).toContain('?key=[REMOVIDO]');
+    expect(details.message).toContain('Bearer [REMOVIDO]');
+    expect(details.message).not.toContain('chave-secreta');
+    expect(details.message).not.toContain('token-secreto');
   });
 });

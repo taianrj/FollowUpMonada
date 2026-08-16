@@ -6,6 +6,8 @@ import {
   AiProviderError,
   describeAiError,
   generateStructuredWithFallback,
+  getPublicAiErrorDetails,
+  type PublicAiErrorDetails,
 } from '@/lib/ai/providers';
 import {
   buildWhatsappSummarySchema,
@@ -38,6 +40,8 @@ function databaseError(context: string, error: { code?: string; message?: string
 }
 
 export async function POST(request: Request) {
+  const requestId = crypto.randomUUID();
+  const aiAttempts: PublicAiErrorDetails[] = [];
   try {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
@@ -151,6 +155,7 @@ Retorne somente o objeto JSON solicitado pelo schema, com a propriedade summarie
       validate: (value) => parseWhatsappSummaryOutput(value, validStatusIds),
       onGeminiFailure: (error) => {
         console.warn('Falha no Gemini para resumo; tentando fallback Groq.', describeAiError(error));
+        aiAttempts.push(getPublicAiErrorDetails(error));
       },
     });
 
@@ -237,12 +242,41 @@ Retorne somente o objeto JSON solicitado pelo schema, com a propriedade summarie
     });
   } catch (error) {
     if (error instanceof AiProviderError) {
-      console.error('Falha dos provedores na rota whatsapp-summary.', describeAiError(error));
+      const finalAttempt = getPublicAiErrorDetails(error);
+      const attempts = [...aiAttempts, finalAttempt].filter((attempt, index, all) => (
+        all.findIndex((candidate) => (
+          candidate.provider === attempt.provider
+          && candidate.category === attempt.category
+          && candidate.status === attempt.status
+          && candidate.message === attempt.message
+        )) === index
+      ));
+      console.error('Falha dos provedores na rota whatsapp-summary.', {
+        requestId,
+        ...describeAiError(error),
+      });
+      return NextResponse.json(
+        {
+          error: 'Os provedores de IA não conseguiram gerar o resumo.',
+          code: 'AI_PROVIDER_FAILURE',
+          details: { type: 'ai_provider', attempts },
+          requestId,
+        },
+        { status: 502 },
+      );
     } else {
-      console.error('Erro na rota whatsapp-summary:', error);
+      console.error('Erro na rota whatsapp-summary:', { requestId, error });
     }
     return NextResponse.json(
-      { error: 'Erro interno ao processar resumo do WhatsApp com IA.' },
+      {
+        error: 'Erro interno ao processar resumo do WhatsApp com IA.',
+        code: 'SUMMARY_PROCESSING_FAILURE',
+        details: {
+          type: 'application',
+          message: 'Falha interna fora da comunicação com os provedores de IA.',
+        },
+        requestId,
+      },
       { status: 500 },
     );
   }

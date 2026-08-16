@@ -23,6 +23,13 @@ export class AiProviderError extends Error {
   }
 }
 
+export interface PublicAiErrorDetails {
+  provider: AiProvider;
+  category: AiErrorCategory;
+  status?: number;
+  message: string;
+}
+
 export interface StructuredGenerationResult<T> {
   data: T;
   provider: AiProvider;
@@ -91,6 +98,25 @@ export function describeAiError(error: AiProviderError): Record<string, unknown>
   };
 }
 
+const MAX_PUBLIC_ERROR_MESSAGE_LENGTH = 800;
+
+function sanitizePublicErrorMessage(message: string): string {
+  return message
+    .replace(/(authorization\s*:\s*bearer\s+)[^\s,;]+/gi, '$1[REMOVIDO]')
+    .replace(/((?:api[_ -]?key|token|secret)\s*[=:]\s*)[^\s,;]+/gi, '$1[REMOVIDO]')
+    .replace(/([?&]key=)[^&\s]+/gi, '$1[REMOVIDO]')
+    .slice(0, MAX_PUBLIC_ERROR_MESSAGE_LENGTH);
+}
+
+export function getPublicAiErrorDetails(error: AiProviderError): PublicAiErrorDetails {
+  return {
+    provider: error.provider,
+    category: error.category,
+    status: error.status,
+    message: sanitizePublicErrorMessage(error.message),
+  };
+}
+
 export async function generateGeminiText(options: GeminiGenerationOptions): Promise<string> {
   const ai = getGeminiClient(options.apiKey);
   const response = await ai.models.generateContent({
@@ -128,10 +154,23 @@ export async function generateGroqText(options: GroqGenerationOptions): Promise<
   });
 
   if (!response.ok) {
+    const responseBody = await response.text().catch(() => '');
+    let providerMessage = '';
+    try {
+      const parsed = JSON.parse(responseBody) as {
+        error?: { message?: unknown };
+        message?: unknown;
+      };
+      const candidate = parsed.error?.message ?? parsed.message;
+      providerMessage = typeof candidate === 'string' ? candidate.trim() : '';
+    } catch {
+      providerMessage = responseBody.trim().startsWith('<') ? '' : responseBody.trim();
+    }
+    const detail = providerMessage ? `: ${providerMessage.slice(0, MAX_PUBLIC_ERROR_MESSAGE_LENGTH)}` : '';
     throw new AiProviderError(
       'groq',
       response.status === 429 ? 'rate_limit' : 'provider_error',
-      `A Groq respondeu com HTTP ${response.status}.`,
+      `A Groq respondeu com HTTP ${response.status}${detail}.`,
       response.status,
     );
   }

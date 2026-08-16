@@ -23,6 +23,10 @@ import {
 } from '@/lib/whatsapp/status-health';
 import { formatSummaryDate } from '@/lib/whatsapp/summary-date';
 import {
+  describeUnexpectedSummaryError,
+  readSummaryResponseError,
+} from '@/lib/whatsapp/summary-error';
+import {
   buildSummaryCalendarDays,
   formatCalendarMonth,
   getCalendarMonthStart,
@@ -92,7 +96,11 @@ const getCurrentTimestamp = (): number => Date.now();
 const createTemporarySummaryId = (): string => `temporary-${crypto.randomUUID()}`;
 
 class SummaryRequestError extends Error {
-  constructor(message: string, public readonly status?: number) {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly diagnostics: string[] = [],
+  ) {
     super(message);
     this.name = 'SummaryRequestError';
   }
@@ -103,6 +111,7 @@ interface SummaryErrorDetails {
   message: string;
   stage: 'Importação das conversas' | 'Análise pela IA';
   status?: number;
+  diagnostics: string[];
 }
 
 interface CollaboratorOption {
@@ -798,10 +807,13 @@ export default function WhatsappSummaryClient({
       });
       
       if (!response.ok) {
-        if (response.status === 401) {
-          throw new SummaryRequestError('Chave de Segurança inválida ou expirada.', response.status);
-        }
-        throw new SummaryRequestError('O serviço do WhatsApp não conseguiu importar as conversas.', response.status);
+        const responseError = await readSummaryResponseError(
+          response,
+          response.status === 401
+            ? 'Chave de Segurança inválida ou expirada.'
+            : 'O serviço do WhatsApp não conseguiu importar as conversas.',
+        );
+        throw new SummaryRequestError(responseError.message, response.status, responseError.diagnostics);
       }
       
       const textMessages = await response.text();
@@ -826,6 +838,9 @@ export default function WhatsappSummaryClient({
         message,
         stage: 'Importação das conversas',
         status: error instanceof SummaryRequestError ? error.status : undefined,
+        diagnostics: error instanceof SummaryRequestError
+          ? error.diagnostics
+          : describeUnexpectedSummaryError(error, typeof navigator === 'undefined' ? undefined : navigator.onLine),
       });
       showToast('Falha no processo: ' + message, 'error');
     }
@@ -891,7 +906,7 @@ export default function WhatsappSummaryClient({
 
         return {
           response,
-          result: await response.json().catch(() => null),
+          result: await response.clone().json().catch(() => null),
         };
       };
 
@@ -913,10 +928,11 @@ export default function WhatsappSummaryClient({
       }
 
       if (!response.ok) {
-        const apiMessage = typeof result?.error === 'string'
-          ? result.error
-          : 'A API não conseguiu gerar o resumo.';
-        throw new SummaryRequestError(apiMessage, response.status);
+        const responseError = await readSummaryResponseError(
+          response,
+          'A API não conseguiu gerar o resumo.',
+        );
+        throw new SummaryRequestError(responseError.message, response.status, responseError.diagnostics);
       }
 
       showToast(
@@ -971,6 +987,9 @@ export default function WhatsappSummaryClient({
         message,
         stage: 'Análise pela IA',
         status: error instanceof SummaryRequestError ? error.status : undefined,
+        diagnostics: error instanceof SummaryRequestError
+          ? error.diagnostics
+          : describeUnexpectedSummaryError(error, typeof navigator === 'undefined' ? undefined : navigator.onLine),
       });
       showToast('Erro ao processar resumo: ' + message, 'error');
     } finally {
@@ -1663,9 +1682,6 @@ export default function WhatsappSummaryClient({
                   <h2 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
                     Não foi possível gerar o resumo
                   </h2>
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', lineHeight: 1.5, margin: '0.4rem 0 0' }}>
-                    O resumo anterior foi ocultado para não ser confundido com o resultado desta tentativa.
-                  </p>
                 </div>
               </div>
 
@@ -1686,6 +1702,18 @@ export default function WhatsappSummaryClient({
                 <dd style={{ color: '#fca5a5', fontSize: '0.9rem', lineHeight: 1.55, margin: 0, overflowWrap: 'anywhere' }}>
                   {summaryError.message}
                 </dd>
+                {summaryError.diagnostics.length > 0 && (
+                  <>
+                    <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 700 }}>Diagnóstico</dt>
+                    <dd style={{ color: 'var(--text-secondary)', fontSize: '0.82rem', lineHeight: 1.55, margin: 0, minWidth: 0 }}>
+                      <ul style={{ display: 'grid', gap: '0.4rem', margin: 0, paddingLeft: '1.1rem' }}>
+                        {summaryError.diagnostics.map((detail) => (
+                          <li key={detail} style={{ overflowWrap: 'anywhere' }}>{detail}</li>
+                        ))}
+                      </ul>
+                    </dd>
+                  </>
+                )}
               </dl>
 
               <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', lineHeight: 1.5, margin: 0 }}>
