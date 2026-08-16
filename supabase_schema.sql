@@ -181,7 +181,8 @@ create table if not exists public.whatsapp_summaries (
     raw_text text not null,
     summary_data jsonb not null,
     created_by uuid references public.profiles(id) on delete set null,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    constraint whatsapp_summaries_created_by_summary_date_key unique (created_by, summary_date)
 );
 
 -- Habilitar RLS para resumos de whatsapp

@@ -58,12 +58,47 @@ export async function POST(request: Request) {
       text?: unknown;
       date?: unknown;
       saveToDb?: unknown;
+      replaceExisting?: unknown;
     };
     if (typeof body.text !== 'string' || !body.text.trim()) {
       return NextResponse.json({ error: 'Texto das mensagens não fornecido' }, { status: 400 });
     }
     if (body.date !== undefined && (typeof body.date !== 'string' || !formatSummaryDate(body.date))) {
       return NextResponse.json({ error: 'Data do resumo inválida' }, { status: 400 });
+    }
+    if (body.saveToDb !== undefined && typeof body.saveToDb !== 'boolean') {
+      return NextResponse.json({ error: 'Opção de salvamento inválida' }, { status: 400 });
+    }
+    if (body.replaceExisting !== undefined && typeof body.replaceExisting !== 'boolean') {
+      return NextResponse.json({ error: 'Opção de substituição inválida' }, { status: 400 });
+    }
+
+    const shouldSave = body.saveToDb === true;
+    const summaryDate = typeof body.date === 'string' ? body.date : getSaoPauloDate();
+    let existingSummaryId: string | null = null;
+
+    if (shouldSave) {
+      const { data: existingSummary, error: existingSummaryError } = await supabase
+        .from('whatsapp_summaries')
+        .select('id')
+        .eq('created_by', user.id)
+        .eq('summary_date', summaryDate)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingSummaryError) {
+        throw databaseError('Erro ao verificar resumo existente:', existingSummaryError);
+      }
+
+      existingSummaryId = existingSummary?.id ?? null;
+      if (existingSummaryId && body.replaceExisting !== true) {
+        return NextResponse.json({
+          error: 'Já existe um resumo salvo para esta data.',
+          code: 'SUMMARY_ALREADY_EXISTS',
+          summaryDate,
+        }, { status: 409 });
+      }
     }
 
     const [clientsResult, statusesResult] = await Promise.all([
@@ -119,40 +154,58 @@ Retorne somente o objeto JSON solicitado pelo schema, com a propriedade summarie
       },
     });
 
-    if (body.saveToDb) {
-      const summaryDate = typeof body.date === 'string' ? body.date : getSaoPauloDate();
+    if (shouldSave) {
       const summaryPayload = {
         summary_date: summaryDate,
         raw_text: body.text,
         summary_data: generation.data,
         created_by: user.id,
       };
-      let { data: insertedSummary, error: insertError } = await supabase
-        .from('whatsapp_summaries')
-        .insert({
-          ...summaryPayload,
-          ai_provider: generation.provider,
-          ai_model: generation.model,
-        })
-        .select()
-        .single();
+      const payloadWithAudit = {
+        ...summaryPayload,
+        ai_provider: generation.provider,
+        ai_model: generation.model,
+      };
+      const persistSummary = (payload: typeof summaryPayload | typeof payloadWithAudit) => (
+        existingSummaryId
+          ? supabase
+              .from('whatsapp_summaries')
+              .update(payload)
+              .eq('id', existingSummaryId)
+              .eq('created_by', user.id)
+              .select()
+              .single()
+          : supabase
+              .from('whatsapp_summaries')
+              .insert(payload)
+              .select()
+              .single()
+      );
+
+      let { data: persistedSummary, error: persistError } = await persistSummary(payloadWithAudit);
 
       // Mantém o salvamento compatível durante a janela entre o deploy da
       // aplicação e a aplicação da migration aditiva de auditoria.
-      if (insertError && ['PGRST204', '42703'].includes(insertError.code ?? '')) {
-        const legacyInsert = await supabase
-          .from('whatsapp_summaries')
-          .insert(summaryPayload)
-          .select()
-          .single();
-        insertedSummary = legacyInsert.data;
-        insertError = legacyInsert.error;
+      if (persistError && ['PGRST204', '42703'].includes(persistError.code ?? '')) {
+        const legacyPersist = await persistSummary(summaryPayload);
+        persistedSummary = legacyPersist.data;
+        persistError = legacyPersist.error;
       }
 
-      if (insertError) {
+      // A restrição única no banco também fecha a janela entre duas requisições
+      // simultâneas que passaram pela consulta acima sem encontrar um registro.
+      if (persistError?.code === '23505') {
+        return NextResponse.json({
+          error: 'Já existe um resumo salvo para esta data.',
+          code: 'SUMMARY_ALREADY_EXISTS',
+          summaryDate,
+        }, { status: 409 });
+      }
+
+      if (persistError) {
         console.error('Erro ao salvar resumo de WhatsApp.', {
-          code: insertError.code,
-          message: insertError.message,
+          code: persistError.code,
+          message: persistError.message,
         });
         return NextResponse.json({
           success: true,
@@ -167,7 +220,8 @@ Retorne somente o objeto JSON solicitado pelo schema, com a propriedade summarie
       return NextResponse.json({
         success: true,
         savedInDb: true,
-        summaryId: insertedSummary.id,
+        replacedExisting: Boolean(existingSummaryId),
+        summaryId: persistedSummary.id,
         provider: generation.provider,
         model: generation.model,
         data: generation.data,

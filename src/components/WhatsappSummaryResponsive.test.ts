@@ -52,6 +52,14 @@ describe('WhatsappSummaryClient responsive layout', () => {
     );
   });
 
+  it('asks before replacing a saved summary from the same date', () => {
+    expect(componentSource).toContain("result?.code === 'SUMMARY_ALREADY_EXISTS'");
+    expect(componentSource).toContain("'Substituir resumo existente?'");
+    expect(componentSource).toContain('Deseja substituí-lo pelo novo resumo?');
+    expect(componentSource).toContain('replaceExisting');
+    expect(componentSource).toContain('summary.summary_date !== targetDate');
+  });
+
   it('keeps the current desktop grid as the base layout', () => {
     expect(dashboardCss).toMatch(
       /\.whatsappSummaryMain\s*\{[^}]*grid-template-columns:\s*300px minmax\(0, 1fr\);[^}]*gap:\s*2rem;[^}]*padding:\s*2\.5rem;/s

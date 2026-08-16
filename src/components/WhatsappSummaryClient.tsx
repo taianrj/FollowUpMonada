@@ -808,17 +808,40 @@ export default function WhatsappSummaryClient({
     const targetDate = dateOverride || summaryDate;
 
     try {
-      const response = await fetch('/api/whatsapp-summary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: textToProcess,
-          date: targetDate,
-          saveToDb
-        })
-      });
+      const requestSummary = async (replaceExisting: boolean) => {
+        const response = await fetch('/api/whatsapp-summary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: textToProcess,
+            date: targetDate,
+            saveToDb,
+            replaceExisting,
+          })
+        });
 
-      const result = await response.json().catch(() => null);
+        return {
+          response,
+          result: await response.json().catch(() => null),
+        };
+      };
+
+      let { response, result } = await requestSummary(false);
+
+      if (response.status === 409 && result?.code === 'SUMMARY_ALREADY_EXISTS') {
+        setIsLoading(false);
+        const formattedDate = formatSummaryDate(targetDate)?.numeric ?? targetDate;
+        const confirmed = await showCustomConfirm(
+          'Substituir resumo existente?',
+          `Já existe um resumo salvo para o dia ${formattedDate}. Deseja substituí-lo pelo novo resumo?`,
+        );
+
+        if (!confirmed) return;
+
+        setIsLoading(true);
+        setLoadingStep(textOverride ? 1 : 0);
+        ({ response, result } = await requestSummary(true));
+      }
 
       if (!response.ok) {
         const apiMessage = typeof result?.error === 'string'
@@ -828,9 +851,11 @@ export default function WhatsappSummaryClient({
       }
 
       showToast(
-        result.savedInDb 
-          ? 'Resumo gerado e salvo no banco de dados!' 
-          : 'Resumo gerado com sucesso (não salvo no banco).', 
+        result.replacedExisting
+          ? 'Resumo existente substituído com sucesso!'
+          : result.savedInDb
+            ? 'Resumo gerado e salvo no banco de dados!'
+            : 'Resumo gerado com sucesso (não salvo no banco).',
         'success'
       );
 
@@ -848,7 +873,10 @@ export default function WhatsappSummaryClient({
 
       // Atualiza a lista de resumos se foi salvo no banco
       if (result.savedInDb) {
-        setSummaries(prev => [newSummary, ...prev]);
+        setSummaries(prev => [
+          newSummary,
+          ...prev.filter(summary => summary.summary_date !== targetDate),
+        ]);
       }
 
       setActiveSummary(newSummary);
