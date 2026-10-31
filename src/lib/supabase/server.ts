@@ -1,7 +1,15 @@
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { databaseProvider, d1ServerClient } from '@/lib/database/runtime';
 
 export async function createClient() {
+  if (databaseProvider() === 'd1') {
+    return await d1ServerClient() as unknown as Awaited<ReturnType<typeof createNativeClient>>;
+  }
+  return createNativeClient();
+}
+
+async function createNativeClient() {
   const cookieStore = await cookies();
 
   return createServerClient(

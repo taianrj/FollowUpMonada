@@ -3,10 +3,13 @@ import { NextResponse } from 'next/server';
 import { getTrustedAppOrigin } from '@/lib/security/app-origin';
 import { normalizeManagedUserRole } from '@/lib/security/roles';
 import { createClient as createServerClient } from '@/lib/supabase/server';
+import { databaseProvider } from '@/lib/database/runtime';
+import { manageD1User } from '@/lib/database/admin-users';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function POST(request: Request) {
+  if (databaseProvider() === 'd1') return manageD1User(request, 'create');
   try {
     const supabase = await createServerClient();
     const { data: { user } } = await supabase.auth.getUser();

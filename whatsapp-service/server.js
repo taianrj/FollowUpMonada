@@ -1,6 +1,8 @@
 // WhatsApp Gateway do FollowUp Mônada
 const express = require('express');
 const nodeCrypto = require('node:crypto');
+const { persistenceConfiguration, createPersistenceFetch } = require('./lib/database/persistence');
+const databaseFetch = createPersistenceFetch();
 // Polyfill para garantir que a Web Crypto API esteja no escopo global (necessário para versões do Node < 19)
 if (!global.crypto) {
   try {
@@ -126,6 +128,10 @@ try {
   if (fs.existsSync(dotenvPath)) {
     const dotenvContent = fs.readFileSync(dotenvPath, 'utf8');
     const serviceEnvKeys = new Set([
+      'DATABASE_PROVIDER',
+      'CLOUDFLARE_ACCOUNT_ID',
+      'CLOUDFLARE_D1_DATABASE_ID',
+      'CLOUDFLARE_D1_API_TOKEN',
       'GROQ_API_KEY',
       'OPENAI_API_KEY',
       'GEMINI_API_KEY',
@@ -190,8 +196,8 @@ function getDbSessionId(userId) {
 // Funções de Persistência de Credenciais do WhatsApp no Supabase
 async function saveCredsToSupabase(userId, creds) {
   const dbSessionId = getDbSessionId(userId);
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = getSupabaseConfig()?.cleanUrl;
+  const supabaseKey = getSupabaseConfig()?.key;
   
   if (!supabaseUrl || !supabaseKey) {
     return;
@@ -203,7 +209,7 @@ async function saveCredsToSupabase(userId, creds) {
 
   try {
     const credsString = JSON.stringify(creds);
-    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions`, {
+    const response = await databaseFetch(`${cleanUrl}/rest/v1/whatsapp_sessions`, {
       method: 'POST',
       headers: {
         'apikey': supabaseKey,
@@ -233,8 +239,8 @@ async function saveCredsToSupabase(userId, creds) {
 
 async function loadCredsFromSupabase(userId) {
   const dbSessionId = getDbSessionId(userId);
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = getSupabaseConfig()?.cleanUrl;
+  const supabaseKey = getSupabaseConfig()?.key;
   
   if (!supabaseUrl || !supabaseKey) {
     return null;
@@ -245,7 +251,7 @@ async function loadCredsFromSupabase(userId) {
   const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout para evitar travamento em flutuações de rede
 
   try {
-    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${dbSessionId}&select=creds`, {
+    const response = await databaseFetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${dbSessionId}&select=creds`, {
       headers: {
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`
@@ -271,8 +277,8 @@ async function loadCredsFromSupabase(userId) {
 
 async function deleteCredsFromSupabase(userId) {
   const dbSessionId = getDbSessionId(userId);
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = getSupabaseConfig()?.cleanUrl;
+  const supabaseKey = getSupabaseConfig()?.key;
   
   if (!supabaseUrl || !supabaseKey) {
     return;
@@ -283,7 +289,7 @@ async function deleteCredsFromSupabase(userId) {
   const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout
 
   try {
-    const response = await fetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${dbSessionId}`, {
+    const response = await databaseFetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${dbSessionId}`, {
       method: 'DELETE',
       headers: {
         'apikey': supabaseKey,
@@ -368,7 +374,7 @@ async function clearAllUserData(userId) {
     };
 
     try {
-      const resMsg = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_messages?user_id=eq.${cleanUserId}`, {
+      const resMsg = await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_messages?user_id=eq.${cleanUserId}`, {
         method: 'DELETE',
         headers
       });
@@ -379,7 +385,7 @@ async function clearAllUserData(userId) {
 
     // 4. Limpa contatos do Supabase
     try {
-      const resContacts = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_contacts?user_id=eq.${cleanUserId}`, {
+      const resContacts = await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_contacts?user_id=eq.${cleanUserId}`, {
         method: 'DELETE',
         headers
       });
@@ -405,7 +411,7 @@ async function clearAllUserData(userId) {
     ];
     for (const pattern of [...new Set(statePatterns)]) {
       try {
-        const response = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
+        const response = await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
           method: 'DELETE',
           headers
         });
@@ -443,7 +449,7 @@ async function clearUserMessagesData(userId) {
   };
 
   try {
-    const response = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_messages?user_id=eq.${supabaseEq(cleanUserId)}`, {
+    const response = await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_messages?user_id=eq.${supabaseEq(cleanUserId)}`, {
       method: 'DELETE',
       headers
     });
@@ -458,7 +464,7 @@ async function clearUserMessagesData(userId) {
   ];
   for (const pattern of [...new Set(messagePatterns)]) {
     try {
-      const response = await fetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
+      const response = await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
         method: 'DELETE',
         headers
       });
@@ -473,8 +479,8 @@ async function clearUserMessagesData(userId) {
 }
 
 async function loadProfileDataFromSupabase(userId) {
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = getSupabaseConfig()?.cleanUrl;
+  const supabaseKey = getSupabaseConfig()?.key;
   
   if (!supabaseUrl || !supabaseKey) {
     return null;
@@ -485,7 +491,7 @@ async function loadProfileDataFromSupabase(userId) {
   const timeoutId = setTimeout(() => controller.abort(), 4000);
 
   try {
-    let response = await fetch(`${cleanUrl}/rest/v1/profiles?id=eq.${userId}&select=name,email,transcribe_audio,interpret_images`, {
+    let response = await databaseFetch(`${cleanUrl}/rest/v1/profiles?id=eq.${userId}&select=name,email,transcribe_audio,interpret_images`, {
       headers: {
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`
@@ -497,7 +503,7 @@ async function loadProfileDataFromSupabase(userId) {
       // Se falhar (ex: colunas novas ainda não existem), faz fallback
       const fallbackController = new AbortController();
       const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), 4000);
-      response = await fetch(`${cleanUrl}/rest/v1/profiles?id=eq.${userId}&select=name,email`, {
+      response = await databaseFetch(`${cleanUrl}/rest/v1/profiles?id=eq.${userId}&select=name,email`, {
         headers: {
           'apikey': supabaseKey,
           'Authorization': `Bearer ${supabaseKey}`
@@ -596,13 +602,7 @@ let imageInterpretationRunning = false;
 let imageInterpretationBackoffUntil = 0;
 
 function getSupabaseConfig() {
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !supabaseKey) return null;
-  return {
-    cleanUrl: supabaseUrl.replace(/\/$/, ''),
-    key: supabaseKey
-  };
+  return persistenceConfiguration();
 }
 
 async function supabaseRest(table, query = '', options = {}) {
@@ -622,7 +622,7 @@ async function supabaseRest(table, query = '', options = {}) {
   };
 
   try {
-    const response = await fetch(`${config.cleanUrl}/rest/v1/${table}${query}`, {
+    const response = await databaseFetch(`${config.cleanUrl}/rest/v1/${table}${query}`, {
       ...options,
       headers,
       signal: controller.signal
@@ -1488,7 +1488,7 @@ async function clearMediaProcessingState(userId) {
   ];
   for (const pattern of [...new Set(patterns)]) {
     try {
-      await fetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
+      await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
         method: 'DELETE',
         headers
       });

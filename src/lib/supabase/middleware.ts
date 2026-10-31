@@ -1,7 +1,13 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { databaseProvider } from '../../../whatsapp-service/lib/database/config';
 
 export async function updateSession(request: NextRequest) {
+  // Each backend handler enforces authentication and authorization itself.
+  // D1 pages use the provider's server client; do not contact Supabase here.
+  if (request.nextUrl.pathname.startsWith('/api/backend/') || databaseProvider() === 'd1') {
+    return NextResponse.next();
+  }
   let supabaseResponse = NextResponse.next({
     request,
   });
