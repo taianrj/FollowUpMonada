@@ -40,7 +40,7 @@ transfere dados entre os bancos.**
   aciona recuperação forçada de histórico. Tentativas simultâneas de geração
   são bloqueadas enquanto a solicitação atual estiver em andamento.
 - Quando não há mensagens, a tela explica se a data está fora da janela de
-  coleta informada pelo serviço (`MESSAGE_RETENTION_DAYS`, padrão de dois dias)
+  coleta informada pelo serviço (`MESSAGE_RETENTION_DAYS`, padrão de 30 dias)
   ou se o histórico ainda aguarda confirmação. Mensagens antigas já armazenadas
   continuam consultáveis; a janela limita a ingestão, sem garantir que o celular
   envie todas as mensagens dentro dela. Reconectar não amplia essa janela.
@@ -53,8 +53,51 @@ transfere dados entre os bancos.**
   operações. Os testes cobrem essa separação, os avisos de disponibilidade e o
   corte de datas em São Paulo.
 - “Consultar Conversas” permanece disponível enquanto o WhatsApp estiver
-  conectado, mesmo se o histórico ainda aguarda confirmação. A geração continua
-  aguardando essa confirmação para evitar criar um resumo durante a coleta.
+  conectado, mesmo se o histórico ainda aguarda confirmação.
+
+### Importação de 30 dias e liberação por data
+
+- Novos pareamentos usam o perfil desktop oficial do Baileys e aceitam lotes
+  `FULL`. A janela de 30 dias filtra a ingestão local; ela não é uma solicitação
+  exata ao celular e não garante que todas as conversas desse período sejam
+  enviadas. Contas já vinculadas podem precisar de novo pareamento para receber
+  o arquivo ampliado. Não há logout, limpeza ou reconexão automática ao consultar
+  uma data. Alterar um ambiente existente exige definir também
+  `MESSAGE_RETENTION_DAYS=30` no arquivo privado do serviço e recriar o contêiner.
+- Lotes são processados sequencialmente e divididos em blocos de até 250
+  mensagens, com oportunidade para outras tarefas entre blocos. O download e a
+  decodificação inicial do arquivo ainda são feitos pelo Baileys: isso pode
+  elevar o pico de memória em contas grandes e precisa de medição na VM.
+- O protocolo não confirma a conclusão de cada dia. Por isso, a primeira
+  importação ampliada exige o sinal oficial `RECENT` explícito, seu lote final,
+  o processamento bem-sucedido do lote `FULL` com progresso 100 e a drenagem de
+  todos os lotes locais. Bootstrap, contagens, silêncio e progresso parcial não
+  liberam a geração. A confirmação é guardada em recibo privado no volume local
+  (`data/history-import/`); ausência, corrupção ou janela insuficiente falham de
+  forma fechada. O recibo não é restaurado a partir de um contador de sessão.
+- Após essa confirmação, cada dia é liberado independentemente quando todos os
+  seus áudios armazenados estiverem transcritos. Um áudio pendente ou com falha
+  de outra data não bloqueia esse dia. Falhas definitivas, mídia indisponível,
+  transcrição desativada ou provedor ausente mantêm o dia bloqueado; não são
+  contabilizados como sucesso. Imagens também precisam terminar quando sua
+  interpretação estiver habilitada.
+- A fila de áudio continua serial, persistente e com retentativas; datas antigas
+  são priorizadas. O snapshot inclui o áudio em processamento para permitir a
+  retomada após reinícios. Mídia expirada no celular pode impedir a transcrição;
+  a tela não oferece uma conclusão fictícia nesse caso.
+- `GET /summary-readiness?date=YYYY-MM-DD` expõe somente o estado e as contagens
+  da data para o usuário autenticado. A tela mostra o motivo do bloqueio e a
+  proporção de áudios transcritos. `GET /messages?...&requireReady=1` recusa dias
+  pendentes com HTTP 409. A geração integrada envia `source=whatsapp`; o servidor
+  Next.js relê as mensagens com essa validação e ignora o texto do navegador.
+  A entrada manual de texto mantém o contrato anterior.
+- “Pronto” significa que o histórico recebido foi processado e suas mídias
+  exigidas terminaram, não que o WhatsApp certificou a integralidade das
+  conversas do celular. Para o dia atual, trata-se do estado no momento da
+  consulta; mensagens novas podem exigir atualizar o resumo.
+- A regressão cobre confirmação `RECENT` + `FULL`, drenagem/erros, blocos
+  sequenciais, prontidão por data, áudios legados e falhos, isolamento entre
+  usuários, bloqueio HTTP e validação no servidor antes da IA.
 
 ## 🛠️ Tecnologias Utilizadas
 

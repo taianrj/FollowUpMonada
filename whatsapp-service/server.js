@@ -22,6 +22,8 @@ process.on('unhandledRejection', (reason, promise) => {
 
 const messageDomain = require('./lib/message-domain');
 const historySync = require('./lib/history-sync');
+const { getDayReadiness, processInBatches } = require('./lib/summary-readiness');
+let Browsers;
 let makeWASocket;
 let useMultiFileAuthState;
 let DisconnectReason;
@@ -70,6 +72,7 @@ async function loadBaileys() {
   ALL_WA_PATCH_NAMES = baileys.ALL_WA_PATCH_NAMES;
   BufferJSON = baileys.BufferJSON;
   proto = baileys.proto;
+  Browsers = baileys.Browsers;
 }
 const pino = require('pino');
 const QRCode = require('qrcode');
@@ -552,7 +555,7 @@ const pendingMessageBackfills = new Map();
 const pendingMediaStateTimers = new Map();
 const pendingAuthStateTimers = new Map();
 
-const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '2', 10)); // Padrao de 2 dias (48 horas) para sincronizacao e retencao de historico
+const MESSAGE_RETENTION_DAYS = Math.max(1, parseInt(process.env.MESSAGE_RETENTION_DAYS || '30', 10)); // Janela de ingestão; o celular pode fornecer menos histórico
 const SUPABASE_TIMEOUT_MS = Math.max(2000, parseInt(process.env.SUPABASE_TIMEOUT_MS || '8000', 10));
 const SUPABASE_TABLE_RETRY_MS = Math.max(30000, parseInt(process.env.SUPABASE_TABLE_RETRY_MS || '300000', 10));
 const CONTACT_FLUSH_DELAY_MS = Math.max(250, parseInt(process.env.CONTACT_FLUSH_DELAY_MS || '1200', 10));
@@ -576,6 +579,7 @@ const audioTranscriptionQueue = [];
 const queuedAudioTranscriptionKeys = new Set();
 const failedAudioTranscriptionKeys = new Set();
 let audioTranscriptionRunning = false;
+let activeAudioTranscriptionItem = null;
 let audioTranscriptionBackoffUntil = 0;
 const MEDIA_PROCESSING_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.MEDIA_PROCESSING_MAX_ATTEMPTS || '3', 10));
 const MEDIA_RETRY_FALLBACK_MS = Math.max(1000, parseInt(process.env.MEDIA_RETRY_FALLBACK_MS || '5000', 10));
@@ -1211,7 +1215,7 @@ function shouldRestoreMediaQueueItem(kind, userId, item) {
 
 function buildMediaProcessingStateSnapshot(userId, instance) {
   const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
-  const audioQueue = audioTranscriptionQueue
+  const audioQueue = [...audioTranscriptionQueue, ...(activeAudioTranscriptionItem ? [activeAudioTranscriptionItem] : [])]
     .filter(item => item.userId === cleanUserId)
     .map(serializeMediaQueueItem)
     .filter(Boolean);
@@ -1764,6 +1768,8 @@ function queueAudioTranscriptions(items) {
   }
 
   for (const userId of affectedUsers) scheduleMediaProcessingStateSave(userId);
+  // Dias antigos primeiro; a execução continua serial e respeita o backoff.
+  audioTranscriptionQueue.sort((a, b) => String(a.messageObject?.timestamp || '').localeCompare(String(b.messageObject?.timestamp || '')));
   if (added > 0) runAudioTranscriptionQueue();
   return added;
 }
@@ -1786,6 +1792,7 @@ async function runAudioTranscriptionQueue() {
     }
 
     const item = ready.item;
+    activeAudioTranscriptionItem = item;
     const userId = item.userId;
     const instance = instances[userId];
     if (instance) {
@@ -1847,6 +1854,7 @@ async function runAudioTranscriptionQueue() {
         }
       }
     } finally {
+      activeAudioTranscriptionItem = null;
       if (success || !retryScheduled) {
         queuedAudioTranscriptionKeys.delete(processingKey);
       }
@@ -3839,7 +3847,13 @@ async function connectUserWhatsApp(userId) {
   // O Baileys pode emitir messaging-history.status antes de connection=open.
   // Inicialize o estado desta geração antes de registrar/receber esses eventos
   // para que a abertura da conexão não apague a confirmação RECENT 100%.
-  initializeUserSyncState(instance, expectsHistorySync);
+  instance.historyReceiptIdentity = nodeCrypto.createHash('sha256').update(String(state.creds.registrationId || '')).update(state.creds.signedIdentityKey?.public || '').digest('hex');
+  const importReceipt = readHistoryImportReceipt(userId);
+  const needsFullImport = MESSAGE_RETENTION_DAYS > 2 && (expectsHistorySync || !importReceipt);
+  instance.historyImportComplete = !!importReceipt && !expectsHistorySync;
+  initializeUserSyncState(instance, expectsHistorySync || needsFullImport);
+  instance.historySyncState.expectsFullHistory = needsFullImport;
+  if (needsFullImport) saveHistoryImportReceipt(userId, false);
   if (state?.creds?.me) {
     instance.myJid = jidNumber(state.creds.me.id || '');
     instance.myLid = jidNumber(state.creds.me.lid || '');
@@ -3879,15 +3893,15 @@ async function connectUserWhatsApp(userId) {
   const sock = makeWASocket({
     auth: state,
     version,
-    syncFullHistory: true, // Força a sincronização do histórico inicial recente
-    // O v7 mudou o comportamento deste filtro. Mantemos os tipos processáveis
-    // oficiais e recusamos FULL, pois a aplicação retém somente a janela recente.
-    shouldSyncHistoryMessage: ({ syncType }) => syncType !== proto.HistorySync.HistorySyncType.FULL,
+    syncFullHistory: true,
+    // FULL é necessário para a janela ampliada. A conclusão ainda exige RECENT
+    // explícito e o lote FULL final inteiramente persistido.
+    shouldSyncHistoryMessage: ({ syncType }) => MESSAGE_RETENTION_DAYS > 2 || syncType !== proto.HistorySync.HistorySyncType.FULL,
     // Status/Stories não são conversas e não devem entrar no pipeline.
     shouldIgnoreJid: (jid) => messageDomain.isStatusBroadcastJid(jid),
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
-    browser: ['FollowUp Mônada', 'Chrome', '1.0'], // Customiza a exibição no celular do usuário
+    browser: Browsers.macOS('Desktop'), // Perfil oficial que solicita histórico ampliado
     markOnlineOnConnect: false, // Mantém as notificações push funcionando no celular do usuário
     keepAliveIntervalMs: 15000, // Envia pings de keep-alive para detectar conexões ociosas rapidamente
     connectTimeoutMs: 60000, // Tolera até 60 segundos para conexão inicial
@@ -4106,7 +4120,10 @@ async function connectUserWhatsApp(userId) {
 
   // Função auxiliar para processar e salvar um lote de mensagens
   async function processUserMessages(messagesList, { bulk = false } = {}) {
-    if (instance.intentionalLogout) return;
+    if (instance.intentionalLogout || instance.connectionGeneration !== connectionGeneration) {
+      if (bulk) throw new Error('Geração de conexão substituída');
+      return;
+    }
     if (!messagesList || messagesList.length === 0) return;
 
     // Retém apenas uma janela configurável para limitar disco, memória e tempo de sincronização.
@@ -4264,7 +4281,7 @@ async function connectUserWhatsApp(userId) {
       }
     }
 
-    const savedMessages = saveUserMessagesBatch(userId, messageObjects);
+    const savedMessages = saveUserMessagesBatch(userId, messageObjects, { throwOnError: bulk });
     if (savedMessages.length > 0) {
       await persistMessagesToSupabase(userId, savedMessages);
       const newestSaved = savedMessages.reduce((newest, message) => {
@@ -4378,12 +4395,25 @@ async function connectUserWhatsApp(userId) {
   });
 
   // Escuta o histórico de mensagens inicial enviado pelo WhatsApp na sincronização
-  sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, lidPnMappings, syncType, progress, isLatest, chunkOrder }) => {
+  let historyProcessingChain = Promise.resolve();
+  sock.ev.on('messaging-history.set', ({ chats, contacts, messages, lidPnMappings, syncType, progress, isLatest, chunkOrder }) => {
     if (instance.connectionGeneration !== connectionGeneration) return;
     if (!instance.historySyncState) initializeUserSyncState(instance, true);
     clearUserSyncCompletionTimer(instance);
-    historySync.beginHistoryBatch(instance.historySyncState);
+    const batchState = instance.historySyncState;
+    historySync.beginHistoryBatch(batchState);
+    if (syncType === proto.HistorySync.HistorySyncType.FULL) {
+      batchState.expectsFullHistory = true;
+      batchState.expectsHistory = true;
+      instance.historyImportComplete = false;
+      saveHistoryImportReceipt(userId, false);
+    }
     instance.syncStatus = 'syncing';
+    historyProcessingChain = historyProcessingChain.then(async () => {
+    if (instance.connectionGeneration !== connectionGeneration) {
+      historySync.finishHistoryBatch(batchState);
+      return;
+    }
 
     const historyContacts = Array.isArray(contacts) ? contacts : [];
     const historyChats = Array.isArray(chats) ? chats : [];
@@ -4449,21 +4479,33 @@ async function connectUserWhatsApp(userId) {
 
       // O v7 já fornece o array global. O fallback chat.messages é combinado
       // somente para snapshots antigos e deduplicado antes de uma única gravação.
-      if (collected.messages.length > 0) await processUserMessages(collected.messages, { bulk: true });
+      await processInBatches(collected.messages, batch => processUserMessages(batch, { bulk: true }), {
+        isCurrent: () => instance.connectionGeneration === connectionGeneration
+      });
+      if (syncType === proto.HistorySync.HistorySyncType.FULL) {
+        batchState.fullHistoryFinalBatchProcessed = progress === 100;
+      }
 
       await persistContactsCacheNow(userId, instance);
       scheduleAuthStateSnapshot(userId, userAuthDir);
       console.log(`[${userId}] Lote de histórico finalizado. Total de mensagens únicas processadas: ${collected.messages.length}`);
     } catch (err) {
       instance.historySyncStats.lastError = err?.message || String(err);
-      historySync.failHistoryBatch(instance.historySyncState, err);
+      historySync.failHistoryBatch(batchState, err);
       instance.syncStatus = 'stalled';
       console.error(`[${userId}] Falha ao processar lote do histórico:`, err);
     } finally {
-      historySync.finishHistoryBatch(instance.historySyncState);
-      resetUserSyncTimer(userId);
-      scheduleUserSyncCompletion(userId);
+      historySync.finishHistoryBatch(batchState);
+      if (instance.connectionGeneration === connectionGeneration) {
+        resetUserSyncTimer(userId);
+        scheduleUserSyncCompletion(userId);
+      }
     }
+    }).catch(err => {
+      historySync.failHistoryBatch(batchState, err);
+      historySync.finishHistoryBatch(batchState);
+      if (instance.connectionGeneration === connectionGeneration) instance.syncStatus = 'stalled';
+    });
   });
 }
 
@@ -4647,7 +4689,7 @@ function unwrapMessageContent(content) {
 }
 
 // Salva mensagens localmente em arquivos JSON por data e isolado por usuário
-function saveUserMessagesBatch(userId, messageObjects) {
+function saveUserMessagesBatch(userId, messageObjects, { throwOnError = false } = {}) {
   if (!messageObjects || messageObjects.length === 0) return [];
 
   const userMsgDir = path.join(dataDir, 'messages', userId);
@@ -4709,6 +4751,7 @@ function saveUserMessagesBatch(userId, messageObjects) {
       fs.writeFileSync(filePath, JSON.stringify(messages, null, JSON_INDENT), 'utf8');
     } catch (e) {
       console.error(`Erro ao gravar mensagens de ${dateStr} do usuário ${userId}:`, e);
+      if (throwOnError) throw e;
     }
   }
 
@@ -4970,6 +5013,9 @@ function scheduleUserSyncCompletion(userId) {
     if (!historySync.finalizeHistorySync(instance.historySyncState)) return;
     instance.syncStatus = 'completed';
     instance.syncCompletedAt = new Date(instance.historySyncState.completedAt).toISOString();
+    if (instance.historySyncState.fullHistoryFinalBatchProcessed) {
+      instance.historyImportComplete = saveHistoryImportReceipt(userId, true);
+    }
     console.log(`[${userId}] Sincronização concluída por sinal explícito do Baileys e drenagem dos lotes locais.`);
   }, HISTORY_SYNC_SETTLE_MS);
 }
@@ -6066,6 +6112,56 @@ app.get('/', checkAuth, async (req, res) => {
   `);
 });
 
+function historyImportPath(userId) {
+  const cleanUserId = String(userId || '').replace(/[^a-zA-Z0-9-_]/g, '');
+  if (!cleanUserId) throw new Error('Usuário inválido');
+  return path.join(dataDir, 'history-import', `${cleanUserId}.json`);
+}
+
+function readHistoryImportReceipt(userId) {
+  try {
+    const receipt = JSON.parse(fs.readFileSync(historyImportPath(userId), 'utf8'));
+    return receipt.version === 1 && receipt.complete === true
+      && !!instances[userId]?.historyReceiptIdentity
+      && receipt.pairingFingerprint === instances[userId].historyReceiptIdentity
+      && receipt.days >= MESSAGE_RETENTION_DAYS && Number.isFinite(Date.parse(receipt.completedAt));
+  } catch { return false; }
+}
+
+function saveHistoryImportReceipt(userId, complete) {
+  try {
+    const target = historyImportPath(userId);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(`${target}.tmp`, JSON.stringify({ version: 1, days: MESSAGE_RETENTION_DAYS,
+      complete, pairingFingerprint: instances[userId]?.historyReceiptIdentity || null,
+      completedAt: complete ? new Date().toISOString() : null }), { mode: 0o600 });
+    fs.renameSync(`${target}.tmp`, target);
+    return complete;
+  } catch { return false; }
+}
+
+async function summaryReadinessForDate(userId, date, messages) {
+  const instance = await getOrCreateInstance(userId);
+  const stored = messages || (await loadMergedMessagesForDate(userId, date)).messages;
+  return getDayReadiness({ date, messages: stored,
+    connected: instance?.connectionStatus === 'connected',
+    historyComplete: instance?.syncStatus === 'completed'
+      && historySync.canFinalizeHistorySync(instance.historySyncState),
+    importComplete: MESSAGE_RETENTION_DAYS <= 2 || instance?.historyImportComplete === true,
+    imagesEnabled: instance?.interpretImagesSetting !== false,
+    audioEnabled: instance?.transcribeAudioSetting !== false,
+    audioConfigured: !!getAudioTranscriptionConfig() || !!process.env.GEMINI_API_KEY });
+}
+
+app.get('/summary-readiness', checkAuth, async (req, res) => {
+  if (!messageDomain.isValidDate(req.query.date)) return res.status(400).json({ error: 'Data inválida.' });
+  try {
+    return res.json(await summaryReadinessForDate(readAuthenticatedUserId(req), String(req.query.date)));
+  } catch {
+    return res.status(503).json({ error: 'Não foi possível verificar a disponibilidade do dia.' });
+  }
+});
+
 // Retorna o status da conexão em JSON
 app.get('/status', checkAuth, async (req, res) => {
   const userId = readAuthenticatedUserId(req);
@@ -6469,6 +6565,10 @@ app.get('/messages', checkAuth, async (req, res) => {
 
   try {
     const { localMessages, remoteMessages, messages } = await loadMergedMessagesForDate(cleanUserId, dateStr);
+    if (req.query.requireReady === '1') {
+      const readiness = await summaryReadinessForDate(cleanUserId, dateStr, messages);
+      if (!readiness.ready) return res.status(409).json({ error: readiness.reason, code: 'SUMMARY_DAY_NOT_READY', readiness });
+    }
     let activeInstance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
     let contactsCache = mergeContactCaches(
       loadContactsFromFile(cleanUserId),
@@ -6840,6 +6940,9 @@ module.exports = {
   app,
   startServer,
   __test: {
+    instances,
+    saveHistoryImportReceipt,
+    readHistoryImportReceipt,
     analyzeMessagesIntegrity,
     buildAuthStateBundle,
     buildMessageConversations,

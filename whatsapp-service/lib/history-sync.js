@@ -1,8 +1,10 @@
 'use strict';
 
-function createHistorySyncState({ expectsHistory = true, now = Date.now() } = {}) {
+function createHistorySyncState({ expectsHistory = true, expectsFullHistory = false, now = Date.now() } = {}) {
   return {
     expectsHistory: !!expectsHistory,
+    expectsFullHistory: !!expectsFullHistory,
+    fullHistoryFinalBatchProcessed: false,
     pendingNotificationsReceived: false,
     pendingBatches: 0,
     explicitRecentComplete: false,
@@ -72,6 +74,7 @@ function applyHistoryStatus(state, { isRecent = false, isInitialBootstrap = fals
 
 function canFinalizeHistorySync(state) {
   if (!state || state.paused || state.processingFailed || Number(state.pendingBatches || 0) > 0) return false;
+  if (state.expectsFullHistory && !state.fullHistoryFinalBatchProcessed) return false;
   if (state.expectsHistory) {
     return state.explicitRecentComplete === true && state.finalBatchObservedAfterCompletion === true;
   }

@@ -23,6 +23,7 @@ import {
 import { formatSummaryDate } from '@/lib/whatsapp/summary-date';
 import { createInitialSummaryState } from '@/lib/whatsapp/summary-initial-state';
 import { describeMissingSummaryMessages } from '@/lib/whatsapp/summary-availability';
+import { isDayReady, type WhatsappDayReadiness } from '@/lib/whatsapp/day-readiness';
 import {
   describeUnexpectedSummaryError,
   readSummaryResponseError,
@@ -284,6 +285,8 @@ export default function WhatsappSummaryClient({
   const [whatsappMessagesCount, setWhatsappMessagesCount] = useState<number>(0);
   const [whatsappRetentionDays, setWhatsappRetentionDays] = useState<number | null>(null);
   const summaryRequestInFlightRef = useRef(false);
+  const [dayReadiness, setDayReadiness] = useState<WhatsappDayReadiness | null>(null);
+  const selectedDayIsReady = isDayReady(dayReadiness, summaryDate);
   const [whatsappLastIncomingBatchAt, setWhatsappLastIncomingBatchAt] = useState<string | null>(null);
   const [whatsappLastIncomingBatchCount, setWhatsappLastIncomingBatchCount] = useState<number>(0);
   const [whatsappLastStoredMessageAt, setWhatsappLastStoredMessageAt] = useState<string | null>(null);
@@ -333,7 +336,7 @@ export default function WhatsappSummaryClient({
   };
   // Consultar mensagens não deve reiniciar uma sessão válida nem forçar histórico.
   const fetchWhatsappMessages = (date: string, format: 'json_grouped' | 'text') => (
-    fetch(buildWhatsappServiceUrl('messages', { date, format }), {
+    fetch(buildWhatsappServiceUrl('messages', { date, format, ...(format === 'text' ? { requireReady: '1' } : {}) }), {
       headers: whatsappHeaders,
       signal: AbortSignal.timeout(20_000),
     })
@@ -472,6 +475,13 @@ export default function WhatsappSummaryClient({
         setWhatsappRetentionDays(
           Number.isInteger(data.retentionDays) && data.retentionDays > 0 ? data.retentionDays : null
         );
+        const readinessDate = autoSummaryEnabled && autoSummaryDate ? autoSummaryDate : summaryDate;
+        try {
+          const readinessResponse = await fetch(buildWhatsappServiceUrl('summary-readiness', { date: readinessDate }), {
+            headers: whatsappHeaders, signal: controller.signal,
+          });
+          setDayReadiness(readinessResponse.ok ? await readinessResponse.json() : null);
+        } catch { setDayReadiness(null); }
         setWhatsappLastIncomingBatchAt(data.lastIncomingBatchAt || null);
         setWhatsappLastIncomingBatchCount(data.lastIncomingBatchCount || 0);
         setWhatsappLastStoredMessageAt(data.lastStoredMessageAt || null);
@@ -570,13 +580,13 @@ export default function WhatsappSummaryClient({
     const initialCheck = window.setTimeout(() => void checkConnectionStatusEffect(), 0);
     const interval = setInterval(() => {
       void checkConnectionStatusEffect();
-    }, (isCheckingStatus || whatsappSyncStatus !== 'completed') ? 3000 : 15000);
+    }, (isCheckingStatus || whatsappSyncStatus !== 'completed' || !selectedDayIsReady) ? 3000 : 15000);
 
     return () => {
       window.clearTimeout(initialCheck);
       clearInterval(interval);
     };
-  }, [apiToken, isCheckingStatus, whatsappSyncStatus]);
+  }, [apiToken, isCheckingStatus, whatsappSyncStatus, summaryDate, autoSummaryDate, autoSummaryEnabled, selectedDayIsReady]);
 
   const handleManualResync = async (mode: 'soft' | 'force-history') => {
     if (!apiToken) return;
@@ -585,7 +595,7 @@ export default function WhatsappSummaryClient({
       showToast(
         mode === 'soft'
           ? 'Iniciando sincronização rápida de mensagens offline...'
-          : 'Iniciando leitura profunda das últimas 48h de mensagens...',
+          : `Iniciando leitura do histórico disponível (janela configurada: ${whatsappRetentionDays ?? 'não informada'} dias)...`,
         'info'
       );
       
@@ -772,7 +782,7 @@ export default function WhatsappSummaryClient({
       setLoadingStep(1); // Passa para o passo de análise da IA
       
       // Passo 2: Executa a geração chamando diretamente a função de processamento estruturada
-      await handleGenerateSummary(textMessages, targetDate);
+      await handleGenerateSummary(textMessages, targetDate, 'whatsapp');
       
     } catch (error: unknown) {
       setIsLoading(false);
@@ -826,7 +836,7 @@ export default function WhatsappSummaryClient({
   };
 
   // Envia as mensagens para processamento na API do Next.js
-  const handleGenerateSummary = async (textOverride?: string, dateOverride?: string) => {
+  const handleGenerateSummary = async (textOverride?: string, dateOverride?: string, source?: 'whatsapp') => {
     const textToProcess = textOverride || rawText;
     if (!textToProcess.trim()) {
       showToast('Por favor, forneça o texto das mensagens do WhatsApp para processamento.', 'warning');
@@ -848,6 +858,7 @@ export default function WhatsappSummaryClient({
             date: targetDate,
             saveToDb,
             replaceExisting,
+            source,
           })
         });
 
@@ -952,9 +963,7 @@ export default function WhatsappSummaryClient({
   // Dispara a geração automática somente depois que sincronização e mídias terminarem.
   useEffect(() => {
     if (!autoSummaryEnabled || !autoSummaryDate) return;
-    if (whatsappStatus !== 'connected' || whatsappSyncStatus !== 'completed') return;
-    if (transcribeAudioFlag && (transcriptionQueueLength > 0 || transcriptionRunning)) return;
-    if (interpretImagesFlag && (imageInterpretationQueueLength > 0 || imageInterpretationRunning)) return;
+    if (whatsappStatus !== 'connected' || !isDayReady(dayReadiness, autoSummaryDate)) return;
 
     const dateToGenerate = autoSummaryDate;
     const timer = window.setTimeout(() => {
@@ -969,6 +978,7 @@ export default function WhatsappSummaryClient({
   }, [
     autoSummaryEnabled,
     autoSummaryDate,
+    dayReadiness,
     whatsappStatus,
     whatsappSyncStatus,
     transcribeAudioFlag,
@@ -1185,7 +1195,7 @@ export default function WhatsappSummaryClient({
   const isSummaryActionDisabled = (
     !integrationConnected
     || whatsappStatus !== 'connected'
-    || whatsappSyncStatus !== 'completed'
+    || !selectedDayIsReady
   );
 
   return (
@@ -1324,6 +1334,12 @@ export default function WhatsappSummaryClient({
             >
               👁️ Consultar Conversas
             </button>
+
+            <p role="status" aria-live="polite" style={{ margin: 0, fontSize: '0.8rem', lineHeight: 1.5, overflowWrap: 'anywhere', color: 'var(--text-secondary)' }}>
+              {dayReadiness?.date === summaryDate
+                ? `${dayReadiness.reason} Mensagens: ${dayReadiness.messages}. Áudios transcritos: ${dayReadiness.audioTranscribed}/${dayReadiness.audioTotal}.`
+                : 'Verificando o histórico e os áudios desta data...'}
+            </p>
 
             {profile?.role === 'admin' && selectedDateSummary && (
               <button
@@ -2417,7 +2433,7 @@ export default function WhatsappSummaryClient({
                     }}
                     title="Força a releitura completa do histórico de mensagens das últimas 48 horas a partir do celular."
                   >
-                    {isResyncing === 'force-history' ? '⌛ Lendo...' : '⚡ Forçar 48h'}
+                    {isResyncing === 'force-history' ? '⌛ Lendo...' : '⚡ Solicitar histórico'}
                   </button>
                 </div>
               </div>

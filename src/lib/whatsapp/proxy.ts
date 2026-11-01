@@ -3,6 +3,7 @@ export const WHATSAPP_PROXY_METHODS: Readonly<Record<string, ReadonlySet<string>
   settings: new Set(['POST']),
   'qr-code': new Set(['GET']),
   messages: new Set(['GET']),
+  'summary-readiness': new Set(['GET']),
   logout: new Set(['POST']),
   'maintenance/resync': new Set(['POST'])
 };

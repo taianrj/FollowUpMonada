@@ -126,7 +126,8 @@ On Windows PowerShell systems that block `npm.ps1`, use `npm.cmd`/`npx.cmd` with
 - History processing must be deduplicated and batched. Avoid per-chat sequential persistence, per-contact rescans of message files, per-media state writes, or one remote auth request per key file.
 - Audio/image queue persistence must retain the raw media message with BufferJSON compatibility. `downloadMediaMessage` reupload context must include a valid bound `updateMediaMessage`; omit the context if it is unavailable.
 - Do not permanently discard retryable media failures. Preserve bounded retry/backoff diagnostics and persistent queue state.
-- Keep message retention behavior explicit (`MESSAGE_RETENTION_DAYS`, currently two days by default) and do not silently widen full-history ingestion.
+- Keep message retention behavior explicit (`MESSAGE_RETENTION_DAYS`, currently 30 days by default, explicitly authorized for the expanded import) and do not silently widen full-history ingestion. Existing deployments must explicitly update their private service configuration.
+- Expanded imports also require the final FULL batch with progress 100 to be processed successfully, in addition to the official RECENT completion and drained local batches. Never infer per-day history completion from dates, counts, inactivity, or media queue counters. Release a day only after the received history is confirmed and every stored audio for that date has a persisted transcription; failed, unavailable, or disabled audio processing must block that day. Keep the server-side readiness gate and per-user isolation.
 - Preserve hybrid persistence: local daily files, relational rows in the selected provider, and fallback session blobs (including D1 chunk integrity). Reads must merge/deduplicate without reintroducing filtered status messages or ambiguous routes.
 
 ## Test expectations by area

@@ -12,6 +12,14 @@ const calendarPanelSource = componentSource.slice(
 );
 
 describe('WhatsappSummaryClient responsive layout', () => {
+  it('libera o resumo pela prontidão da data e mostra os áudios desse dia', () => {
+    expect(componentSource).toContain('const selectedDayIsReady = isDayReady(dayReadiness, summaryDate)');
+    expect(componentSource).toContain('|| !selectedDayIsReady');
+    expect(componentSource).toContain("buildWhatsappServiceUrl('summary-readiness', { date: readinessDate })");
+    expect(componentSource).toContain('Áudios transcritos: ${dayReadiness.audioTranscribed}/${dayReadiness.audioTotal}');
+    expect(componentSource).toContain('!isDayReady(dayReadiness, autoSummaryDate)');
+    expect(componentSource).toContain("await handleGenerateSummary(textMessages, targetDate, 'whatsapp')");
+  });
   it('consulta o dia sem reconectar ou forçar histórico quando não há mensagens', () => {
     const generation = componentSource.slice(
       componentSource.indexOf('const handleSyncAndGenerateSummary ='),

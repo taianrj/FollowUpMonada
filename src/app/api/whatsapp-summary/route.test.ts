@@ -5,10 +5,14 @@ const mocks = vi.hoisted(() => ({
   generateStructuredWithGeminiFallbacks: vi.fn(),
   insertSummary: vi.fn(),
   updateSummary: vi.fn(),
+  readReadyWhatsappMessages: vi.fn(),
 }));
 
 vi.mock('@/lib/supabase/server', () => ({
   createClient: mocks.createClient,
+}));
+vi.mock('@/lib/whatsapp/ready-messages', () => ({
+  readReadyWhatsappMessages: mocks.readReadyWhatsappMessages,
 }));
 
 vi.mock('@/lib/ai/providers', async (importOriginal) => {
@@ -103,6 +107,31 @@ function summaryRequest(replaceExisting?: boolean) {
 }
 
 describe('POST /api/whatsapp-summary', () => {
+  it('não chama a IA se o servidor do WhatsApp ainda bloqueia o dia', async () => {
+    mocks.createClient.mockResolvedValue(createSupabaseMock(null).supabase);
+    mocks.readReadyWhatsappMessages.mockResolvedValue({ ok: false, status: 409, error: 'Áudio pendente' });
+    const response = await POST(new Request('http://localhost/api/whatsapp-summary', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'texto do cliente', date: SUMMARY_DATE, source: 'whatsapp' }),
+    }));
+    expect(response.status).toBe(409);
+    expect(mocks.generateStructuredWithGeminiFallbacks).not.toHaveBeenCalled();
+    expect(mocks.readReadyWhatsappMessages).toHaveBeenCalledWith(USER_ID, SUMMARY_DATE);
+  });
+
+  it('usa as mensagens prontas do servidor em vez do texto fornecido pelo navegador', async () => {
+    mocks.createClient.mockResolvedValue(createSupabaseMock(null).supabase);
+    mocks.readReadyWhatsappMessages.mockResolvedValue({ ok: true, text: 'conteúdo verificado no servidor' });
+    const response = await POST(new Request('http://localhost/api/whatsapp-summary', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'texto injetado pelo navegador', date: SUMMARY_DATE, source: 'whatsapp' }),
+    }));
+    expect(response.status).toBe(200);
+    const prompt = mocks.generateStructuredWithGeminiFallbacks.mock.calls[0][0].prompt;
+    expect(prompt).toContain('conteúdo verificado no servidor');
+    expect(prompt).not.toContain('texto injetado pelo navegador');
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.generateStructuredWithGeminiFallbacks.mockResolvedValue({

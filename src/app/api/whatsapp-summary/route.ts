@@ -14,6 +14,7 @@ import {
   parseWhatsappSummaryOutput,
 } from '@/lib/ai/schemas';
 import { formatSummaryDate } from '@/lib/whatsapp/summary-date';
+import { readReadyWhatsappMessages } from '@/lib/whatsapp/ready-messages';
 
 const DEFAULT_STATUS_IDS = [
   'aguardando cliente',
@@ -63,6 +64,7 @@ export async function POST(request: Request) {
       date?: unknown;
       saveToDb?: unknown;
       replaceExisting?: unknown;
+      source?: unknown;
     };
     if (typeof body.text !== 'string' || !body.text.trim()) {
       return NextResponse.json({ error: 'Texto das mensagens não fornecido' }, { status: 400 });
@@ -79,6 +81,15 @@ export async function POST(request: Request) {
 
     const shouldSave = body.saveToDb === true;
     const summaryDate = typeof body.date === 'string' ? body.date : getSaoPauloDate();
+    if (body.source !== undefined && body.source !== 'whatsapp') {
+      return NextResponse.json({ error: 'Origem do resumo inválida' }, { status: 400 });
+    }
+    if (body.source === 'whatsapp') {
+      const stored = await readReadyWhatsappMessages(user.id, summaryDate);
+      if (!stored.ok) return NextResponse.json({ error: stored.error, code: 'SUMMARY_DAY_NOT_READY' }, { status: stored.status });
+      // O cliente não decide se o dia está pronto e não substitui o texto salvo.
+      body.text = stored.text;
+    }
     let existingSummaryId: string | null = null;
 
     if (shouldSave) {
