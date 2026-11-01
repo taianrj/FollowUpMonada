@@ -22,6 +22,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 const messageDomain = require('./lib/message-domain');
 const historySync = require('./lib/history-sync');
+const { createHistorySocketConfig } = require('./lib/history-socket-config');
 const { getDayReadiness, processInBatches } = require('./lib/summary-readiness');
 let Browsers;
 let makeWASocket;
@@ -3893,15 +3894,12 @@ async function connectUserWhatsApp(userId) {
   const sock = makeWASocket({
     auth: state,
     version,
-    syncFullHistory: true,
-    // FULL é necessário para a janela ampliada. A conclusão ainda exige RECENT
-    // explícito e o lote FULL final inteiramente persistido.
-    shouldSyncHistoryMessage: ({ syncType }) => MESSAGE_RETENTION_DAYS > 2 || syncType !== proto.HistorySync.HistorySyncType.FULL,
+    ...createHistorySocketConfig({ Browsers, retentionDays: MESSAGE_RETENTION_DAYS,
+      fullSyncType: proto.HistorySync.HistorySyncType.FULL }),
     // Status/Stories não são conversas e não devem entrar no pipeline.
     shouldIgnoreJid: (jid) => messageDomain.isStatusBroadcastJid(jid),
     printQRInTerminal: false, // Desativado (evita avisos no log)
     logger: logger,
-    browser: Browsers.macOS('Desktop'), // Perfil oficial que solicita histórico ampliado
     markOnlineOnConnect: false, // Mantém as notificações push funcionando no celular do usuário
     keepAliveIntervalMs: 15000, // Envia pings de keep-alive para detectar conexões ociosas rapidamente
     connectTimeoutMs: 60000, // Tolera até 60 segundos para conexão inicial
@@ -3977,29 +3975,12 @@ async function connectUserWhatsApp(userId) {
           });
         }, 5000);
       } else {
-        console.log(`[${userId}] Desconectado permanentemente (Sessão encerrada pelo celular). Excluindo credenciais...`);
+        console.log(`[${userId}] Desconectado (sessão encerrada pelo celular). Dados preservados.`);
         instance.connectionStatus = 'disconnected';
         
-        // Exclui as credenciais permanentemente do banco de dados do Supabase
-        await deleteCredsFromSupabase(userId);
-
-        // Exclui todas as mensagens e contatos locais e do Supabase de forma permanente na desconexão
-        await clearAllUserData(userId);
-        
-        try {
-          fs.rmSync(userAuthDir, { recursive: true, force: true });
-          fs.mkdirSync(userAuthDir, { recursive: true });
-        } catch (e) {
-          console.error(`[${userId}] Erro ao limpar pasta de auth:`, e);
-        }
-        console.log(`[${userId}] Reiniciando conexão em 3 segundos para gerar novo QR Code...`);
-        if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
-        instance.reconnectTimer = setTimeout(() => {
-          instance.reconnectTimer = null;
-          connectUserWhatsApp(userId).catch(err => {
-            console.error(`[${userId}] Falha ao reiniciar para novo QR Code:`, err.message || err);
-          });
-        }, 3000);
+        // Um encerramento informado pelo WhatsApp não autoriza apagar dados
+        // nem redefinir credenciais. Novo pareamento exige uma ação explícita.
+        console.warn(`[${userId}] Pareamento encerrado; credenciais e dados preservados para recuperação explícita.`);
       }
     } else if (connection === 'open') {
       instance.currentQr = null;

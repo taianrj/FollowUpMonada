@@ -110,6 +110,7 @@ On Windows PowerShell systems that block `npm.ps1`, use `npm.cmd`/`npx.cmd` with
 - SQL migrations should be additive, idempotent where practical, documented, and compatible with the current fallback behavior. Do not drop or rewrite production data without explicit authorization and a recovery plan.
 - Production investigation is read-only by default, even when access exists. Use the narrowest query, redact outputs, and request explicit authorization before any production write, cleanup, resync, logout, or credential operation.
 - Destructive WhatsApp endpoints (`logout`, log clearing, forced recovery) must remain POST-only, authenticated, and explicit.
+- A socket close or logged-out notification must never automatically delete credentials, messages, contacts, or runtime directories. Preserve data and require an explicit recovery operation for pairing resets; only the explicit authenticated logout keeps its established cleanup behavior.
 
 ## WhatsApp/Baileys invariants
 

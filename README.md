@@ -57,13 +57,18 @@ transfere dados entre os bancos.**
 
 ### Importação de 30 dias e liberação por data
 
-- Novos pareamentos usam o perfil desktop oficial do Baileys e aceitam lotes
+- Novos pareamentos usam o perfil `Browsers.ubuntu('Chrome')` e aceitam lotes
   `FULL`. A janela de 30 dias filtra a ingestão local; ela não é uma solicitação
   exata ao celular e não garante que todas as conversas desse período sejam
   enviadas. Contas já vinculadas podem precisar de novo pareamento para receber
   o arquivo ampliado. Não há logout, limpeza ou reconexão automática ao consultar
   uma data. Alterar um ambiente existente exige definir também
   `MESSAGE_RETENTION_DAYS=30` no arquivo privado do serviço e recriar o contêiner.
+- Na versão rc13, o perfil `Desktop` anuncia uma combinação de plataforma que
+  pode ser rejeitada antes do QR, com erro 428. Mantemos `WEB_BROWSER` e
+  `syncFullHistory=true`, com um teste do payload real de pareamento. Isso
+  preserva a solicitação de histórico, mas o celular pode enviar um período
+  menor. Veja o [relato no Baileys](https://github.com/WhiskeySockets/Baileys/issues/2677).
 - Lotes são processados sequencialmente e divididos em blocos de até 250
   mensagens, com oportunidade para outras tarefas entre blocos. O download e a
   decodificação inicial do arquivo ainda são feitos pelo Baileys: isso pode
@@ -98,6 +103,10 @@ transfere dados entre os bancos.**
 - A regressão cobre confirmação `RECENT` + `FULL`, drenagem/erros, blocos
   sequenciais, prontidão por data, áudios legados e falhos, isolamento entre
   usuários, bloqueio HTTP e validação no servidor antes da IA.
+- Fechamentos de socket, inclusive sessão encerrada pelo WhatsApp, preservam
+  mensagens, contatos e credenciais. O serviço informa a desconexão e aguarda
+  recuperação explícita; não limpa dados nem gera outro pareamento sozinho.
+  O endpoint de logout continua sendo uma ação explícita, autenticada e POST.
 
 ## 🛠️ Tecnologias Utilizadas
 
