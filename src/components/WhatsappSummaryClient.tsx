@@ -11,7 +11,6 @@ import {
   conversationSectionsToChats,
   filterWhatsappConversations,
   formatWhatsappMessageTime,
-  isEmptyMessagesPayload,
   isGroupedWhatsappResponse,
   parseConversationDisplay,
   type WhatsappConversation
@@ -23,6 +22,7 @@ import {
 } from '@/lib/whatsapp/status-health';
 import { formatSummaryDate } from '@/lib/whatsapp/summary-date';
 import { createInitialSummaryState } from '@/lib/whatsapp/summary-initial-state';
+import { describeMissingSummaryMessages } from '@/lib/whatsapp/summary-availability';
 import {
   describeUnexpectedSummaryError,
   readSummaryResponseError,
@@ -82,7 +82,6 @@ const getErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : 'Erro desconhecido.'
 );
 
-const getCurrentTimestamp = (): number => Date.now();
 const createTemporarySummaryId = (): string => `temporary-${crypto.randomUUID()}`;
 
 class SummaryRequestError extends Error {
@@ -99,7 +98,7 @@ class SummaryRequestError extends Error {
 interface SummaryErrorDetails {
   date: string;
   message: string;
-  stage: 'Importação das conversas' | 'Análise pela IA';
+  stage: 'Importação das conversas' | 'Disponibilidade das conversas' | 'Análise pela IA';
   status?: number;
   diagnostics: string[];
 }
@@ -283,6 +282,8 @@ export default function WhatsappSummaryClient({
   const [connectedUser, setConnectedUser] = useState<{ id: string; name?: string } | null>(null);
   const [whatsappSyncStatus, setWhatsappSyncStatus] = useState<string>('completed'); // 'pending' | 'syncing' | 'completed'
   const [whatsappMessagesCount, setWhatsappMessagesCount] = useState<number>(0);
+  const [whatsappRetentionDays, setWhatsappRetentionDays] = useState<number | null>(null);
+  const summaryRequestInFlightRef = useRef(false);
   const [whatsappLastIncomingBatchAt, setWhatsappLastIncomingBatchAt] = useState<string | null>(null);
   const [whatsappLastIncomingBatchCount, setWhatsappLastIncomingBatchCount] = useState<number>(0);
   const [whatsappLastStoredMessageAt, setWhatsappLastStoredMessageAt] = useState<string | null>(null);
@@ -330,65 +331,13 @@ export default function WhatsappSummaryClient({
     const query = searchParams.toString();
     return `/api/whatsapp-service/${path}${query ? `?${query}` : ''}`;
   };
-  const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  // Consultar mensagens não deve reiniciar uma sessão válida nem forçar histórico.
   const fetchWhatsappMessages = (date: string, format: 'json_grouped' | 'text') => (
     fetch(buildWhatsappServiceUrl('messages', { date, format }), {
-      headers: whatsappHeaders
+      headers: whatsappHeaders,
+      signal: AbortSignal.timeout(20_000),
     })
   );
-  const refreshWhatsappSync = async (date: string, mode: 'soft' | 'force-history') => {
-    const response = await fetch(buildWhatsappServiceUrl('maintenance/resync', { date, mode }), {
-      method: 'POST',
-      headers: whatsappHeaders
-    });
-    if (!response.ok) {
-      throw new Error(`Falha ao atualizar sincronizacao: HTTP ${response.status}`);
-    }
-  };
-  const isEmptyMessagesResponse = async (response: Response, format: 'json_grouped' | 'text') => {
-    if (!response.ok) return false;
-    const responseText = await response.clone().text();
-    return isEmptyMessagesPayload(responseText, format);
-  };
-
-  const pollWhatsappMessages = async (
-    date: string,
-    format: 'json_grouped' | 'text',
-    timeoutMs: number,
-    intervalMs: number
-  ) => {
-    const startedAt = getCurrentTimestamp();
-    let latestResponse = await fetchWhatsappMessages(date, format);
-
-    while (
-      latestResponse.ok &&
-      await isEmptyMessagesResponse(latestResponse, format) &&
-      getCurrentTimestamp() - startedAt < timeoutMs
-    ) {
-      await wait(Math.min(intervalMs, Math.max(0, timeoutMs - (getCurrentTimestamp() - startedAt))));
-      latestResponse = await fetchWhatsappMessages(date, format);
-    }
-
-    return latestResponse;
-  };
-
-  const fetchMessagesWithRecovery = async (
-    date: string,
-    format: 'json_grouped' | 'text',
-    onProgress?: (message: string) => void
-  ) => {
-    let response = await fetchWhatsappMessages(date, format);
-    if (!response.ok || !(await isEmptyMessagesResponse(response, format))) return response;
-
-    onProgress?.('Nenhuma mensagem apareceu ainda. Tentando reconectar e puxar eventos pendentes do WhatsApp...');
-    await refreshWhatsappSync(date, 'soft');
-    response = await pollWhatsappMessages(date, format, 30000, 3000);
-    if (!response.ok || !(await isEmptyMessagesResponse(response, format))) return response;
-
-    onProgress?.('Ainda nao chegou nada para esta data. Forcando uma releitura mais profunda do historico...');
-    await refreshWhatsappSync(date, 'force-history');
-    return pollWhatsappMessages(date, format, 60000, 4000);
-  };
 
   // Efeito para fechar o dropdown customizado de responsáveis ao clicar fora
   useEffect(() => {
@@ -520,6 +469,9 @@ export default function WhatsappSummaryClient({
         setWhatsappStatus(data.status);
         setWhatsappSyncStatus(data.syncStatus || 'pending');
         setWhatsappMessagesCount(data.messagesCount || 0);
+        setWhatsappRetentionDays(
+          Number.isInteger(data.retentionDays) && data.retentionDays > 0 ? data.retentionDays : null
+        );
         setWhatsappLastIncomingBatchAt(data.lastIncomingBatchAt || null);
         setWhatsappLastIncomingBatchCount(data.lastIncomingBatchCount || 0);
         setWhatsappLastStoredMessageAt(data.lastStoredMessageAt || null);
@@ -720,7 +672,7 @@ export default function WhatsappSummaryClient({
               setSelectedChatKey(data.conversations[0].chatKey);
               setModalMessagesText('');
             } else {
-              setModalMessagesText('Nenhuma mensagem de clientes registrada para a data selecionada.');
+              setModalMessagesText(describeMissingSummaryMessages({ date: summaryDate, retentionDays: whatsappRetentionDays, syncStatus: whatsappSyncStatus }));
             }
             return;
           }
@@ -729,7 +681,7 @@ export default function WhatsappSummaryClient({
         // Fallback: Se o backend antigo retornou markdown
         const text = await response.text();
         const trimmedText = text.trim();
-        setModalMessagesText(trimmedText ? trimmedText : 'Nenhuma mensagem de clientes registrada para a data selecionada.');
+        setModalMessagesText(trimmedText || describeMissingSummaryMessages({ date: summaryDate, retentionDays: whatsappRetentionDays, syncStatus: whatsappSyncStatus }));
         
         if (trimmedText) {
           const parsed = parseConversationDisplay(trimmedText);
@@ -751,8 +703,8 @@ export default function WhatsappSummaryClient({
     } finally {
       setIsLoadingModalMessages(false);
     }
-  };
-
+  };
+
   // Envia logout para o servidor e zera estados locais
   const handleDisconnect = async () => {
     const confirmed = await showCustomConfirm('Desconectar WhatsApp', 'Deseja realmente desconectar o seu WhatsApp do servidor?');
@@ -777,11 +729,13 @@ export default function WhatsappSummaryClient({
 
   // Busca mensagens e gera o resumo com IA em um único clique
   const handleSyncAndGenerateSummary = async (customDate?: string) => {
+    if (summaryRequestInFlightRef.current) return;
     if (!apiToken) {
       showToast('Informe a sua Chave de Segurança nas configurações abaixo para continuar.', 'warning');
       return;
     }
 
+    summaryRequestInFlightRef.current = true;
     setIsLoading(true);
     setLoadingStep(0);
     setSummaryError(null);
@@ -789,14 +743,7 @@ export default function WhatsappSummaryClient({
     
     try {
       // Passo 1: Busca mensagens do microsserviço
-      let showedRecoveryToast = false;
-      const response = await fetchMessagesWithRecovery(targetDate, 'text', () => {
-        if (!showedRecoveryToast) {
-          showToast('Nao encontrei mensagens ainda. Tentando ressincronizar o WhatsApp...', 'info');
-          showedRecoveryToast = true;
-        }
-      });
-      
+      const response = await fetchWhatsappMessages(targetDate, 'text');
       if (!response.ok) {
         const responseError = await readSummaryResponseError(
           response,
@@ -811,7 +758,13 @@ export default function WhatsappSummaryClient({
       
       if (textMessages.trim().length === 0) {
         setIsLoading(false);
-        showToast(`Nenhuma mensagem de clientes registrada para o dia ${targetDate.split('-').reverse().join('/')}.`, 'warning');
+        const message = describeMissingSummaryMessages({
+          date: targetDate,
+          retentionDays: whatsappRetentionDays,
+          syncStatus: whatsappSyncStatus,
+        });
+        setSummaryError({ date: targetDate, message, stage: 'Disponibilidade das conversas', diagnostics: [] });
+        showToast(message, 'warning');
         return;
       }
 
@@ -834,6 +787,9 @@ export default function WhatsappSummaryClient({
           : describeUnexpectedSummaryError(error, typeof navigator === 'undefined' ? undefined : navigator.onLine),
       });
       showToast('Falha no processo: ' + message, 'error');
+    } finally {
+      summaryRequestInFlightRef.current = false;
+      setIsLoading(false);
     }
   };
 
@@ -1225,6 +1181,7 @@ export default function WhatsappSummaryClient({
     }
   };
 
+  const isMessagesActionDisabled = !integrationConnected || whatsappStatus !== 'connected';
   const isSummaryActionDisabled = (
     !integrationConnected
     || whatsappStatus !== 'connected'
@@ -1363,7 +1320,7 @@ export default function WhatsappSummaryClient({
               type="button"
               className="btn btnSecondary"
               onClick={handleOpenMessagesModal}
-              disabled={isSummaryActionDisabled || isLoading || !apiToken}
+              disabled={isMessagesActionDisabled || isLoading || !apiToken}
             >
               👁️ Consultar Conversas
             </button>
@@ -1434,13 +1391,13 @@ export default function WhatsappSummaryClient({
                 {/* Mensagens Sincronizadas / Histórico */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-secondary)' }} title={
                   whatsappSyncStatus === 'completed'
-                    ? 'Histórico sincronizado por confirmação do WhatsApp'
+                    ? 'Histórico confirmado pelo WhatsApp. O contador mostra mensagens processadas nesta conexão, não o total salvo nem o total da data selecionada.'
                     : whatsappSyncStatus === 'stalled'
-                      ? 'O WhatsApp pausou o envio do histórico antes de confirmar 100%'
-                      : 'Sincronizando mensagens...'
+                      ? 'O WhatsApp pausou o histórico. O contador mostra mensagens processadas nesta conexão, não o total salvo.'
+                      : 'Aguardando a confirmação do histórico. O contador mostra mensagens processadas nesta conexão, não o total salvo.'
                 }>
                   <span>💬</span>
-                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{whatsappMessagesCount}</span>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Nesta conexão: {whatsappMessagesCount}</span>
                   {whatsappSyncStatus === 'stalled' ? (
                     <span style={{ color: '#f59e0b', fontSize: '0.75rem' }}>⏸</span>
                   ) : whatsappSyncStatus !== 'completed' ? (

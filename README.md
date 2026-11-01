@@ -35,6 +35,26 @@ transfere dados entre os bancos.**
   à largura disponível.
 - A cobertura de regressão verifica a seleção inicial com históricos antigos,
   a virada do dia em São Paulo e as regras de alinhamento e quebra de texto.
+- Gerar um resumo consulta as mensagens já armazenadas para o dia, com limite
+  de 20 segundos na leitura. Uma resposta vazia não reconecta o WhatsApp nem
+  aciona recuperação forçada de histórico. Tentativas simultâneas de geração
+  são bloqueadas enquanto a solicitação atual estiver em andamento.
+- Quando não há mensagens, a tela explica se a data está fora da janela de
+  coleta informada pelo serviço (`MESSAGE_RETENTION_DAYS`, padrão de dois dias)
+  ou se o histórico ainda aguarda confirmação. Mensagens antigas já armazenadas
+  continuam consultáveis; a janela limita a ingestão, sem garantir que o celular
+  envie todas as mensagens dentro dela. Reconectar não amplia essa janela.
+- O indicador “Nesta conexão” conta eventos de mensagens processados desde a
+  conexão/ressincronização atual; ele pode reiniciar e não representa o total
+  persistido, mensagens únicas ou a quantidade da data selecionada. A conclusão
+  oficial do histórico também não garante cobertura de todos os dias.
+- Ressincronizações continuam disponíveis como ações manuais nas configurações.
+  Nenhuma tentativa de gerar resumo deve escalar automaticamente para essas
+  operações. Os testes cobrem essa separação, os avisos de disponibilidade e o
+  corte de datas em São Paulo.
+- “Consultar Conversas” permanece disponível enquanto o WhatsApp estiver
+  conectado, mesmo se o histórico ainda aguarda confirmação. A geração continua
+  aguardando essa confirmação para evitar criar um resumo durante a coleta.
 
 ## 🛠️ Tecnologias Utilizadas
 

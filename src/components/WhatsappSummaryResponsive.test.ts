@@ -12,6 +12,29 @@ const calendarPanelSource = componentSource.slice(
 );
 
 describe('WhatsappSummaryClient responsive layout', () => {
+  it('consulta o dia sem reconectar ou forçar histórico quando não há mensagens', () => {
+    const generation = componentSource.slice(
+      componentSource.indexOf('const handleSyncAndGenerateSummary ='),
+      componentSource.indexOf('// Toca um alerta sonoro')
+    );
+    expect(generation).toContain("await fetchWhatsappMessages(targetDate, 'text')");
+    expect(generation).toContain('describeMissingSummaryMessages');
+    expect(componentSource).not.toContain('fetchMessagesWithRecovery');
+    expect(componentSource).not.toContain('refreshWhatsappSync');
+    expect(componentSource).not.toContain('pollWhatsappMessages');
+    expect(generation).toContain('if (summaryRequestInFlightRef.current) return');
+    expect(componentSource).toContain('signal: AbortSignal.timeout(20_000)');
+  });
+
+  it('identifica a contagem da conexão e usa a retenção informada pelo serviço', () => {
+    expect(componentSource).toContain('Nesta conexão: {whatsappMessagesCount}');
+    expect(componentSource).toContain('não o total salvo nem o total da data selecionada');
+    expect(componentSource).toContain('Number.isInteger(data.retentionDays)');
+    expect(componentSource).toContain('retentionDays: whatsappRetentionDays');
+    expect(componentSource).toContain("const isMessagesActionDisabled = !integrationConnected || whatsappStatus !== 'connected'");
+    expect(componentSource).toContain('disabled={isMessagesActionDisabled || isLoading || !apiToken}');
+  });
+
   it('anchors the connected identity to the left and lets long identifiers wrap', () => {
     expect(componentSource).toContain('className="whatsappConnectionIdentity"');
     expect(dashboardCss).toMatch(
