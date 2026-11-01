@@ -22,6 +22,7 @@ import {
   recordWhatsappStatusSuccess
 } from '@/lib/whatsapp/status-health';
 import { formatSummaryDate } from '@/lib/whatsapp/summary-date';
+import { createInitialSummaryState } from '@/lib/whatsapp/summary-initial-state';
 import {
   describeUnexpectedSummaryError,
   readSummaryResponseError,
@@ -77,17 +78,6 @@ const loadingSteps = [
   'Formatando relatório executivo final...'
 ];
 
-const getSaoPauloDateString = (): string => {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Sao_Paulo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-};
-
 const getErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : 'Erro desconhecido.'
 );
@@ -120,6 +110,7 @@ interface CollaboratorOption {
 }
 
 interface WhatsappSummaryClientProps {
+  initialDate: string;
   profile: Profile | null;
   initialClients: Client[];
   initialStatuses: Status[];
@@ -128,6 +119,7 @@ interface WhatsappSummaryClientProps {
 }
 
 export default function WhatsappSummaryClient({
+  initialDate,
   profile,
   initialClients,
   initialStatuses,
@@ -182,12 +174,11 @@ export default function WhatsappSummaryClient({
   
   // Entrada do usuário
   const [rawText, setRawText] = useState('');
-  const [summaryDate, setSummaryDate] = useState(
-    () => initialSummaries[0]?.summary_date ?? getSaoPauloDateString()
+  const [initialSelection] = useState(
+    () => createInitialSummaryState(initialSummaries, initialDate)
   );
-  const [calendarMonth, setCalendarMonth] = useState(
-    () => getCalendarMonthStart(initialSummaries[0]?.summary_date ?? getSaoPauloDateString())
-  );
+  const [summaryDate, setSummaryDate] = useState(initialSelection.date);
+  const [calendarMonth, setCalendarMonth] = useState(initialSelection.calendarMonth);
   const saveToDb = true;
   
   // Status de processamento
@@ -197,7 +188,7 @@ export default function WhatsappSummaryClient({
   
   // Resumo atualmente exibido na tela
   const [activeSummary, setActiveSummary] = useState<WhatsappSummary | null>(
-    initialSummaries.length > 0 ? initialSummaries[0] : null
+    initialSelection.activeSummary
   );
   const selectedDateSummary = summaries.find((summary) => summary.summary_date === summaryDate);
   const selectedDateLabels = formatSummaryDate(summaryDate);
@@ -211,8 +202,8 @@ export default function WhatsappSummaryClient({
     [summaries, summaryDateCatalog]
   );
   const calendarDays = useMemo(
-    () => buildSummaryCalendarDays(calendarMonth, getSaoPauloDateString()),
-    [calendarMonth]
+    () => buildSummaryCalendarDays(calendarMonth, initialDate),
+    [calendarMonth, initialDate]
   );
 
   const calendarSelectionRequestRef = useRef(0);
@@ -1426,7 +1417,7 @@ export default function WhatsappSummaryClient({
               fontSize: '0.82rem'
             }}>
               {/* Conexão e Usuário */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', fontWeight: 600 }}>
+              <div className="whatsappConnectionIdentity" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', fontWeight: 600 }}>
                 <span className="pulseGreen" style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#10b981', borderRadius: '50%' }}></span>
                 <span style={{ color: 'var(--text-primary)' }}>
                   WhatsApp Conectado: <strong style={{ color: '#fff', marginLeft: '0.25rem' }}>{connectedUser ? (connectedUser.name || connectedUser.id.split('@')[0].split(':')[0]) : 'Carregando...'}</strong>

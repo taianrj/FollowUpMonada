@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { formatSummaryDate } from './summary-date';
+import { formatSummaryDate, getSaoPauloDateString } from './summary-date';
+
+describe('data atual de São Paulo', () => {
+  it('mantém o dia anterior quando o UTC já mudou de dia e mês', () => {
+    expect(getSaoPauloDateString(new Date('2026-11-01T02:59:59.999Z')))
+      .toBe('2026-10-31');
+  });
+
+  it('muda de dia à meia-noite em São Paulo', () => {
+    expect(getSaoPauloDateString(new Date('2026-11-01T03:00:00.000Z')))
+      .toBe('2026-11-01');
+  });
+});
 
 describe('formatSummaryDate', () => {
   it('formata a data e o dia da semana sem deslocamento de fuso horário', () => {

@@ -899,6 +899,23 @@
   z-index: 1;
 }
 
+.whatsappConnectionIdentity {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin-right: auto;
+  text-align: left;
+}
+
+.whatsappConnectionIdentity > .pulseGreen {
+  flex-shrink: 0;
+}
+
+.whatsappConnectionIdentity > span:last-child {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .whatsappStatusPanelActive::before {
   content: '';
   position: absolute;

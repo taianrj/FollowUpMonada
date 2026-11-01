@@ -12,6 +12,25 @@ const calendarPanelSource = componentSource.slice(
 );
 
 describe('WhatsappSummaryClient responsive layout', () => {
+  it('anchors the connected identity to the left and lets long identifiers wrap', () => {
+    expect(componentSource).toContain('className="whatsappConnectionIdentity"');
+    expect(dashboardCss).toMatch(
+      /\.whatsappConnectionIdentity\s*\{[^}]*flex:\s*1 1 16rem;[^}]*min-width:\s*0;[^}]*margin-right:\s*auto;[^}]*text-align:\s*left;/s
+    );
+    expect(dashboardCss).toMatch(
+      /\.whatsappConnectionIdentity > span:last-child\s*\{[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere;/s
+    );
+  });
+
+  it('initializes the date, calendar and visible summary from the same server date', () => {
+    expect(componentSource).toContain('createInitialSummaryState(initialSummaries, initialDate)');
+    expect(componentSource).toContain('useState(initialSelection.date)');
+    expect(componentSource).toContain('useState(initialSelection.calendarMonth)');
+    expect(componentSource).toContain('initialSelection.activeSummary');
+    expect(componentSource).toContain('buildSummaryCalendarDays(calendarMonth, initialDate)');
+    expect(componentSource).not.toContain('initialSummaries[0]');
+  });
+
   it('replaces the saved-summary list with a calendar', () => {
     expect(componentSource).toContain('whatsappSummaryCalendarDay');
     expect(componentSource).toContain("hasSummary ? 'hasSummary' : ''");

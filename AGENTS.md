@@ -51,21 +51,24 @@ On Windows PowerShell systems that block `npm.ps1`, use `npm.cmd`/`npx.cmd` with
 
 ## Repository architecture
 
-- The root application is Next.js 16 App Router, React 19, strict TypeScript, and Supabase.
+- The root application is Next.js 16 App Router, React 19, and strict TypeScript, with selectable D1 and Supabase database/auth providers. Production uses D1; an absent `DATABASE_PROVIDER` still defaults to Supabase. See `DATABASE_PROVIDERS.md` for migration and rollback.
 - `src/app/`: pages, layouts, route handlers, and server-side application code.
 - `src/components/`: React UI. Keep Server Components as the default; add `'use client'` only when browser state, effects, or browser APIs are required.
-- `src/lib/`: reusable domain, Supabase, and WhatsApp frontend/proxy helpers.
+- `src/lib/`: reusable domain, database/auth adapters, Supabase compatibility entry points, and WhatsApp frontend/proxy helpers.
+- `whatsapp-service/lib/database/`: shared provider configuration, query catalog, D1 authorization/authentication, persistence, schema, and migration snapshots. `scripts/database.cjs` is the explicit transfer/verification CLI; it does not activate or deploy providers.
 - `whatsapp-service/`: independent Node.js/Express CommonJS service using `baileys@7.0.0-rc13` loaded through dynamic ESM import.
 - `whatsapp-service/lib/`: testable WhatsApp domain/state helpers.
 - `whatsapp-service/test/`: Node test-runner unit and HTTP tests.
 - Root `*.sql` files are Supabase schema/migration artifacts. Treat them as production-sensitive.
-- `whatsapp-service/data/`, `.env*`, credentials, auth-state, media queues, and generated build output are local/runtime data and must not be committed.
+- `whatsapp-service/data/`, `.migration-data/`, `.env*`, credentials, auth-state, media queues, and generated build output are local/runtime data and must not be committed.
 
 ## General working rules
 
 - Inspect the relevant implementation, tests, `package.json` scripts, and current `git status` before editing.
 - Preserve user changes and unrelated dirty-worktree files. Never use destructive Git commands such as `git reset --hard` or discard changes you did not create.
 - Make the smallest coherent change that fixes the root cause. Avoid broad rewrites, formatting churn, or dependency upgrades unrelated to the request.
+- Document every change made to the project in the relevant maintained documentation before handoff, including the resulting behavior, operational/configuration impacts, verification, and known limitations when applicable. Keep documentation consistent with the implementation and never include secrets or production PII.
+- Whenever a change is relevant to the project overview, capabilities, architecture, setup, configuration, operation, or other information in `README.md`, update `README.md` in the same task. Documentation changes are part of the mandatory completion gate.
 - Keep shared business rules in small testable modules rather than duplicating logic in UI components or HTTP handlers.
 - Keep user-facing text in Brazilian Portuguese unless the existing surface intentionally uses another language.
 - Use `America/Sao_Paulo` for business dates and validate calendar dates rather than relying on permissive JavaScript parsing.
@@ -97,10 +100,12 @@ On Windows PowerShell systems that block `npm.ps1`, use `npm.cmd`/`npx.cmd` with
 - Preserve accessible loading, empty, error, reconnecting, syncing, stalled, and completed UI states.
 - Add Vitest coverage for pure parsing, status, proxy, filtering, and state-transition logic.
 
-## Supabase, security, and production data
+## Database providers, security, and production data
 
 - Never print, copy into documentation, or commit `.env.local`, JWTs, service-role keys, WhatsApp service secrets, API keys, auth-state, phone numbers, message bodies, or other production PII.
 - Service-role credentials are server-only. Preserve RLS and per-user isolation on every table, query, cache, and storage path.
+- D1 tokens are server-only. Enforce D1 authorization through the trusted authenticated actor and catalog allowlist; D1 does not provide the Supabase RLS policies. Never accept actor, role, service access, or arbitrary SQL from the browser.
+- Keep the same `DATABASE_PROVIDER` in Next.js and WhatsApp. A switch does not copy data: stop writes, transfer and verify explicitly, then redeploy the site and recreate the Docker container with its existing data volume. A Docker restart alone does not reload `--env-file`.
 - Sanitize user-derived identifiers before filesystem use and keep all data scoped by the authenticated user ID.
 - SQL migrations should be additive, idempotent where practical, documented, and compatible with the current fallback behavior. Do not drop or rewrite production data without explicit authorization and a recovery plan.
 - Production investigation is read-only by default, even when access exists. Use the narrowest query, redact outputs, and request explicit authorization before any production write, cleanup, resync, logout, or credential operation.
@@ -122,7 +127,7 @@ On Windows PowerShell systems that block `npm.ps1`, use `npm.cmd`/`npx.cmd` with
 - Audio/image queue persistence must retain the raw media message with BufferJSON compatibility. `downloadMediaMessage` reupload context must include a valid bound `updateMediaMessage`; omit the context if it is unavailable.
 - Do not permanently discard retryable media failures. Preserve bounded retry/backoff diagnostics and persistent queue state.
 - Keep message retention behavior explicit (`MESSAGE_RETENTION_DAYS`, currently two days by default) and do not silently widen full-history ingestion.
-- Preserve hybrid persistence: local daily files, relational Supabase rows, and fallback session blobs. Reads must merge/deduplicate without reintroducing filtered status messages or ambiguous routes.
+- Preserve hybrid persistence: local daily files, relational rows in the selected provider, and fallback session blobs (including D1 chunk integrity). Reads must merge/deduplicate without reintroducing filtered status messages or ambiguous routes.
 
 ## Test expectations by area
 

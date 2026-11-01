@@ -2,6 +2,7 @@ import React from 'react';
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import WhatsappSummaryClient from '@/components/WhatsappSummaryClient';
+import { getSaoPauloDateString } from '@/lib/whatsapp/summary-date';
 import { Client, Status, Profile, WhatsappSummary } from '@/types';
 
 // Desabilita cache estático para essa rota
@@ -76,6 +77,7 @@ export default async function WhatsappSummaryPage() {
 
   return (
     <WhatsappSummaryClient
+      initialDate={getSaoPauloDateString()}
       profile={profile}
       initialClients={(clients || []) as Client[]}
       initialStatuses={(statuses || []) as Status[]}
