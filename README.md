@@ -106,7 +106,14 @@ transfere dados entre os bancos.**
 - Fechamentos de socket, inclusive sessão encerrada pelo WhatsApp, preservam
   mensagens, contatos e credenciais. O serviço informa a desconexão e aguarda
   recuperação explícita; não limpa dados nem gera outro pareamento sozinho.
-  O endpoint de logout continua sendo uma ação explícita, autenticada e POST.
+  Quando o modal de conexão consulta `GET /qr-code`, o serviço distingue
+  `waiting`, `qrcode`, `connected`, `pairing_reset_required` (após `loggedOut`)
+  e `disconnected`, além de exibir falhas HTTP/rede sem travar em carregamento
+  infinito. A recuperação explícita passa por `POST /pairing/reset` (autenticado
+  via proxy Next.js), que redefine apenas as credenciais de autenticação
+  preservando mensagens, contatos e resumos salvos, e recusa redefinir uma
+  sessão já conectada (HTTP 409). O endpoint de logout continua sendo uma ação
+  explícita, autenticada e POST.
 
 ## 🛠️ Tecnologias Utilizadas
 

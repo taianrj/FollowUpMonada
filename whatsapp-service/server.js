@@ -23,6 +23,7 @@ process.on('unhandledRejection', (reason, promise) => {
 const messageDomain = require('./lib/message-domain');
 const historySync = require('./lib/history-sync');
 const { createHistorySocketConfig } = require('./lib/history-socket-config');
+const { buildQrCodeResponse } = require('./lib/qr-state');
 const { getDayReadiness, processInBatches } = require('./lib/summary-readiness');
 let Browsers;
 let makeWASocket;
@@ -313,6 +314,46 @@ async function deleteCredsFromSupabase(userId) {
   } catch (err) {
     clearTimeout(timeoutId);
     console.error(`[${userId}] Erro de rede ao conectar com o Supabase para exclusão:`, err.message || err);
+  }
+}
+
+async function clearUserAuthCredentials(userId) {
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const dbSessionId = getDbSessionId(cleanUserId);
+  const authTimer = pendingAuthStateTimers.get(cleanUserId);
+  if (authTimer) clearTimeout(authTimer);
+  pendingAuthStateTimers.delete(cleanUserId);
+
+  const userAuthDir = path.join(dataDir, 'auth', cleanUserId);
+  fs.rmSync(userAuthDir, { recursive: true, force: true });
+  fs.mkdirSync(userAuthDir, { recursive: true });
+
+  await deleteCredsFromSupabase(cleanUserId);
+
+  const config = getSupabaseConfig();
+  if (!config) return;
+
+  const headers = {
+    'apikey': config.key,
+    'Authorization': `Bearer ${config.key}`,
+    'Content-Type': 'application/json'
+  };
+  const authPatterns = [
+    `${dbSessionId}:auth-state:*`,
+    `${cleanUserId}:auth-state:*`,
+    `${dbSessionId}:auth-state-bundle:*`,
+    `${cleanUserId}:auth-state-bundle:*`
+  ];
+  for (const pattern of [...new Set(authPatterns)]) {
+    try {
+      const response = await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
+        method: 'DELETE',
+        headers
+      });
+      console.log(`[${cleanUserId}] Limpeza de credenciais ${pattern} no banco: status ${response.status}`);
+    } catch (e) {
+      console.error(`[${cleanUserId}] Erro de rede ao limpar credenciais ${pattern} no banco:`, e.message || e);
+    }
   }
 }
 
@@ -3971,6 +4012,8 @@ async function connectUserWhatsApp(userId) {
         instance.reconnectTimer = setTimeout(() => {
           instance.reconnectTimer = null;
           connectUserWhatsApp(userId).catch(err => {
+            instance.connectionStatus = 'disconnected';
+            instance.lastDisconnectError = normalizeDisplayName(err?.message || err || 'Falha na reconexao automatica');
             console.error(`[${userId}] Falha na reconexao automatica:`, err.message || err);
           });
         }, 5000);
@@ -5126,6 +5169,7 @@ async function getOrCreateInstance(userId) {
   // Inicia o processo de conexão do Baileys assincronamente
   connectUserWhatsApp(cleanUserId).catch(err => {
     instanceState.connectionStatus = 'disconnected';
+    instanceState.lastDisconnectError = normalizeDisplayName(err?.message || err || 'Falha ao iniciar WhatsApp');
     console.error(`[${cleanUserId}] Falha ao iniciar WhatsApp:`, err.message || err);
   });
 
@@ -6425,19 +6469,85 @@ app.get('/qr-code', checkAuth, async (req, res) => {
   }
   applyOwnerNameHint(userId.replace(/[^a-zA-Z0-9-_]/g, ''), instance, readOwnerNameHint(req));
 
-  if (instance.connectionStatus === 'connected') {
-    return res.json({ status: 'connected' });
-  }
-
-  if (!instance.currentQr) {
-    return res.json({ status: 'waiting' });
+  const loggedOutCode = DisconnectReason?.loggedOut || 401;
+  if (instance.connectionStatus === 'connected' || !instance.currentQr) {
+    return res.json(buildQrCodeResponse(instance, { loggedOutCode }));
   }
 
   try {
     const qrImage = await QRCode.toDataURL(instance.currentQr, { width: 300, margin: 2 });
-    res.json({ status: 'qrcode', qrCode: qrImage });
+    return res.json(buildQrCodeResponse(instance, { qrCodeImage: qrImage, loggedOutCode }));
   } catch (e) {
-    res.status(500).json({ error: 'Erro ao gerar QR Code.' });
+    return res.status(500).json({ error: 'Erro ao gerar QR Code.' });
+  }
+});
+
+// Ação explícita e autenticada para recuperar o pareamento (retentar conexão ou redefinir apenas credenciais preservando mensagens/contatos)
+app.post('/pairing/reset', checkAuth, async (req, res) => {
+  const userId = readAuthenticatedUserId(req);
+  if (!userId) {
+    return res.status(400).json({ error: 'Identificação de usuário necessária.' });
+  }
+
+  const cleanUserId = userId.replace(/[^a-zA-Z0-9-_]/g, '');
+  const instance = instances[cleanUserId] || await getOrCreateInstance(cleanUserId);
+  if (!instance) {
+    return res.status(400).json({ error: 'Identificação de usuário necessária.' });
+  }
+  applyOwnerNameHint(cleanUserId, instance, readOwnerNameHint(req));
+
+  if (instance.connectionStatus === 'connected') {
+    return res.status(409).json({
+      error: 'O WhatsApp já está conectado. Desconecte antes de iniciar um novo pareamento.'
+    });
+  }
+
+  const loggedOutCode = DisconnectReason?.loggedOut || 401;
+  const resetCredentials = req.body?.resetCredentials === true || instance.lastDisconnectCode === loggedOutCode;
+
+  try {
+    if (instance.reconnectTimer) {
+      clearTimeout(instance.reconnectTimer);
+      instance.reconnectTimer = null;
+    }
+    if (instance.sock) {
+      try {
+        instance.sock.ev.removeAllListeners();
+        instance.sock.end();
+      } catch (e) {
+        console.warn(`[${cleanUserId}] Erro ao encerrar socket durante recuperacao de pareamento:`, e.message || e);
+      }
+      instance.sock = null;
+    }
+
+    instance.intentionalLogout = false;
+    instance.currentQr = null;
+    instance.lastDisconnectCode = null;
+    instance.lastDisconnectError = '';
+    instance.connectionStatus = 'connecting';
+
+    if (resetCredentials) {
+      await clearUserAuthCredentials(cleanUserId);
+      console.log(`[${cleanUserId}] Credenciais de pareamento redefinidas explicitamente; mensagens e contatos preservados.`);
+    } else {
+      console.log(`[${cleanUserId}] Nova tentativa explícita de conexão para geração de QR Code.`);
+    }
+
+    connectUserWhatsApp(cleanUserId).catch(err => {
+      instance.connectionStatus = 'disconnected';
+      instance.lastDisconnectError = normalizeDisplayName(err?.message || err || 'Falha ao iniciar WhatsApp');
+      console.error(`[${cleanUserId}] Falha ao iniciar WhatsApp apos recuperacao de pareamento:`, err.message || err);
+    });
+
+    return res.json({
+      ok: true,
+      status: 'waiting',
+      credentialsReset: resetCredentials
+    });
+  } catch (err) {
+    instance.connectionStatus = 'disconnected';
+    instance.lastDisconnectError = normalizeDisplayName(err?.message || err || 'Erro ao redefinir pareamento');
+    return res.status(500).json({ error: 'Erro ao reiniciar pareamento do WhatsApp.' });
   }
 });
 

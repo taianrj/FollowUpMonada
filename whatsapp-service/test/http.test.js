@@ -118,7 +118,17 @@ test('rotas legadas do navegador e GETs destrutivos permanecem indisponiveis', a
   assert.equal((await fetch(`${baseUrl}/`)).status, 404);
   assert.equal((await fetch(`${baseUrl}/qr`)).status, 404);
   assert.equal((await fetch(`${baseUrl}/logout`)).status, 404);
+  assert.equal((await fetch(`${baseUrl}/pairing/reset`)).status, 404);
   assert.equal((await fetch(`${baseUrl}/maintenance/resync`)).status, 404);
+});
+
+test('pairing/reset exige autenticacao assinada via POST', async () => {
+  const response = await fetch(`${baseUrl}/pairing/reset`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ resetCredentials: true })
+  });
+  assert.equal(response.status, 401);
 });
 
 test('mensagens rejeitam data de calendario invalida antes de acessar dados', async () => {

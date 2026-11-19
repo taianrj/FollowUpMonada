@@ -1951,6 +1951,7 @@ textarea.formInput {
   }
 
   .whatsappSummarySettingsModal,
+  .whatsappSummaryQrModal,
   .whatsappSummaryMessagesModal {
     max-height: calc(100dvh - 2rem) !important;
     overflow-y: auto;
@@ -1980,6 +1981,16 @@ textarea.formInput {
   .whatsappSummaryQrCode img {
     width: calc(100% - 1rem) !important;
     height: calc(100% - 1rem) !important;
+  }
+
+  .whatsappSummaryQrFeedback,
+  .whatsappSummaryQrDetail {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .whatsappSummaryQrActions .btn {
+    min-height: 2.5rem;
   }
 
   .whatsappSummaryMessagesModal {

@@ -20,6 +20,12 @@ import {
   recordWhatsappStatusFailure,
   recordWhatsappStatusSuccess
 } from '@/lib/whatsapp/status-health';
+import {
+  describeQrHttpError,
+  describeQrNetworkError,
+  parseQrCodePayload,
+  type WhatsappQrStatus,
+} from '@/lib/whatsapp/qr-state';
 import { formatSummaryDate } from '@/lib/whatsapp/summary-date';
 import { createInitialSummaryState } from '@/lib/whatsapp/summary-initial-state';
 import { describeMissingSummaryMessages } from '@/lib/whatsapp/summary-availability';
@@ -271,7 +277,10 @@ export default function WhatsappSummaryClient({
   const [imageInterpretationCompleted, setImageInterpretationCompleted] = useState(0);
   const [imageInterpretationTotal, setImageInterpretationTotal] = useState(0);
   const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
-  const [qrStatus, setQrStatus] = useState<string>('waiting'); // 'waiting' | 'qrcode' | 'connected'
+  const [qrStatus, setQrStatus] = useState<WhatsappQrStatus>('waiting');
+  const [qrMessage, setQrMessage] = useState<string | null>(null);
+  const [qrDetail, setQrDetail] = useState<string | null>(null);
+  const [isResettingPairing, setIsResettingPairing] = useState(false);
   const [isMessagesModalOpen, setIsMessagesModalOpen] = useState(false);
   const [modalMessagesText, setModalMessagesText] = useState<string>('');
   const [chatConversations, setChatConversations] = useState<WhatsappConversation[]>([]);
@@ -323,6 +332,7 @@ export default function WhatsappSummaryClient({
   const hasShownSuccessToastRef = useRef(false);
   const statusHealthRef = useRef(createWhatsappStatusHealth());
   const statusRequestInFlightRef = useRef(false);
+  const qrRequestInFlightRef = useRef(false);
 
   const whatsappOwnerName = (profile?.name || profile?.email?.split('@')[0] || '').trim();
   const whatsappHeaders = useMemo<Record<string, string>>(() => ({
@@ -387,6 +397,9 @@ export default function WhatsappSummaryClient({
     hasShownSuccessToastRef.current = false;
     setQrCodeImage(null);
     setQrStatus('waiting');
+    setQrMessage(null);
+    setQrDetail(null);
+    setIsResettingPairing(false);
     setIsQrModalOpen(true);
   };
 
@@ -620,21 +633,41 @@ export default function WhatsappSummaryClient({
     }
   };
 
-  const pollQrEffect = useEffectEvent(async () => {
+  const pollQrStatus = async () => {
+    if (qrRequestInFlightRef.current) return;
+    qrRequestInFlightRef.current = true;
     try {
       const response = await fetch(buildWhatsappServiceUrl('qr-code'), {
-        headers: whatsappHeaders
+        headers: whatsappHeaders,
+        signal: AbortSignal.timeout(10_000)
       });
-      if (!response.ok) return;
+      if (!response.ok) {
+        let bodyError: unknown = null;
+        try {
+          const payload = await response.json();
+          bodyError = payload?.error || payload?.message || null;
+        } catch {
+          bodyError = null;
+        }
+        setQrCodeImage(null);
+        setQrStatus('error');
+        setQrMessage(describeQrHttpError(response.status, bodyError));
+        setQrDetail(null);
+        return;
+      }
 
-      const data = await response.json();
-      setQrStatus(data.status);
-      if (data.status === 'qrcode') {
-        setQrCodeImage(data.qrCode);
-      } else if (data.status === 'connected') {
+      const next = parseQrCodePayload(await response.json());
+      setQrStatus(next.status);
+      setQrMessage(next.message);
+      setQrDetail(next.detail);
+      if (next.status === 'qrcode') {
+        setQrCodeImage(next.qrCode);
+      } else if (next.status === 'connected') {
         if (!hasShownSuccessToastRef.current) {
           hasShownSuccessToastRef.current = true;
           setQrCodeImage(null);
+          setQrMessage(null);
+          setQrDetail(null);
           setIsQrModalOpen(false);
           setIntegrationConnected(true);
           setWhatsappStatus('connected');
@@ -645,8 +678,58 @@ export default function WhatsappSummaryClient({
       }
     } catch (error) {
       console.error('Erro ao buscar status do QR Code:', error);
+      setQrCodeImage(null);
+      setQrStatus('error');
+      setQrMessage(describeQrNetworkError(error));
+      setQrDetail(null);
+    } finally {
+      qrRequestInFlightRef.current = false;
     }
-  });
+  };
+
+  const pollQrEffect = useEffectEvent(pollQrStatus);
+
+  const handlePairingRecovery = async (resetCredentials: boolean) => {
+    if (!apiToken || isResettingPairing) return;
+    setIsResettingPairing(true);
+    setQrCodeImage(null);
+    setQrStatus('waiting');
+    setQrMessage(null);
+    setQrDetail(null);
+
+    try {
+      const response = await fetch(buildWhatsappServiceUrl('pairing/reset'), {
+        method: 'POST',
+        headers: whatsappHeaders,
+        body: JSON.stringify({ resetCredentials }),
+        signal: AbortSignal.timeout(15_000)
+      });
+
+      if (!response.ok) {
+        let bodyError: unknown = null;
+        try {
+          const payload = await response.json();
+          bodyError = payload?.error || payload?.message || null;
+        } catch {
+          bodyError = null;
+        }
+        const message = describeQrHttpError(response.status, bodyError);
+        setQrStatus('error');
+        setQrMessage(message);
+        showToast(message, 'error');
+        return;
+      }
+
+      void pollQrStatus();
+    } catch (error) {
+      const message = describeQrNetworkError(error);
+      setQrStatus('error');
+      setQrMessage(message);
+      showToast(message, 'error');
+    } finally {
+      setIsResettingPairing(false);
+    }
+  };
 
   // Polling para obter o QR Code dinâmico quando o modal está aberto
   useEffect(() => {
@@ -2548,9 +2631,16 @@ export default function WhatsappSummaryClient({
               boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.2)'
             }}>
               {qrStatus === 'waiting' && (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', color: 'var(--text-muted)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', color: 'var(--text-muted)', padding: '1rem' }}>
                   <div className="spinner" style={{ width: '32px', height: '32px', border: '3px solid rgba(168, 85, 247, 0.1)', borderTop: '3px solid var(--accent-purple)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
-                  <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>Iniciando conexão...</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>
+                    {isResettingPairing ? 'Reiniciando pareamento...' : 'Iniciando conexão...'}
+                  </span>
+                  {qrDetail && (
+                    <span className="whatsappSummaryQrDetail" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                      {qrDetail}
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -2572,7 +2662,99 @@ export default function WhatsappSummaryClient({
                   }}
                 />
               )}
+
+              {(qrStatus === 'pairing_reset_required' || qrStatus === 'disconnected' || qrStatus === 'error') && (
+                <div
+                  role="alert"
+                  className="whatsappSummaryQrFeedback"
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.65rem',
+                    padding: '1.1rem',
+                    width: '100%',
+                    height: '100%',
+                    overflowY: 'auto'
+                  }}
+                >
+                  <strong style={{ fontSize: '0.88rem', color: qrStatus === 'error' ? '#f87171' : '#fbbf24' }}>
+                    {qrStatus === 'pairing_reset_required'
+                      ? 'Sessão anterior encerrada'
+                      : qrStatus === 'disconnected'
+                        ? 'Conexão parada'
+                        : 'Não foi possível gerar o QR Code'}
+                  </strong>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.45 }}>
+                    {qrMessage || 'Tente novamente para iniciar o pareamento com o WhatsApp.'}
+                  </p>
+                  {qrDetail && (
+                    <span className="whatsappSummaryQrDetail" style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                      {qrDetail}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
+
+            {qrStatus === 'pairing_reset_required' && (
+              <div className="whatsappSummaryQrActions" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
+                <button
+                  type="button"
+                  className="btn btnPrimary"
+                  disabled={isResettingPairing}
+                  onClick={() => void handlePairingRecovery(true)}
+                  style={{ width: '100%', justifyContent: 'center' }}
+                >
+                  {isResettingPairing ? 'Gerando novo QR Code...' : 'Gerar novo QR Code'}
+                </button>
+              </div>
+            )}
+
+            {(qrStatus === 'disconnected' || qrStatus === 'error') && (
+              <div className="whatsappSummaryQrActions" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
+                <button
+                  type="button"
+                  className="btn btnPrimary"
+                  disabled={isResettingPairing}
+                  onClick={() => {
+                    if (qrStatus === 'disconnected') {
+                      void handlePairingRecovery(false);
+                    } else {
+                      setQrStatus('waiting');
+                      setQrMessage(null);
+                      setQrDetail(null);
+                      void pollQrStatus();
+                    }
+                  }}
+                  style={{ width: '100%', justifyContent: 'center' }}
+                >
+                  Tentar novamente
+                </button>
+                <button
+                  type="button"
+                  className="btn btnSecondary"
+                  disabled={isResettingPairing}
+                  onClick={() => void handlePairingRecovery(true)}
+                  style={{ width: '100%', justifyContent: 'center' }}
+                >
+                  Redefinir pareamento
+                </button>
+              </div>
+            )}
+
+            {qrStatus === 'waiting' && qrDetail && (
+              <button
+                type="button"
+                className="btn btnSecondary"
+                disabled={isResettingPairing}
+                onClick={() => void handlePairingRecovery(true)}
+                style={{ width: '100%', justifyContent: 'center', fontSize: '0.78rem' }}
+              >
+                Redefinir pareamento
+              </button>
+            )}
 
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
               <span>🔄</span> Esta tela atualizará sozinha e fechará assim que parear.

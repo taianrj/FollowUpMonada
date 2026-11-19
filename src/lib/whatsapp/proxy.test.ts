@@ -5,6 +5,7 @@ describe('proxy do WhatsApp', () => {
   it('permite apenas os endpoints e métodos necessários', () => {
     expect(getWhatsappProxyAllowedMethods('messages')).toEqual(new Set(['GET']));
     expect(getWhatsappProxyAllowedMethods('summary-readiness')).toEqual(new Set(['GET']));
+    expect(getWhatsappProxyAllowedMethods('pairing/reset')).toEqual(new Set(['POST']));
     expect(getWhatsappProxyAllowedMethods('logout')).toEqual(new Set(['POST']));
     expect(getWhatsappProxyAllowedMethods('maintenance/resync')).toEqual(new Set(['POST']));
     expect(getWhatsappProxyAllowedMethods('clear-logs')).toBeNull();

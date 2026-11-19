@@ -197,4 +197,16 @@ describe('WhatsappSummaryClient responsive layout', () => {
     expect(componentSource).not.toContain('/api/whatsapp-service/redirect');
     expect(componentSource).not.toContain('Acessar serviço (avançado)');
   });
+
+  it('surfaces QR pairing errors and explicit reset recovery without overlapping polls', () => {
+    expect(componentSource).toContain('if (qrRequestInFlightRef.current) return;');
+    expect(componentSource).toContain("buildWhatsappServiceUrl('pairing/reset')");
+    expect(componentSource).toContain('parseQrCodePayload');
+    expect(componentSource).toContain('describeQrHttpError');
+    expect(componentSource).toContain('describeQrNetworkError');
+    expect(componentSource).toContain('Gerar novo QR Code');
+    expect(componentSource).toContain('Redefinir pareamento');
+    expect(dashboardCss).toMatch(/\.whatsappSummaryQrFeedback,\s*\.whatsappSummaryQrDetail\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
+    expect(dashboardCss).toMatch(/\.whatsappSummaryQrModal,[\s\S]*?max-height:\s*calc\(100dvh - 2rem\) !important;/);
+  });
 });
