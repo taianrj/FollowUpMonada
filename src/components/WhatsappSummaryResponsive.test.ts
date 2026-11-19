@@ -199,7 +199,8 @@ describe('WhatsappSummaryClient responsive layout', () => {
   });
 
   it('surfaces QR pairing errors and explicit reset recovery without overlapping polls', () => {
-    expect(componentSource).toContain('if (qrRequestInFlightRef.current) return;');
+    expect(componentSource).toContain('if (qrRequestInFlightRef.current || pairingResetInFlightRef.current) return;');
+    expect(componentSource).toContain('qrAutoRecoveryAttemptedRef.current = true;');
     expect(componentSource).toContain("buildWhatsappServiceUrl('pairing/reset')");
     expect(componentSource).toContain('parseQrCodePayload');
     expect(componentSource).toContain('describeQrHttpError');

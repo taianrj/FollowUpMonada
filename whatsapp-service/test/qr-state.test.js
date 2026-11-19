@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildQrCodeResponse } = require('../lib/qr-state');
@@ -61,4 +63,11 @@ test('retorna waiting com diagnóstico opcional enquanto conecta sem QR', () => 
       detail: 'Stream Errored'
     }
   );
+});
+
+test('novo pareamento pula restauracao remota de credenciais antigas no server.js', () => {
+  const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(serverSource, /async function connectUserWhatsApp\(userId, \{ freshPairing = false \} = \{\}\)/);
+  assert.match(serverSource, /if \(freshPairing\) \{\s*fs\.rmSync\(userAuthDir/);
+  assert.match(serverSource, /connectUserWhatsApp\(cleanUserId, \{ freshPairing: resetCredentials \}\)/);
 });

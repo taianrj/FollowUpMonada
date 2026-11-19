@@ -333,6 +333,8 @@ export default function WhatsappSummaryClient({
   const statusHealthRef = useRef(createWhatsappStatusHealth());
   const statusRequestInFlightRef = useRef(false);
   const qrRequestInFlightRef = useRef(false);
+  const pairingResetInFlightRef = useRef(false);
+  const qrAutoRecoveryAttemptedRef = useRef(false);
 
   const whatsappOwnerName = (profile?.name || profile?.email?.split('@')[0] || '').trim();
   const whatsappHeaders = useMemo<Record<string, string>>(() => ({
@@ -395,6 +397,7 @@ export default function WhatsappSummaryClient({
 
   const openQrModal = () => {
     hasShownSuccessToastRef.current = false;
+    qrAutoRecoveryAttemptedRef.current = false;
     setQrCodeImage(null);
     setQrStatus('waiting');
     setQrMessage(null);
@@ -633,8 +636,53 @@ export default function WhatsappSummaryClient({
     }
   };
 
+  const requestPairingReset = async (resetCredentials: boolean): Promise<boolean> => {
+    if (!apiToken || pairingResetInFlightRef.current) return false;
+    pairingResetInFlightRef.current = true;
+    setIsResettingPairing(true);
+    setQrCodeImage(null);
+    setQrStatus('waiting');
+    setQrMessage(null);
+    setQrDetail(null);
+
+    try {
+      const response = await fetch(buildWhatsappServiceUrl('pairing/reset'), {
+        method: 'POST',
+        headers: whatsappHeaders,
+        body: JSON.stringify({ resetCredentials }),
+        signal: AbortSignal.timeout(15_000)
+      });
+
+      if (!response.ok) {
+        let bodyError: unknown = null;
+        try {
+          const payload = await response.json();
+          bodyError = payload?.error || payload?.message || null;
+        } catch {
+          bodyError = null;
+        }
+        const message = describeQrHttpError(response.status, bodyError);
+        setQrStatus('error');
+        setQrMessage(message);
+        showToast(message, 'error');
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      const message = describeQrNetworkError(error);
+      setQrStatus('error');
+      setQrMessage(message);
+      showToast(message, 'error');
+      return false;
+    } finally {
+      pairingResetInFlightRef.current = false;
+      setIsResettingPairing(false);
+    }
+  };
+
   const pollQrStatus = async () => {
-    if (qrRequestInFlightRef.current) return;
+    if (qrRequestInFlightRef.current || pairingResetInFlightRef.current) return;
     qrRequestInFlightRef.current = true;
     try {
       const response = await fetch(buildWhatsappServiceUrl('qr-code'), {
@@ -657,6 +705,19 @@ export default function WhatsappSummaryClient({
       }
 
       const next = parseQrCodePayload(await response.json());
+      if (
+        (next.status === 'pairing_reset_required' || next.status === 'disconnected') &&
+        !qrAutoRecoveryAttemptedRef.current
+      ) {
+        qrAutoRecoveryAttemptedRef.current = true;
+        setQrCodeImage(null);
+        setQrStatus('waiting');
+        setQrMessage(null);
+        setQrDetail(null);
+        void requestPairingReset(next.status === 'pairing_reset_required');
+        return;
+      }
+
       setQrStatus(next.status);
       setQrMessage(next.message);
       setQrDetail(next.detail);
@@ -690,44 +751,9 @@ export default function WhatsappSummaryClient({
   const pollQrEffect = useEffectEvent(pollQrStatus);
 
   const handlePairingRecovery = async (resetCredentials: boolean) => {
-    if (!apiToken || isResettingPairing) return;
-    setIsResettingPairing(true);
-    setQrCodeImage(null);
-    setQrStatus('waiting');
-    setQrMessage(null);
-    setQrDetail(null);
-
-    try {
-      const response = await fetch(buildWhatsappServiceUrl('pairing/reset'), {
-        method: 'POST',
-        headers: whatsappHeaders,
-        body: JSON.stringify({ resetCredentials }),
-        signal: AbortSignal.timeout(15_000)
-      });
-
-      if (!response.ok) {
-        let bodyError: unknown = null;
-        try {
-          const payload = await response.json();
-          bodyError = payload?.error || payload?.message || null;
-        } catch {
-          bodyError = null;
-        }
-        const message = describeQrHttpError(response.status, bodyError);
-        setQrStatus('error');
-        setQrMessage(message);
-        showToast(message, 'error');
-        return;
-      }
-
+    const resetSucceeded = await requestPairingReset(resetCredentials);
+    if (resetSucceeded) {
       void pollQrStatus();
-    } catch (error) {
-      const message = describeQrNetworkError(error);
-      setQrStatus('error');
-      setQrMessage(message);
-      showToast(message, 'error');
-    } finally {
-      setIsResettingPairing(false);
     }
   };
 

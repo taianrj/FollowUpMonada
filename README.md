@@ -111,9 +111,12 @@ transfere dados entre os bancos.**
   e `disconnected`, além de exibir falhas HTTP/rede sem travar em carregamento
   infinito. A recuperação explícita passa por `POST /pairing/reset` (autenticado
   via proxy Next.js), que redefine apenas as credenciais de autenticação
-  preservando mensagens, contatos e resumos salvos, e recusa redefinir uma
-  sessão já conectada (HTTP 409). O endpoint de logout continua sendo uma ação
-  explícita, autenticada e POST.
+  preservando mensagens, contatos e resumos salvos, inicia o novo pareamento
+  sem restaurar credenciais antigas do banco e recusa redefinir uma sessão já
+  conectada (HTTP 409). Ao abrir o modal pelo botão **Conectar WhatsApp**, o
+  frontend aciona essa recuperação uma única vez quando encontra a sessão
+  encerrada/parada para exibir o QR Code diretamente. O endpoint de logout
+  continua sendo uma ação explícita, autenticada e POST.
 
 ## 🛠️ Tecnologias Utilizadas
 

@@ -291,10 +291,10 @@ async function deleteCredsFromSupabase(userId) {
 
   const cleanUrl = supabaseUrl.replace(/\/$/, '');
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 segundos de timeout
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
 
   try {
-    const response = await databaseFetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${dbSessionId}`, {
+    const response = await databaseFetch(`${cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${supabaseEq(dbSessionId)}&select=id`, {
       method: 'DELETE',
       headers: {
         'apikey': supabaseKey,
@@ -338,6 +338,23 @@ async function clearUserAuthCredentials(userId) {
     'Authorization': `Bearer ${config.key}`,
     'Content-Type': 'application/json'
   };
+  const exactAuthIds = [
+    dbSessionId,
+    cleanUserId,
+    `${dbSessionId}:auth-state-bundle:default`,
+    `${cleanUserId}:auth-state-bundle:default`
+  ];
+  for (const id of [...new Set(exactAuthIds)]) {
+    try {
+      const response = await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=eq.${supabaseEq(id)}&select=id`, {
+        method: 'DELETE',
+        headers
+      });
+      console.log(`[${cleanUserId}] Limpeza exata de credenciais ${id} no banco: status ${response.status}`);
+    } catch (e) {
+      console.error(`[${cleanUserId}] Erro de rede ao limpar credenciais ${id} no banco:`, e.message || e);
+    }
+  }
   const authPatterns = [
     `${dbSessionId}:auth-state:*`,
     `${cleanUserId}:auth-state:*`,
@@ -346,7 +363,7 @@ async function clearUserAuthCredentials(userId) {
   ];
   for (const pattern of [...new Set(authPatterns)]) {
     try {
-      const response = await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}`, {
+      const response = await databaseFetch(`${config.cleanUrl}/rest/v1/whatsapp_sessions?id=like.${supabaseEq(pattern)}&select=id`, {
         method: 'DELETE',
         headers
       });
@@ -3836,7 +3853,7 @@ async function hydrateContactsFromStoredMessages(userId, instance, seedMessages 
   return changed;
 }
 
-async function connectUserWhatsApp(userId) {
+async function connectUserWhatsApp(userId, { freshPairing = false } = {}) {
   const instance = instances[userId];
   if (!instance) return;
   const connectionGeneration = (instance.connectionGeneration || 0) + 1;
@@ -3846,7 +3863,7 @@ async function connectUserWhatsApp(userId) {
     instance.reconnectTimer = null;
   }
 
-  console.log(`Iniciando conexão com o WhatsApp para o usuário: ${userId}`);
+  console.log(`Iniciando conexão com o WhatsApp para o usuário: ${userId}${freshPairing ? ' (novo pareamento)' : ''}`);
   
   // Limpa de forma segura qualquer socket ou listener anterior para evitar loops de reconexão concorrentes e leaks de memória
   if (instance.sock) {
@@ -3863,28 +3880,35 @@ async function connectUserWhatsApp(userId) {
   instance.connectionStatus = 'connecting';
 
   const userAuthDir = path.join(dataDir, 'auth', userId);
-  fs.mkdirSync(userAuthDir, { recursive: true });
-
-  await restoreAuthStateSnapshot(userId, userAuthDir);
-
-  // Restaura creds.json legado do Supabase se não existir localmente no container
   const credsFilePath = path.join(userAuthDir, 'creds.json');
-  if (!fs.existsSync(credsFilePath)) {
-    console.log(`[${userId}] creds.json não encontrado localmente. Tentando restaurar do Supabase...`);
-    try {
-      const savedCreds = await loadCredsFromSupabase(userId);
-      if (savedCreds) {
-        fs.writeFileSync(credsFilePath, JSON.stringify(savedCreds, null, 2), 'utf8');
-        console.log(`[${userId}] creds.json restaurado com sucesso do Supabase.`);
-      } else {
-        console.log(`[${userId}] Nenhuma credencial anterior encontrada no Supabase.`);
+  if (freshPairing) {
+    fs.rmSync(userAuthDir, { recursive: true, force: true });
+    fs.mkdirSync(userAuthDir, { recursive: true });
+  } else {
+    fs.mkdirSync(userAuthDir, { recursive: true });
+    await restoreAuthStateSnapshot(userId, userAuthDir);
+    if (instance.connectionGeneration !== connectionGeneration) return;
+
+    // Restaura creds.json legado do Supabase se não existir localmente no container
+    if (!fs.existsSync(credsFilePath)) {
+      console.log(`[${userId}] creds.json não encontrado localmente. Tentando restaurar do Supabase...`);
+      try {
+        const savedCreds = await loadCredsFromSupabase(userId);
+        if (instance.connectionGeneration !== connectionGeneration) return;
+        if (savedCreds) {
+          fs.writeFileSync(credsFilePath, JSON.stringify(savedCreds, null, 2), 'utf8');
+          console.log(`[${userId}] creds.json restaurado com sucesso do Supabase.`);
+        } else {
+          console.log(`[${userId}] Nenhuma credencial anterior encontrada no Supabase.`);
+        }
+      } catch (e) {
+        console.error(`[${userId}] Falha ao restaurar credenciais do Supabase:`, e);
       }
-    } catch (e) {
-      console.error(`[${userId}] Falha ao restaurar credenciais do Supabase:`, e);
     }
   }
 
   const { state, saveCreds } = await useMultiFileAuthState(userAuthDir);
+  if (instance.connectionGeneration !== connectionGeneration) return;
   const expectsHistorySync = instance.forceHistorySync || Number(state.creds.accountSyncCounter || 0) === 0;
   // O Baileys pode emitir messaging-history.status antes de connection=open.
   // Inicialize o estado desta geração antes de registrar/receber esses eventos
@@ -3931,6 +3955,7 @@ async function connectUserWhatsApp(userId) {
   } catch (err) {
     console.warn(`[${userId}] Erro ao buscar última versão do WhatsApp Web. Usando backup.`, err);
   }
+  if (instance.connectionGeneration !== connectionGeneration) return;
 
   const sock = makeWASocket({
     auth: state,
@@ -6520,6 +6545,7 @@ app.post('/pairing/reset', checkAuth, async (req, res) => {
       instance.sock = null;
     }
 
+    instance.connectionGeneration = (instance.connectionGeneration || 0) + 1;
     instance.intentionalLogout = false;
     instance.currentQr = null;
     instance.lastDisconnectCode = null;
@@ -6533,7 +6559,7 @@ app.post('/pairing/reset', checkAuth, async (req, res) => {
       console.log(`[${cleanUserId}] Nova tentativa explícita de conexão para geração de QR Code.`);
     }
 
-    connectUserWhatsApp(cleanUserId).catch(err => {
+    connectUserWhatsApp(cleanUserId, { freshPairing: resetCredentials }).catch(err => {
       instance.connectionStatus = 'disconnected';
       instance.lastDisconnectError = normalizeDisplayName(err?.message || err || 'Falha ao iniciar WhatsApp');
       console.error(`[${cleanUserId}] Falha ao iniciar WhatsApp apos recuperacao de pareamento:`, err.message || err);
