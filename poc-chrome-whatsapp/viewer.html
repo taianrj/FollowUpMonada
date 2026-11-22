@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'none'; media-src data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FollowUp Mônada — Visualizador Local da PoC WhatsApp Web</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #131a2e;
+      --panel-2: #19233d;
+      --border: #293657;
+      --text: #eef2ff;
+      --muted: #9aa7c7;
+      --accent: #7c5cff;
+      --ok: #10b981;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --me-bg: #1e2d4f;
+      --other-bg: #161f36;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header h1 { margin: 0 0 0.35rem 0; font-size: 1.25rem; }
+    .disclaimer {
+      margin: 0.75rem 0 0;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      color: #fde68a;
+      font-size: 0.88rem;
+    }
+    main { max-width: 1360px; margin: 0 auto; padding: 1.25rem; display: grid; gap: 1.25rem; }
+    main > *, .card > *, .chat-layout > *, .msg, .audio-box { min-width: 0; overflow-wrap: anywhere; }
+    select, input { max-width: 100%; }
+    .controls > * { min-width: 0; }
+    .tab-btn { min-height: 44px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.15rem;
+    }
+    .upload-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+      gap: 0.85rem;
+    }
+    .upload-box {
+      background: var(--panel-2);
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+    }
+    .upload-box label { font-weight: 600; font-size: 0.9rem; }
+    .upload-box input[type="file"] { font-size: 0.82rem; color: var(--muted); max-width: 100%; }
+    .upload-status { font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .tab-btn {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.55rem 0.95rem;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.88rem;
+    }
+    .tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 1rem; }
+    select, input[type="search"] {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.88rem;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      gap: 0.85rem;
+      margin-bottom: 1rem;
+    }
+    .metric-box {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.85rem;
+      font-size: 0.85rem;
+    }
+    .metric-box h3 { margin: 0 0 0.5rem 0; font-size: 0.95rem; }
+    .badge {
+      display: inline-block;
+      padding: 0.18rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      font-weight: 700;
+    }
+    .badge-ok { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.45); }
+    .badge-warn { background: rgba(245, 158, 11, 0.18); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.45); }
+    .badge-err { background: rgba(239, 68, 68, 0.18); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.45); }
+    .badge-me { background: rgba(124, 92, 255, 0.22); color: #ddd6fe; border: 1px solid rgba(124, 92, 255, 0.5); }
+    .chat-layout {
+      display: grid;
+      grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+      gap: 1rem;
+      min-height: 460px;
+    }
+    .chat-list {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow-y: auto;
+      max-height: 68vh;
+    }
+    .chat-item {
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      color: var(--text);
+      border: none;
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem 0.85rem;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .chat-item:hover, .chat-item.active { background: rgba(124, 92, 255, 0.16); }
+    .chat-item-title { font-weight: 600; font-size: 0.9rem; overflow-wrap: anywhere; }
+    .chat-item-meta { font-size: 0.76rem; color: var(--muted); }
+    .messages-pane {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.9rem;
+      overflow-y: auto;
+      max-height: 68vh;
+      display: flex;
+      flex-direction: column;
+      gap: 0.7rem;
+    }
+    .msg {
+      padding: 0.7rem 0.85rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--other-bg);
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+    .msg.from-me { background: var(--me-bg); border-color: rgba(124, 92, 255, 0.45); }
+    .msg-head {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      align-items: center;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+    .msg-sender { color: var(--text); font-weight: 600; }
+    .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9rem; }
+    .audio-box {
+      margin-top: 0.25rem;
+      padding: 0.55rem 0.7rem;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.22);
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-size: 0.8rem;
+    }
+    audio { width: 100%; max-width: 380px; height: 36px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    th, td { border: 1px solid var(--border); padding: 0.55rem 0.65rem; text-align: left; vertical-align: top; }
+    th { background: var(--panel-2); }
+    .table-wrap { overflow-x: auto; }
+    .muted { color: var(--muted); }
+    .hidden { display: none !important; }
+    @media (max-width: 820px) {
+      .chat-layout { grid-template-columns: 1fr; }
+      .chat-list, .messages-pane { max-height: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FollowUp Mônada — Visualizador Local da PoC (WhatsApp Web)</h1>
+    <div class="muted" style="font-size: 0.86rem;">
+      100% offline no navegador. Nenhum dado é enviado ao FollowUp Mônada, a provedores de transcrição ou a serviços externos.
+    </div>
+    <p class="disclaimer">
+      <strong>Aviso importante:</strong> os arquivos exibidos aqui refletem apenas o que estava acessível localmente no WhatsApp Web no momento da coleta. Eles <strong>não garantem</strong> histórico completo em relação ao celular — use a comparação com o celular e entre rodadas para avaliar lacunas.
+    </p>
+  </header>
+
+  <main>
+    <section class="card">
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0.75rem;margin-bottom:0.75rem;">
+        <h2 style="margin: 0; font-size: 1rem;">1. Rodadas coletadas (automáticas pela extensão ou via arquivo JSON)</h2>
+        <button id="clearSavedBtn" type="button" class="tab-btn">Limpar dados locais da PoC</button>
+      </div>
+      <div class="upload-grid">
+        <div class="upload-box">
+          <label for="fileRound1">Rodada 1 — Inicial</label>
+          <input id="fileRound1" type="file" accept="application/json,.json" />
+          <div id="statusRound1" class="upload-status">Nenhum arquivo carregado.</div>
+        </div>
+        <div class="upload-box">
+          <label for="fileRound2">Rodada 2 — Após recarregar a aba</label>
+          <input id="fileRound2" type="file" accept="application/json,.json" />
+          <div id="statusRound2" class="upload-status">Opcional para comparação pós-reload.</div>
+        </div>
+        <div class="upload-box">
+          <label for="fileRound3">Rodada 3 — Após reiniciar o Chrome</label>
+          <input id="fileRound3" type="file" accept="application/json,.json" />
+          <div id="statusRound3" class="upload-status">Opcional para comparação pós-reinício.</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="tabs">
+      <button type="button" class="tab-btn active" data-tab="conversations">Conversas &amp; Áudios</button>
+      <button type="button" class="tab-btn" data-tab="comparison">Comparação entre Rodadas</button>
+      <button type="button" class="tab-btn" data-tab="cellphone">Checklist vs. Celular</button>
+    </div>
+
+    <section id="tab-conversations" class="card">
+      <div class="controls">
+        <label>
+          Rodada:
+          <select id="roundSelect"></select>
+        </label>
+        <label>
+          Data:
+          <select id="dateSelect"></select>
+        </label>
+        <input id="chatSearch" type="search" placeholder="Filtrar conversa ou mensagem..." />
+      </div>
+
+      <div id="daySummary" class="summary-grid"></div>
+      <div id="dependenciesBox" class="metric-box" style="margin-bottom: 1rem;"></div>
+
+      <div class="chat-layout">
+        <div id="chatList" class="chat-list"></div>
+        <div id="messagesPane" class="messages-pane">
+          <div class="muted">Carregue pelo menos o JSON da Rodada 1 para visualizar as conversas e reproduzir os áudios recuperados.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-comparison" class="card hidden">
+      <h2 style="margin: 0 0 0.75rem 0; font-size: 1rem;">Comparação entre Rodadas (Mensagens e Áudios separados)</h2>
+      <div id="comparisonContent" class="muted">Carregue a Rodada 1 e pelo menos uma rodada adicional (Rodada 2 ou Rodada 3).</div>
+    </section>
+
+    <section id="tab-cellphone" class="card hidden">
+      <h2 style="margin: 0 0 0.5rem 0; font-size: 1rem;">Checklist de comparação manual com o celular</h2>
+      <p class="muted" style="font-size: 0.85rem; margin-top: 0;">
+        Anote para cada data encerrada testada se houve conversas faltantes, mensagens faltantes, se algum sinal local acusou a lacuna e quantos áudios reais existiam no celular.
+      </p>
+      <div id="cellphoneChecklist" class="table-wrap muted">Carregue a Rodada 1 para gerar a tabela das datas testadas.</div>
+    </section>
+  </main>
+
+  <script src="./lib/poc-core.js"></script>
+  <script src="./lib/poc-media.js"></script>
+  <script src="./lib/poc-storage.js"></script>
+  <script src="./viewer.js"></script>
+</body>
+</html>

@@ -21,6 +21,48 @@ transfere dados entre os bancos.**
 
 ---
 
+## Integração WhatsApp pelo Chrome
+
+O modo opcional `WHATSAPP_INTEGRATION_MODE=chrome_extension` mantém conversas,
+áudios, transcrições, opções e retomada na extensão **0.3.0**, em IndexedDB do
+computador do usuário. O padrão continua `baileys`, sem fallback automático.
+O novo modo não depende de `whatsapp-service`, Workers, Durable Objects ou R2.
+Imagens não são interpretadas; canais `@newsletter` entram e Status são excluídos.
+
+**Consultar Conversas** funciona sem resumo: consulta a importação local ou faz
+uma prévia sem IA. **Gerar Resumo** usa a fila local, confirma substituições e
+pendências, envia cada áudio à IA pelo servidor autenticado e salva apenas o
+resultado final. Novos resumos têm `raw_text` vazio: nenhuma cópia integral das
+conversas/transcrições é gravada no D1/Supabase. A IA externa mantém seus custos.
+Chaves e segredos continuam somente no servidor. A transcrição prioriza Groq
+com `whisper-large-v3-turbo` e idioma `pt`, usando Gemini como fallback. Sem chave
+Groq, pode usar OpenAI quando configurada ou Gemini. A geração dos resumos continua
+com os modelos Gemini já definidos.
+
+Retenção local: conversas/transcrições por 30 dias da coleta, áudios pendentes
+por até 7 dias, limite de 256 MiB por usuário/ambiente. O painel permite apagar
+os dados locais sem excluir resumos salvos ou dados originais do WhatsApp.
+Mantenha Chrome e uma aba autenticada do Mônada abertos; o trabalho pausa e pode
+retomar neste computador. Resumos salvos em produção continuam disponíveis em
+outros dispositivos; as conversas completas dependem do perfil do Chrome.
+
+Consulte [WHATSAPP_CHROME_EXTENSION.md](WHATSAPP_CHROME_EXTENSION.md) para teste,
+atualização da extensão, permissões e limites. O teste em `npm run dev` guarda
+somente os novos resumos finais em `.extension-data/summaries/`, sem gravar no
+banco remoto. Nenhum deploy, publicação, exclusão de dados antigos ou parada do
+Baileys em produção foi feita; um serviço Baileys ainda ativo mantém suas gravações.
+
+## Prova de conceito da extensão Chrome
+
+A pasta [poc-chrome-whatsapp](poc-chrome-whatsapp/README.md) contém uma extensão
+local isolada, atualmente na versão **0.1.9**, para conferir conversas e áudios
+acessíveis pelo WhatsApp Web. A coleta roda em uma aba própria, com exclusão de
+execuções simultâneas, validação de mídia e relatórios versionados. Não envia
+conversas ao Mônada, não transcreve áudios e não libera datas para resumo.
+O Baileys permanece como integração atual; a futura chave de seleção ainda não
+foi implementada. Consulte o guia da PoC para instalação, limites e comparação
+entre rodadas. Seus testes também são executados por `npm test`.
+
 ## Resumos diários do WhatsApp
 
 - Ao abrir a página, o calendário seleciona a data atual no fuso
@@ -137,7 +179,7 @@ transfere dados entre os bancos.**
 
 ### Inteligência Artificial
 - **Extração de demandas**: Gemini 3.5 Flash-Lite (`gemini-3.5-flash-lite`), com raciocínio mínimo para reduzir latência e custo.
-- **Resumo de WhatsApp**: Gemini 3.7 Flash (`gemini-3.7-flash`), com nível de raciocínio médio para interpretação contextual.
+- **Resumo de WhatsApp**: Gemini 4 Hydrogen (`gemini-4-hydrogen`), com raciocínio baixo e política de retries do SDK oficial. Não há fallback para outros modelos/provedores; JSON e status continuam validados antes de salvar.
 - **Saídas estruturadas**: JSON Schema dinâmico (incluindo os status cadastrados) e validação server-side comum ao Gemini e à Groq.
 - **Deduplicação semântica**: Gemini Embedding 2 (`gemini-embedding-2`) com vetores de 768 dimensões; comparação cosseno no servidor no D1 ou via `pgvector` no Supabase.
 - **SDK**: `@google/genai`. No `parse-tasks`, o fallback Groq usa `openai/gpt-oss-120b` quando o Gemini falha ou devolve uma resposta inválida; o resumo do WhatsApp permanece Gemini-only.
@@ -335,3 +377,38 @@ lista completa de demandas ativas não é mais enviada ao prompt.
 
 O limiar inicial de similaridade é `0.90`. Ele é propositalmente conservador e deve ser
 calibrado com exemplos reais de duplicatas e falsos positivos antes de ser reduzido.
+
+
+### Comparação local entre Gemini e Groq
+
+No modo extensão, o painel Consultar Conversas oferece **Exportar para comparar IAs**: exporta a data inteira da conta autenticada, sem respeitar a busca visual, com textos, autoria, transcrições disponíveis e cadastros de clientes/status. Não inclui arquivos de áudio, chaves de mídia ou credenciais. O JSON contém dados pessoais; mantenha-o privado. A leitura usa o canal autenticado existente e não gera/substitui resumos. O rodapé quebra em coluna em telas pequenas e mantém controles de toque de 44px.
+
+O utilitário independente em [tools/summary-comparison](tools/summary-comparison/README.md) compara Hydrogen e GPT-OSS-120B com o prompt/schema/formatação reais do fluxo atual, sem mudar o provedor de produção. A comparação envia o dia inteiro, oferece repetição por modelo e exportação completa, sem truncamento silencioso. Testes Python usam dados sintéticos e não chamam APIs. Confira o guia do utilitário para uso, privacidade e limitações.
+
+
+O programa local compara Gemini do FollowUp (Hydrogen atual) e Gemini 3.8 Flash, com a mesma entrada compacta preparada pelo fluxo real da extensão e uma chamada do dia inteiro por modelo. Mantém repetição sem sobreposição e exportação explícita de avaliação completa com conversas, prompt, parâmetros e todas as tentativas, sem chaves. OpenRouter e os demais modelos foram removidos do teste; usa a chave Gemini já existente e o faturamento do projeto associado. Veja [uso, testes e limites](tools/summary-comparison/README.md). Isso não altera modelos usados em produção.
+
+
+O teste local do Gemini também mostra tempo de espera ao vivo, códigos HTTP e quantidade observada de chamadas do SDK. A avaliação exportada inclui metadados de uso/cache, término e falhas seguras. Plano/saldo/custo não são inferidos. A guarda local de 195s encerra a espera com diagnóstico próprio; a telemetria não altera os retries nem gera chamadas adicionais. Veja o guia em tools/summary-comparison/README.md.
+
+
+### Resumos com entrada compacta
+
+No fluxo ativo `chrome_extension`, o resumo usa a projeção `compact-v1`, compartilhada com o teste da Área de Trabalho. Mantém `gemini-4-hydrogen`, raciocínio LOW e retries oficiais. Somente a análise omite canais `@newsletter` e mídias vazias; legendas e transcrições habilitadas continuam incluídas. Agrupa por conversa com horários, preserva autoria e compacta comunicados idênticos por referências quando a identidade é inequívoca, sem apagar entregas/contexto. Consultar Conversas e o histórico salvo não são filtrados por esta política.
+
+Clientes são representados por índices numéricos no prompt/schema e reconvertidos para UUIDs no servidor, com validação estrita e mapa derivado apenas do cadastro do usuário autenticado. Registros/respostas de aplicação mantêm `client_id`. A versão e contagens são registradas nos metadados; resumos antigos não são migrados ou substituídos automaticamente. Substituição permanece explícita; sem texto útil não há chamada à IA. Não há mudança de esquema de banco ou deploy. O fluxo Baileys e o processador legado de extensão não foram alterados.
+
+O comparador lê o preparador comum e exporta os contadores de otimização. Medição offline do conjunto fornecido reduziu o prompt em aproximadamente 59% em caracteres; tokens, preço e qualidade exigem nova geração real. Nenhuma garantia de redução de 80–90% ou preço final. Veja [o guia do teste](tools/summary-comparison/README.md) para critérios e limites. Validação inclui regressões Vitest, testes Python/ponte, build, ESLint e suíte raiz após a última alteração.
+
+
+A aba de teste Gemini 3.8 Flash altera somente o campo model na chamada isolada do SDK, sem mudar o modelo do Mônada. Há repetição por aba e exportação dos dois resultados com tempos, tokens, diagnósticos e hash comum da entrada. Os dois testes usam a mesma chave e consomem as respectivas cotas/cobranças. Não há versão Lite ou fallback automático.
+
+
+O comparador tolera contadores opcionais ausentes na resposta Gemini, exibindo não informado e continuando a atualização das duas abas. Abrir avaliação salva recupera os resultados exportados sem usar a API; tentativas incompletas não são retomadas automaticamente. O guia do comparador descreve o procedimento de recuperação e suas limitações.
+
+
+### Uso da compactação no Mônada
+
+A geração ativa no modo extensão já utiliza o preparador compartilhado com o comparador local: filtra somente a entrada da IA, agrupa conversas, usa índices de clientes e recupera UUIDs validados antes de salvar. Resumos do Mônada continuam em `gemini-4-hydrogen`, LOW e retries oficiais; Gemini 3.8 Flash permanece restrito ao programa de comparação. Não é necessário trocar chaves ou reinstalar a extensão. Teste local: selecione a data e gere o resumo, confirmando a substituição caso já exista. Histórico original e as confirmações de áudio/histórico parcial são preservados.
+
+O teste `src/lib/whatsapp-extension/stateless-generation.test.ts` confirma o fluxo completo com SDK real/HTTP simulado, incluindo payload compacto, modelo/LOW, recuperação de UUID, isolamento por ator e falha segura para índice inválido. Não há chamada paga, migração, regeneração automática ou deploy. Consulte [a operação e verificação](WHATSAPP_CHROME_EXTENSION.md) para detalhes.

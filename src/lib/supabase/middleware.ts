@@ -39,6 +39,7 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const isLoginPage = request.nextUrl.pathname.startsWith('/login');
+  const isPrivacyPage = request.nextUrl.pathname === '/privacidade';
   const isAuthApi = request.nextUrl.pathname.startsWith('/api/auth');
   const isAuthCallback = request.nextUrl.pathname.startsWith('/auth/callback');
   const isResetMode = request.nextUrl.searchParams.get('mode') === 'reset';
@@ -52,7 +53,7 @@ export async function updateSession(request: NextRequest) {
   }
 
   // Se não estiver logado e tentar acessar área logada, redireciona para o login
-  if (!user && !isLoginPage && !isAuthApi && !isAuthCallback) {
+  if (!user && !isLoginPage && !isPrivacyPage && !isAuthApi && !isAuthCallback) {
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     return NextResponse.redirect(url);

@@ -17,6 +17,25 @@ O fallback do código, quando a variável está ausente, continua sendo Supabase
 Isso é diferente da configuração explícita D1 usada em produção. Os comandos
 `db:manage` não mudam esse seletor nem publicam o site ou a infraestrutura Oracle.
 
+## Integração Chrome independente
+
+`WHATSAPP_INTEGRATION_MODE` é independente de `DATABASE_PROVIDER`. No modo
+`chrome_extension`, autenticação/cadastros e apenas os resumos finais de produção
+continuam no provedor selecionado. Mensagens, áudios, transcrições, opções e filas
+ficam em IndexedDB da extensão, separados por origem/usuário/conta do WhatsApp.
+A IA é acessada pelo servidor sem persistir a entrada. Novos resumos têm `raw_text`
+vazio; o JSON contém o resumo, sugestões e metadados de ressalvas/idempotência.
+Não há Workers/Durable Objects/R2 nem dependência do serviço Baileys nesse fluxo.
+
+No teste `npm run dev`, somente os resumos finais ficam em SQLite privado em
+`.extension-data/summaries/`; autenticação/cadastros ainda usam o provedor
+configurado. Importações antigas em `.extension-data/` não são carregadas nem
+retomadas pelo fluxo novo, e nenhum dado antigo é apagado automaticamente.
+Veja [WHATSAPP_CHROME_EXTENSION.md](WHATSAPP_CHROME_EXTENSION.md).
+As regras existentes D1/Supabase continuam válidas para o restante da aplicação.
+Trocar o modo no Mônada não desliga um serviço Baileys já rodando: suas gravações
+continuam até uma parada operacional explícita, não realizada por esta alteração.
+
 ## Configuração no servidor
 
 Defina a mesma variável na aplicação Next.js e no serviço WhatsApp:

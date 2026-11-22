@@ -1,8 +1,6 @@
 export const AI_MODELS = {
   parseTasks: 'gemini-3.5-flash-lite',
-  whatsappSummary: 'gemini-3.7-flash',
-  whatsappSummaryFallback: 'gemini-3.6-flash',
-  whatsappSummaryLastFallback: 'gemini-3.5-flash',
+  whatsappSummary: 'gemini-4-hydrogen',
   embeddings: 'gemini-embedding-2',
   groqFallback: 'openai/gpt-oss-120b',
 } as const;

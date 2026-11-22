@@ -1,6 +1,8 @@
+import { getWhatsappIntegrationMode } from './integration-mode';
 import { createWhatsappServiceAuthHeaders } from './service-auth';
 
 export async function readReadyWhatsappMessages(userId: string, date: string) {
+  if (getWhatsappIntegrationMode() === 'chrome_extension') return { ok: false as const, status: 409, error: 'Use a importação pela extensão para gerar o resumo desta data.' };
   const baseUrl = (process.env.WHATSAPP_SERVICE_URL || process.env.NEXT_PUBLIC_WHATSAPP_SERVICE_URL || '').trim();
   const secret = process.env.WHATSAPP_SERVICE_SECRET;
   if (!baseUrl || !secret) return { ok: false as const, status: 503, error: 'Integração do WhatsApp não configurada.' };

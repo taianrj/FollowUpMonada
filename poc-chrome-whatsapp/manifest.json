@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "FollowUp Mônada — PoC WhatsApp Web (Local)",
+  "version": "0.1.9",
+  "description": "Prova de conceito isolada e 100% local para leitura do IndexedDB e recuperação de áudios do WhatsApp Web.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://web.whatsapp.com/*",
+    "https://mmg.whatsapp.net/*"
+  ],
+  "action": {
+    "default_title": "PoC WhatsApp Web (Mônada)",
+    "default_popup": "popup.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'; media-src data: blob:; img-src 'self' data:; base-uri 'none'; form-action 'none'"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "monada-whatsapp-extension",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-19",
+  "durable_objects": { "bindings": [{ "name": "USERS", "class_name": "ExtensionUser" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ExtensionUser"] }]
+}

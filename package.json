@@ -4,10 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "extension:setup": "node scripts/setup-whatsapp-extension.mjs",
+    "extension:baileys": "node scripts/setup-whatsapp-extension.mjs --baileys",
+    "extension:package": "node scripts/package-whatsapp-extension.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "npm run test:web && npm run test:whatsapp-service",
+    "test": "npm run test:web && npm run test:whatsapp-service && npm run test:whatsapp-poc && npm run test:whatsapp-extension",
+    "test:whatsapp-extension": "node --test workers/whatsapp-extension/*.test.mjs",
+    "test:whatsapp-poc": "node --test poc-chrome-whatsapp/*.test.js",
     "test:web": "vitest run",
     "test:whatsapp-service": "npm --prefix whatsapp-service test",
     "db:manage": "node scripts/database.cjs"

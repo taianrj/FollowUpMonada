@@ -40,7 +40,9 @@ describe('WhatsappSummaryClient responsive layout', () => {
     expect(componentSource).toContain('Number.isInteger(data.retentionDays)');
     expect(componentSource).toContain('retentionDays: whatsappRetentionDays');
     expect(componentSource).toContain("const isMessagesActionDisabled = !integrationConnected || whatsappStatus !== 'connected'");
-    expect(componentSource).toContain('disabled={isMessagesActionDisabled || isLoading || !apiToken}');
+    expect(componentSource).toContain("title={isMessagesActionDisabled ? 'Consultar conversas já armazenadas'");
+    expect(componentSource).toContain('disabled={isLoading || !apiToken}');
+    expect(componentSource).toContain('saved?.raw_text');
   });
 
   it('anchors the connected identity to the left and lets long identifiers wrap', () => {

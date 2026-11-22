@@ -1,0 +1,44 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+const source = readFileSync(new URL('./WhatsappSummaryClient.tsx', import.meta.url), 'utf8');
+const css = readFileSync(new URL('./Dashboard.css', import.meta.url), 'utf8');
+describe('interface da integração Chrome preserva o fluxo Baileys', () => {
+  it('não consulta o serviço antigo e só apresenta a barra se há ação necessária', () => {
+    expect(source).toContain('if (!apiToken || isChromeIntegration) return;');
+    expect(source).toContain('{chromeFlow.instruction &&');
+    expect(source).toContain("integrationMode = 'baileys'");
+    expect(source).toContain('const conversations = extensionConversations(await chromeFlow.conversations(summaryDate))');
+    expect(source).toContain('chromeFlow.generate(targetDate,');
+    expect(source).toContain('ChatSelectionModal');
+    expect(source).toContain('sortWhatsappConversationsByRecent');
+    expect(source).toContain('summary_data: { ...activeSummary.summary_data, summaries: updatedSummaries }');
+    expect(source).toContain('Teste local: criação de clientes e demandas está desativada');
+  });
+  it('mantém controles acessíveis e instruções com quebra de linha em telefone, tablet e desktop', () => {
+    expect(css).toContain('.chromeExtensionActions { display: flex; flex-wrap: wrap;');
+    expect(css).toContain('.chromeExtensionActions > *, .chromeExtensionSetting { min-height: 44px; max-width: 100%; white-space: normal; }');
+    expect(css).toContain('@media (max-width: 767px)');
+    expect(source).toContain('Como instalar ou atualizar');
+    expect(source).toContain('Imagens não são interpretadas neste modo.');
+    expect(source).toContain('Canais/newsletters e mídias sem texto útil não entram no resumo.');
+    expect(source).toContain('Exportar para comparar IAs');
+    expect(css).toContain('.comparisonExportActions { flex-direction: column; align-items: stretch; }');
+    expect(css).toContain('.comparisonExportActions > button { min-height: 44px; max-width: 100%; white-space: normal; }');
+    expect(css).toContain('.chromeExtensionProgress::before');
+    expect(css).toContain('.chromeExtensionSwitchTrack');
+    expect(css).toContain('.chromeExtensionWarningHeader');
+    expect(css).toContain('border-left: 3px solid var(--accent-purple);');
+    expect(css).toContain('border-left: 4px solid #f59e0b;');
+    expect(source).toContain('selectChromeInstructionActions');
+    expect(source).toContain('resolveLoadingVisualSteps');
+    expect(source).toContain('whatsappSummaryLoadingSteps');
+    expect(css).toContain('.whatsappSummaryLoadingSteps');
+    expect(css).toContain('.whatsappSummaryLoadingStep.is-active .whatsappSummaryLoadingStepDot::before');
+    expect(css).toContain('@keyframes whatsappSummaryStepSpin');
+    expect(source).toContain('PendingReviewModal');
+    expect(css).toContain('.pendingReviewDialog');
+    expect(css).toContain('.chatSelectionDialog');
+    expect(css).toContain('@media (max-width: 520px)');
+    expect(source).toContain('isChromeIntegration && chromeFlow.progress ? chromeFlow.progress : loadingSteps[loadingStep]');
+  });
+});

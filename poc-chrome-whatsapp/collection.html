@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'none'; media-src data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PoC WhatsApp Web — Mônada</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #131a2e;
+      --panel-2: #19233d;
+      --border: #293657;
+      --text: #eef2ff;
+      --muted: #9aa7c7;
+      --accent: #7c5cff;
+      --ok: #10b981;
+      --warn: #f59e0b;
+      --err: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      width: 100%;
+      max-width: 760px;
+      margin: 0 auto;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      font-size: 0.85rem;
+    }
+    h1 { margin: 0; font-size: 1rem; }
+    .sub { color: var(--muted); font-size: 0.76rem; margin: 0.15rem 0 0; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+    label.field { display: flex; flex-direction: column; gap: 0.25rem; font-weight: 600; font-size: 0.8rem; }
+    select, input[type="text"] {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 0.45rem 0.6rem;
+      font-size: 0.82rem;
+    }
+    .check {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .check input { margin-top: 0.15rem; }
+    .hint { color: var(--muted); font-size: 0.74rem; line-height: 1.35; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    button {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.55rem 0.7rem;
+      font-weight: 600;
+      font-size: 0.82rem;
+      cursor: pointer;
+      color: var(--text);
+      background: var(--panel-2);
+    }
+    button { min-height: 44px; }
+    @media (max-width: 420px) { .actions { grid-template-columns: 1fr; } }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .status {
+      padding: 0.6rem 0.7rem;
+      border-radius: 8px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      font-size: 0.78rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .status.ok { border-color: rgba(16, 185, 129, 0.5); color: #a7f3d0; }
+    .status.err { border-color: rgba(239, 68, 68, 0.5); color: #fca5a5; }
+    .rounds-pill {
+      display: flex;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      font-size: 0.72rem;
+    }
+    .pill {
+      padding: 0.18rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--muted);
+    }
+    .pill.saved { border-color: rgba(16, 185, 129, 0.5); color: #6ee7b7; }
+  </style>
+</head>
+<body>
+  <div>
+    <h1>PoC WhatsApp Web <span id="extensionVersion"></span></h1>
+    <p class="sub">Coleta local • downloads opcionais do WhatsApp • sem envio ao Mônada</p>
+  </div>
+
+  <div class="card">
+    <label class="field">
+      Rodada do teste
+      <select id="roundKey">
+        <option value="round1">Rodada 1 — Inicial</option>
+        <option value="round2">Rodada 2 — Após recarregar a aba</option>
+        <option value="round3">Rodada 3 — Após reiniciar o Chrome</option>
+      </select>
+    </label>
+
+    <label class="field">
+      Datas encerradas (YYYY-MM-DD, separadas por vírgula)
+      <input id="datesInput" type="text" placeholder="2026-11-18, 2026-11-17, 2026-11-12" />
+    </label>
+    <div class="hint">
+      As mesmas datas ficam salvas aqui para facilitar a repetição nas 3 rodadas.
+    </div>
+
+    <label class="check">
+      <input id="useMainWorld" type="checkbox" checked />
+      <span>
+        Usar módulos internos do WhatsApp Web (MAIN world) para descriptografar texto/mídia
+        <span class="hint" style="display:block;">Necessário porque o WhatsApp Web criptografa mensagens em msgRowOpaqueData no IndexedDB.</span>
+      </span>
+    </label>
+
+    <label class="check">
+      <input id="allowDownload" type="checkbox" checked />
+      <span>
+        Permitir download explícito dos áudios faltantes desta amostra (CDN do WhatsApp)
+        <span class="hint" style="display:block;">Desmarcado = tenta apenas o cache local do navegador.</span>
+      </span>
+    </label>
+
+    <label class="check">
+      <input id="downloadJson" type="checkbox" checked />
+      <span>Também baixar uma cópia local em .json</span>
+    </label>
+
+    <div class="actions">
+      <button id="collectBtn" type="button" class="primary">Coletar agora</button>
+      <button id="viewerBtn" type="button">Abrir Visualizador</button>
+    </div>
+  </div>
+
+  <div class="rounds-pill" id="savedRoundsPills">
+    <span class="pill" data-round="round1">R1: pendente</span>
+    <span class="pill" data-round="round2">R2: pendente</span>
+    <span class="pill" data-round="round3">R3: pendente</span>
+  </div>
+
+  <div id="statusBox" class="status" role="status" aria-live="polite">
+    Abra a aba https://web.whatsapp.com e clique em "Coletar agora".
+  </div>
+  <p class="hint">Você pode alternar abas durante a coleta. Mantenha esta aba e o WhatsApp Web abertos até concluir. Áudios recuperados ainda precisam ser transcritos; esta PoC não libera resumos.</p>
+
+  <script src="./lib/poc-core.js"></script>
+  <script src="./lib/poc-media.js"></script>
+  <script src="./lib/poc-storage.js"></script>
+  <script src="./popup.js"></script>
+</body>
+</html>

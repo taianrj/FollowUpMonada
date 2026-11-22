@@ -1,11 +1,10 @@
-import { ThinkingLevel } from '@google/genai';
+import { generateWhatsappSummary } from '@/lib/ai/whatsapp-summary';
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { AI_MODELS } from '@/lib/ai/models';
 import {
   AiProviderError,
   describeAiError,
-  generateStructuredWithGeminiFallbacks,
   getPublicAiErrorDetails,
   type PublicAiErrorDetails,
 } from '@/lib/ai/providers';
@@ -156,44 +155,16 @@ Sem pista clara, use "${validStatusIds[0]}".
 Retorne somente o objeto JSON solicitado pelo schema, com a propriedade summaries.
 `;
 
-    const generation = await generateStructuredWithGeminiFallbacks({
+    const generation = await generateWhatsappSummary({
       geminiApiKey: process.env.GEMINI_API_KEY,
-      models: [
-        { model: AI_MODELS.whatsappSummary, retries: 3 },
-        { model: AI_MODELS.whatsappSummaryFallback, retries: 1 },
-        { model: AI_MODELS.whatsappSummaryLastFallback, retries: 0 },
-      ],
       prompt,
       schema: buildWhatsappSummarySchema(validStatusIds),
-      thinkingLevel: ThinkingLevel.MEDIUM,
       validate: (value) => parseWhatsappSummaryOutput(value, validStatusIds),
-      onAttemptFailure: ({
-        model,
-        attempt,
-        maxAttempts,
-        error,
-        willRetry,
-        retryDelayMs,
-      }) => {
-        console.warn('Falha em tentativa de geração do resumo de WhatsApp.', {
-          requestId,
-          model,
-          attempt,
-          maxAttempts,
-          httpStatus: error.status,
-          willRetry,
-          retryDelayMs,
-          ...describeAiError(error),
+      onFailure: (error) => {
+        console.warn('Falha na geração do resumo de WhatsApp com Hydrogen.', {
+          requestId, model: AI_MODELS.whatsappSummary, ...describeAiError(error),
         });
-        aiAttempts.push(getPublicAiErrorDetails(error, model));
-      },
-      onModelFallback: ({ fromModel, toModel, error }) => {
-        console.warn('Trocando o modelo Gemini do resumo de WhatsApp.', {
-          requestId,
-          fromModel,
-          toModel,
-          httpStatus: error.status,
-        });
+        aiAttempts.push(getPublicAiErrorDetails(error, AI_MODELS.whatsappSummary));
       },
     });
 
@@ -293,13 +264,13 @@ Retorne somente o objeto JSON solicitado pelo schema, com a propriedade summarie
           && candidate.message === attempt.message
         )) === index
       ));
-      console.error('Falha dos modelos de IA na rota whatsapp-summary.', {
+      console.error('Falha do Gemini Hydrogen na rota whatsapp-summary.', {
         requestId,
         ...describeAiError(error),
       });
       return NextResponse.json(
         {
-          error: 'Não foi possível gerar o resumo com os modelos de IA disponíveis.',
+          error: 'Não foi possível gerar o resumo com o Gemini Hydrogen.',
           code: 'AI_PROVIDER_FAILURE',
           details: { type: 'ai_provider', attempts },
           requestId,

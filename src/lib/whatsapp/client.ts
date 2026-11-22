@@ -168,6 +168,31 @@ export function conversationSectionsToChats(sections: ConversationSection[]): Wh
   });
 }
 
+function conversationLastTimestampMs(conversation: WhatsappConversation): number {
+  let latest = 0;
+  for (const message of conversation.messages) {
+    if (!message.timestamp) continue;
+    const parsed = Date.parse(message.timestamp);
+    if (Number.isFinite(parsed) && parsed > latest) {
+      latest = parsed;
+      continue;
+    }
+    const timeMatch = message.timestamp.match(/(\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (timeMatch) {
+      const minutesScore = Number(timeMatch[1]) * 3600 + Number(timeMatch[2]) * 60 + Number(timeMatch[3] || 0);
+      if (minutesScore > latest) latest = minutesScore;
+    }
+  }
+  return latest;
+}
+
+export function sortWhatsappConversationsByRecent(conversations: WhatsappConversation[]): WhatsappConversation[] {
+  return [...conversations].sort((a, b) => (
+    conversationLastTimestampMs(b) - conversationLastTimestampMs(a) ||
+    a.displayName.localeCompare(b.displayName, 'pt-BR')
+  ));
+}
+
 export function filterWhatsappConversations(conversations: WhatsappConversation[], query: string) {
   const normalizedQuery = query.trim().toLocaleLowerCase('pt-BR');
   if (!normalizedQuery) return conversations;

@@ -70,6 +70,7 @@ export interface WhatsappSummary {
   raw_text: string;
   summary_data: {
     summaries: WhatsappClientSummary[];
+    collection_metadata?: { source: 'chrome_extension'; jobId: string; accountKey: string; pendingAudio: number; partialHistory: boolean; transcribeAudio: boolean; warnings: string[]; includedChatJids?: string[] };
   };
   created_by: string | null;
   created_at: string;

@@ -1,3 +1,4 @@
+import { getWhatsappIntegrationMode } from '@/lib/whatsapp/integration-mode';
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { buildWhatsappUpstreamUrl, getWhatsappProxyAllowedMethods } from '@/lib/whatsapp/proxy';
@@ -46,6 +47,7 @@ function getWhatsappServiceBaseUrl() {
 async function proxyWhatsappRequest(request: NextRequest, context: ProxyContext) {
   const { user, profile, error } = await getCurrentAdmin();
   if (error) return error;
+  if (getWhatsappIntegrationMode() === 'chrome_extension') return NextResponse.json({ error: 'O serviço Baileys está desativado neste modo.' }, { status: 409 });
 
   const { path } = await context.params;
   const servicePath = path.join('/');

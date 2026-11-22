@@ -6,6 +6,7 @@ import {
   isEmptyMessagesPayload,
   isGroupedWhatsappResponse,
   parseConversationDisplay,
+  sortWhatsappConversationsByRecent,
   type WhatsappConversation
 } from './client';
 
@@ -108,5 +109,23 @@ describe('cliente de conversas do WhatsApp', () => {
     expect(formatWhatsappMessageTime('[09/07/2026 08:24]')).toBe('08:24');
     expect(formatWhatsappMessageTime('invalidoT')).toBe('');
     expect(formatWhatsappMessageTime('')).toBe('');
+  });
+
+  it('ordena conversas da mais recente para a mais antiga sem mutar a lista original', () => {
+    const older: WhatsappConversation = {
+      chatKey: '1', chatJid: '1@c.us', isGroup: false, displayName: 'Antiga',
+      messages: [{ id: 'm1', sender: '1', senderName: 'Antiga', text: 'Oi', fromMe: false, timestamp: '2026-11-12T10:00:00.000Z', isForwarded: false, quotedMessageId: '', quotedMessageSender: '', quotedMessageSenderJid: '', quotedMessageText: '' }],
+    };
+    const newest: WhatsappConversation = {
+      chatKey: '2', chatJid: '2@c.us', isGroup: false, displayName: 'Recente',
+      messages: [{ id: 'm2', sender: '2', senderName: 'Recente', text: 'Oi', fromMe: false, timestamp: '2026-11-12T19:30:00.000Z', isForwarded: false, quotedMessageId: '', quotedMessageSender: '', quotedMessageSenderJid: '', quotedMessageText: '' }],
+    };
+    const middle: WhatsappConversation = {
+      chatKey: '3', chatJid: '3@g.us', isGroup: true, displayName: 'Meio',
+      messages: [{ id: 'm3', sender: '3', senderName: 'Meio', text: 'Oi', fromMe: false, timestamp: '2026-11-12T14:15:00.000Z', isForwarded: false, quotedMessageId: '', quotedMessageSender: '', quotedMessageSenderJid: '', quotedMessageText: '' }],
+    };
+    const input = [older, middle, newest];
+    expect(sortWhatsappConversationsByRecent(input).map((c) => c.displayName)).toEqual(['Recente', 'Meio', 'Antiga']);
+    expect(input.map((c) => c.displayName)).toEqual(['Antiga', 'Meio', 'Recente']);
   });
 });

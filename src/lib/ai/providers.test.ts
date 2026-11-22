@@ -42,10 +42,11 @@ const validSummaryResponse = JSON.stringify({
   }],
 });
 
+const TEST_MODELS = { primary: 'test-primary', secondary: 'test-secondary', last: 'test-last' } as const;
 const summaryModels = [
-  { model: AI_MODELS.whatsappSummary, retries: 3 },
-  { model: AI_MODELS.whatsappSummaryFallback, retries: 1 },
-  { model: AI_MODELS.whatsappSummaryLastFallback, retries: 0 },
+  { model: TEST_MODELS.primary, retries: 3 },
+  { model: TEST_MODELS.secondary, retries: 1 },
+  { model: TEST_MODELS.last, retries: 0 },
 ] as const;
 
 function summaryOptions() {
@@ -71,8 +72,8 @@ function transientError(status: 429 | 503): AiProviderError {
   return new AiProviderError('gemini', 'provider_error', `HTTP ${status}`, status);
 }
 
-describe('fallbacks Gemini do resumo de WhatsApp', () => {
-  it('usa o Gemini 3.7 na primeira tentativa com schema e validação compartilhados', async () => {
+describe('utilitário legado de retries Gemini, fora do fluxo atual de resumos', () => {
+  it('usa o modelo primário na primeira tentativa com schema e validação compartilhados', async () => {
     const generateGeminiText = vi.fn().mockResolvedValue(validSummaryResponse);
     const dependencies = summaryDependencies(generateGeminiText);
 
@@ -83,20 +84,20 @@ describe('fallbacks Gemini do resumo de WhatsApp', () => {
 
     expect(generateGeminiText).toHaveBeenCalledOnce();
     expect(generateGeminiText).toHaveBeenCalledWith(expect.objectContaining({
-      model: AI_MODELS.whatsappSummary,
+      model: TEST_MODELS.primary,
       schema: buildWhatsappSummarySchema(statuses),
       thinkingLevel: ThinkingLevel.MEDIUM,
     }));
     expect(result).toMatchObject({
       provider: 'gemini',
-      model: AI_MODELS.whatsappSummary,
+      model: TEST_MODELS.primary,
       data: { summaries: [{ client_id: null }] },
     });
     expect(dependencies.sleep).not.toHaveBeenCalled();
   });
 
   it.each([503, 429] as const)(
-    'repete o Gemini 3.7 após HTTP %s sem esperar o tempo real',
+    'repete o modelo primário após HTTP %s sem esperar o tempo real',
     async (status) => {
       const generateGeminiText = vi.fn()
         .mockRejectedValueOnce(transientError(status))
@@ -110,7 +111,7 @@ describe('fallbacks Gemini do resumo de WhatsApp', () => {
 
       expect(generateGeminiText).toHaveBeenCalledTimes(2);
       expect(dependencies.sleep).toHaveBeenCalledWith(1_000);
-      expect(result.model).toBe(AI_MODELS.whatsappSummary);
+      expect(result.model).toBe(TEST_MODELS.primary);
     },
   );
 
@@ -132,7 +133,7 @@ describe('fallbacks Gemini do resumo de WhatsApp', () => {
     expect(dependencies.sleep).not.toHaveBeenCalled();
   });
 
-  it('troca do 3.7 para o 3.6 após os retries transitórios', async () => {
+  it('troca do primário para o secundário após os retries transitórios', async () => {
     const generateGeminiText = vi.fn()
       .mockRejectedValueOnce(transientError(503))
       .mockRejectedValueOnce(transientError(503))
@@ -149,15 +150,15 @@ describe('fallbacks Gemini do resumo de WhatsApp', () => {
     );
 
     expect(generateGeminiText.mock.calls.map(([options]) => options.model)).toEqual([
-      AI_MODELS.whatsappSummary,
-      AI_MODELS.whatsappSummary,
-      AI_MODELS.whatsappSummary,
-      AI_MODELS.whatsappSummary,
-      AI_MODELS.whatsappSummaryFallback,
+      TEST_MODELS.primary,
+      TEST_MODELS.primary,
+      TEST_MODELS.primary,
+      TEST_MODELS.primary,
+      TEST_MODELS.secondary,
     ]);
     expect(dependencies.sleep.mock.calls).toEqual([[1_000], [2_000], [4_000]]);
     expect(onAttemptFailure).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: AI_MODELS.whatsappSummary,
+      model: TEST_MODELS.primary,
       attempt: 1,
       maxAttempts: 4,
       willRetry: true,
@@ -165,14 +166,14 @@ describe('fallbacks Gemini do resumo de WhatsApp', () => {
       error: expect.objectContaining({ status: 503 }),
     }));
     expect(onModelFallback).toHaveBeenCalledWith(expect.objectContaining({
-      fromModel: AI_MODELS.whatsappSummary,
-      toModel: AI_MODELS.whatsappSummaryFallback,
+      fromModel: TEST_MODELS.primary,
+      toModel: TEST_MODELS.secondary,
       error: expect.objectContaining({ status: 503 }),
     }));
-    expect(result.model).toBe(AI_MODELS.whatsappSummaryFallback);
+    expect(result.model).toBe(TEST_MODELS.secondary);
   });
 
-  it('faz um retry no 3.6 quando ele recebe erro transitório', async () => {
+  it('faz um retry no secundário quando ele recebe erro transitório', async () => {
     const generateGeminiText = vi.fn()
       .mockRejectedValueOnce(transientError(503))
       .mockRejectedValueOnce(transientError(503))
@@ -189,10 +190,10 @@ describe('fallbacks Gemini do resumo de WhatsApp', () => {
 
     expect(dependencies.sleep.mock.calls).toEqual([[1_000], [2_000], [4_000], [1_000]]);
     expect(generateGeminiText).toHaveBeenCalledTimes(6);
-    expect(result.model).toBe(AI_MODELS.whatsappSummaryFallback);
+    expect(result.model).toBe(TEST_MODELS.secondary);
   });
 
-  it('usa o 3.5 uma única vez depois que 3.7 e 3.6 esgotam suas tentativas', async () => {
+  it('usa o último uma única vez depois que primário e secundário esgotam suas tentativas', async () => {
     const generateGeminiText = vi.fn()
       .mockRejectedValueOnce(transientError(503))
       .mockRejectedValueOnce(transientError(503))
@@ -209,10 +210,10 @@ describe('fallbacks Gemini do resumo de WhatsApp', () => {
     );
 
     expect(generateGeminiText).toHaveBeenLastCalledWith(expect.objectContaining({
-      model: AI_MODELS.whatsappSummaryLastFallback,
+      model: TEST_MODELS.last,
       schema: buildWhatsappSummarySchema(statuses),
     }));
-    expect(result.model).toBe(AI_MODELS.whatsappSummaryLastFallback);
+    expect(result.model).toBe(TEST_MODELS.last);
     expect(result.data.summaries[0].suggested_tasks[0].status).toBe(statuses[0]);
   });
 

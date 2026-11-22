@@ -4,6 +4,12 @@ import { readReadyWhatsappMessages } from './ready-messages';
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('leitura de mensagens prontas no servidor', () => {
+  it('nunca consulta o serviço antigo quando o seletor está na extensão', async () => {
+    vi.stubEnv('WHATSAPP_INTEGRATION_MODE', 'chrome_extension');
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+    expect((await readReadyWhatsappMessages('trusted-user', '2026-11-18')).ok).toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it('assina a identidade confiável e exige a validação do dia no serviço', async () => {
     vi.stubEnv('WHATSAPP_SERVICE_URL', 'https://service.example');
     vi.stubEnv('WHATSAPP_SERVICE_SECRET', 'test-secret-with-more-than-thirty-two-characters');

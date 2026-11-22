@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FollowUp Mônada — Coletando conversas</title>
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-secondary: #131826;
+      --border-color: #242d44;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --accent-purple: #a855f7;
+      --accent-blue: #3b82f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at top, rgba(168, 85, 247, 0.12), transparent 55%), var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.5;
+    }
+    main {
+      width: min(100%, 540px);
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-top: 3px solid var(--accent-purple);
+      border-radius: 16px;
+      padding: 1.75rem 1.5rem;
+      box-shadow: 0 20px 45px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .spinner {
+      width: 24px;
+      height: 24px;
+      flex-shrink: 0;
+      border: 3px solid rgba(168, 85, 247, 0.2);
+      border-top-color: var(--accent-purple);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .subtitle {
+      margin: 0.15rem 0 0;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+    #status {
+      margin: 0;
+      padding: 0.9rem 1rem;
+      border-radius: 10px;
+      background: rgba(168, 85, 247, 0.08);
+      border: 1px solid rgba(168, 85, 247, 0.25);
+      color: var(--text-primary);
+      font-size: 0.9rem;
+      overflow-wrap: anywhere;
+    }
+    .footnote {
+      margin: 0;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+    }
+    button { min-height: 44px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="header">
+      <div class="spinner" aria-hidden="true"></div>
+      <div>
+        <h1>Coletando conversas para o Mônada</h1>
+        <p class="subtitle">Integração local via Chrome</p>
+      </div>
+    </div>
+    <p id="status" role="status" aria-live="polite">Mantenha esta aba e o WhatsApp Web abertos. Você pode continuar usando o Mônada.</p>
+    <p class="footnote">Esta aba fecha automaticamente assim que a coleta terminar.</p>
+  </main>
+  <script type="module" src="runner.mjs"></script>
+</body>
+</html>

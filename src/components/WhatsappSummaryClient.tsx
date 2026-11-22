@@ -13,6 +13,7 @@ import {
   formatWhatsappMessageTime,
   isGroupedWhatsappResponse,
   parseConversationDisplay,
+  sortWhatsappConversationsByRecent,
   type WhatsappConversation
 } from '@/lib/whatsapp/client';
 import {
@@ -42,6 +43,15 @@ import {
 } from '@/lib/whatsapp/summary-calendar';
 import { playSummaryCompletionSound } from '@/lib/summary-completion-sound';
 import { resolveClientForSuggestedTask } from '@/lib/clients/resolve-client';
+import { useChromeWhatsapp, extensionConversations } from './useChromeWhatsapp';
+import { PendingReviewModal } from './PendingReviewModal';
+import { ChatSelectionModal } from './ChatSelectionModal';
+import type { PendingReviewData } from '@/lib/whatsapp-extension/pending-review';
+import type { ChatSelectionRequest, ChatSelectionResult } from '@/lib/whatsapp-extension/chat-selection';
+import { buildComparisonExport } from '@/lib/whatsapp-extension/comparison-export';
+import { selectChromeInstructionActions } from '@/lib/whatsapp-extension/instruction-actions';
+import { resolveLoadingVisualSteps } from '@/lib/whatsapp/loading-steps';
+import type { WhatsappIntegrationMode } from '@/lib/whatsapp/integration-mode';
 import './Dashboard.css'; // Reutiliza estilos globais de layout e botões
 
 function MessageBody({ text }: { text: string }) {
@@ -117,6 +127,8 @@ interface CollaboratorOption {
 
 interface WhatsappSummaryClientProps {
   initialDate: string;
+  integrationMode?: WhatsappIntegrationMode;
+  localExtension?: boolean;
   profile: Profile | null;
   initialClients: Client[];
   initialStatuses: Status[];
@@ -126,12 +138,15 @@ interface WhatsappSummaryClientProps {
 
 export default function WhatsappSummaryClient({
   initialDate,
+  integrationMode = 'baileys',
+  localExtension = false,
   profile,
   initialClients,
   initialStatuses,
   initialSummaries,
   initialSummaryDates,
 }: WhatsappSummaryClientProps) {
+  const isChromeIntegration = integrationMode === 'chrome_extension';
   const router = useRouter();
   const { showToast } = useNotification();
   const supabase = useMemo(() => createClient(), []);
@@ -172,6 +187,50 @@ export default function WhatsappSummaryClient({
     });
   };
 
+  const [pendingReviewModal, setPendingReviewModal] = useState<{
+    review: PendingReviewData;
+    onConfirm: () => void;
+    onCancel: () => void;
+  } | null>(null);
+
+  const showPendingReviewModal = (review: PendingReviewData): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setPendingReviewModal({
+        review,
+        onConfirm: () => {
+          setPendingReviewModal(null);
+          resolve(true);
+        },
+        onCancel: () => {
+          setPendingReviewModal(null);
+          resolve(false);
+        },
+      });
+    });
+  };
+
+  const [chatSelectionModal, setChatSelectionModal] = useState<{
+    request: ChatSelectionRequest;
+    onConfirm: (result: ChatSelectionResult) => void;
+    onCancel: () => void;
+  } | null>(null);
+
+  const showChatSelectionModal = (request: ChatSelectionRequest): Promise<ChatSelectionResult | null> => {
+    return new Promise((resolve) => {
+      setChatSelectionModal({
+        request,
+        onConfirm: (result) => {
+          setChatSelectionModal(null);
+          resolve(result);
+        },
+        onCancel: () => {
+          setChatSelectionModal(null);
+          resolve(null);
+        },
+      });
+    });
+  };
+
   // Estados de dados
   const [clients, setClients] = useState<Client[]>(initialClients);
   const [statuses] = useState<Status[]>(initialStatuses);
@@ -184,6 +243,8 @@ export default function WhatsappSummaryClient({
     () => createInitialSummaryState(initialSummaries, initialDate)
   );
   const [summaryDate, setSummaryDate] = useState(initialSelection.date);
+  const selectedDateRef = useRef(summaryDate);
+  useEffect(() => { selectedDateRef.current = summaryDate; }, [summaryDate]);
   const [calendarMonth, setCalendarMonth] = useState(initialSelection.calendarMonth);
   const saveToDb = true;
   
@@ -267,6 +328,28 @@ export default function WhatsappSummaryClient({
   const [autoSummaryEnabled, setAutoSummaryEnabled] = useState(false);
   const [autoSummaryDate, setAutoSummaryDate] = useState('');
   const [transcribeAudioFlag, setTranscribeAudioFlag] = useState(profile?.transcribe_audio !== false);
+  const chromeFlow = useChromeWhatsapp(isChromeIntegration, profile?.id || '', transcribeAudioFlag, showCustomConfirm, showPendingReviewModal, showChatSelectionModal);
+  const chromeInstructionActions = useMemo(
+    () => (isChromeIntegration
+      ? selectChromeInstructionActions({
+          instruction: chromeFlow.instruction,
+          available: chromeFlow.available,
+          installUrl: chromeFlow.installUrl,
+          jobState: chromeFlow.jobState,
+          hasPendingAudio: chromeFlow.hasPendingAudio,
+        })
+      : null),
+    [isChromeIntegration, chromeFlow.instruction, chromeFlow.available, chromeFlow.installUrl, chromeFlow.jobState, chromeFlow.hasPendingAudio]
+  );
+  const chromeCollectionWarnings = activeSummary?.summary_data.collection_metadata?.warnings ?? [];
+  const loadingVisualSteps = useMemo(
+    () => resolveLoadingVisualSteps({
+      isChromeIntegration,
+      chromeProgress: chromeFlow.progress,
+      loadingStep,
+    }),
+    [isChromeIntegration, chromeFlow.progress, loadingStep]
+  );
   const [interpretImagesFlag, setInterpretImagesFlag] = useState(!!profile?.interpret_images);
   const [transcriptionRunning, setTranscriptionRunning] = useState(false);
   const [transcriptionQueueLength, setTranscriptionQueueLength] = useState(0);
@@ -410,6 +493,11 @@ export default function WhatsappSummaryClient({
   // Atualiza as configurações de processamento de mídias do usuário no banco e no microsserviço
   const handleToggleSetting = async (key: 'transcribeAudio' | 'interpretImages', val: boolean) => {
     if (!profile?.id) return;
+    if (isChromeIntegration) {
+      if (key !== 'transcribeAudio') return;
+      try { await chromeFlow.updateTranscription(val); setTranscribeAudioFlag(val); showToast('Opção de transcrição atualizada.', 'success'); } catch (err) { showToast(getErrorMessage(err), 'error'); }
+      return;
+    }
     
     if (val && whatsappStatus === 'connected') {
       let confirmMsg = '';
@@ -591,7 +679,7 @@ export default function WhatsappSummaryClient({
   const checkConnectionStatusEffect = useEffectEvent(checkConnectionStatus);
 
   useEffect(() => {
-    if (!apiToken) return;
+    if (!apiToken || isChromeIntegration) return;
 
     const initialCheck = window.setTimeout(() => void checkConnectionStatusEffect(), 0);
     const interval = setInterval(() => {
@@ -602,7 +690,7 @@ export default function WhatsappSummaryClient({
       window.clearTimeout(initialCheck);
       clearInterval(interval);
     };
-  }, [apiToken, isCheckingStatus, whatsappSyncStatus, summaryDate, autoSummaryDate, autoSummaryEnabled, selectedDayIsReady]);
+  }, [apiToken, isChromeIntegration, isCheckingStatus, whatsappSyncStatus, summaryDate, autoSummaryDate, autoSummaryEnabled, selectedDayIsReady]);
 
   const handleManualResync = async (mode: 'soft' | 'force-history') => {
     if (!apiToken) return;
@@ -770,6 +858,18 @@ export default function WhatsappSummaryClient({
   }, [isQrModalOpen, apiToken]);
 
   // Função para abrir o modal de conversas coletadas
+  const handleExportComparison = async () => {
+    try {
+      const job = await chromeFlow.exportDay(summaryDate);
+      const data = buildComparisonExport(job, initialClients, initialStatuses);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+      const link = document.createElement('a'); link.href = url; link.download = `monada-comparacao-${summaryDate}.json`;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast('Arquivo exportado. Ele contém conversas e transcrições: guarde-o em uma pasta privada.', 'success');
+    } catch (error) { showToast(getErrorMessage(error), 'error'); }
+  };
+
   const handleOpenMessagesModal = async () => {
     setIsMessagesModalOpen(true);
     setIsLoadingModalMessages(true);
@@ -779,6 +879,22 @@ export default function WhatsappSummaryClient({
     setSearchQuery('');
 
     try {
+      if (isChromeIntegration) {
+        const conversations = extensionConversations(await chromeFlow.conversations(summaryDate));
+        setChatConversations(conversations); setSelectedChatKey(conversations[0]?.chatKey || null);
+        setModalMessagesText(conversations.length ? '' : 'Nenhuma conversa disponível no WhatsApp Web para esta conta e data.');
+        return;
+      }
+      if (!integrationConnected || whatsappStatus !== 'connected') {
+        const saved = summaries.find(item => item.summary_date === summaryDate);
+        if (saved?.raw_text) {
+          const parsed = parseConversationDisplay(saved.raw_text);
+          const conversations = conversationSectionsToChats(parsed.sections);
+          setChatConversations(conversations); setSelectedChatKey(conversations[0]?.chatKey || null);
+          setModalMessagesText(conversations.length ? '' : saved.raw_text);
+          return;
+        }
+      }
       const response = await fetchWhatsappMessages(summaryDate, 'json_grouped');
       
       if (response.ok) {
@@ -848,6 +964,25 @@ export default function WhatsappSummaryClient({
 
   // Busca mensagens e gera o resumo com IA em um único clique
   const handleSyncAndGenerateSummary = async (customDate?: string) => {
+    if (isChromeIntegration) {
+      if (summaryRequestInFlightRef.current) return;
+      summaryRequestInFlightRef.current = true; setIsLoading(true); setSummaryError(null);
+      try {
+        const targetDate = customDate || summaryDate;
+        const existingForDate = summaries.find(item => item.summary_date === targetDate) || (activeSummary?.summary_date === targetDate ? activeSummary : null);
+        const summary = await chromeFlow.generate(targetDate, {
+          existingIncludedChatJids: existingForDate?.summary_data.collection_metadata?.includedChatJids || [],
+          hasExistingSummary: Boolean(existingForDate),
+        });
+        if (summary) {
+          setSummaries(previous => [summary, ...previous.filter(item => item.summary_date !== summary.summary_date)]);
+          setSummaryDateCatalog(previous => previous.includes(summary.summary_date) ? previous : [...previous, summary.summary_date]);
+          if (selectedDateRef.current === summary.summary_date) setActiveSummary(summary); showToast('Resumo gerado e salvo.', 'success');
+        }
+      } catch (err) { showToast(getErrorMessage(err), 'error'); }
+      finally { summaryRequestInFlightRef.current = false; setIsLoading(false); }
+      return;
+    }
     if (summaryRequestInFlightRef.current) return;
     if (!apiToken) {
       showToast('Informe a sua Chave de Segurança nas configurações abaixo para continuar.', 'warning');
@@ -1104,6 +1239,7 @@ export default function WhatsappSummaryClient({
     clientSummary: WhatsappClientSummary,
     taskIndex: number
   ) => {
+    if (localExtension) { showToast('Teste local: criação de clientes e demandas está desativada para preservar o banco remoto.', 'warning'); return; }
     const taskKey = `${clientSummary.client_name}-${taskIndex}`;
     if (createdTasksKeys[taskKey]) {
       showToast('Esta demanda já foi criada nesta sessão.', 'info');
@@ -1155,7 +1291,7 @@ export default function WhatsappSummaryClient({
         });
         setActiveSummary({
           ...activeSummary,
-          summary_data: { summaries: updatedSummaries }
+          summary_data: { ...activeSummary.summary_data, summaries: updatedSummaries }
         });
       }
 
@@ -1197,6 +1333,7 @@ export default function WhatsappSummaryClient({
   // Grava de fato a demanda no banco após o usuário revisar/editar no modal
   const handleSaveSuggestedTask = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (localExtension) { showToast('Teste local: esta ação não altera o banco remoto.', 'warning'); return; }
     if (!pendingTaskInfo) return;
 
     if (!modalClientId) {
@@ -1262,6 +1399,7 @@ export default function WhatsappSummaryClient({
 
   // Deleta um resumo salvo no banco de dados (Apenas Admin)
   const handleDeleteSummary = async (summaryId: string, e?: React.MouseEvent) => {
+    if (localExtension) { showToast('Teste local: esta ação não altera o banco remoto.', 'warning'); return; }
     e?.stopPropagation();
 
     if (profile?.role !== 'admin') {
@@ -1426,6 +1564,21 @@ export default function WhatsappSummaryClient({
           </div>
 
           <div className="whatsappSummaryCalendarActions">
+            {isChromeIntegration && <>
+              <button type="button" className="btn btnPrimary" onClick={() => handleSyncAndGenerateSummary()} disabled={isLoading || chromeFlow.busy}>{isLoading ? '⚙️ Processando...' : '⚡ Gerar Resumo'}</button>
+              <button type="button" className="btn btnSecondary" onClick={handleOpenMessagesModal} disabled={isLoading}>👁️ Consultar Conversas</button>
+              <label className="chromeExtensionSetting">
+                <span className="chromeExtensionSettingLabel">Transcrever áudios</span>
+                <span className="chromeExtensionSwitch">
+                  <input type="checkbox" checked={chromeFlow.savedTranscribeAudio ?? transcribeAudioFlag} disabled={isLoading || chromeFlow.busy} onChange={event => void handleToggleSetting('transcribeAudio', event.target.checked)} />
+                  <span className="chromeExtensionSwitchTrack" aria-hidden="true" />
+                </span>
+              </label>
+              <details className="chromeExtensionHint"><summary>Dados neste computador</summary><p>Conversas e transcrições ficam na extensão por até 30 dias da coleta. Áudios pendentes ficam por até 7 dias. Mantenha o Chrome e uma aba do Mônada abertos para processar; a retomada ocorre neste computador.</p><button type="button" className="btn btnSecondary" disabled={chromeFlow.busy} onClick={() => void chromeFlow.forget().catch(error => showToast(getErrorMessage(error), 'error'))}>Apagar conversas deste computador</button></details>
+              <span className="chromeExtensionHint">Imagens não são interpretadas neste modo. Canais/newsletters e mídias sem texto útil não entram no resumo.{localExtension && ' Teste local: novos resumos ficam apenas neste computador.'}</span>
+            </>}
+            {!isChromeIntegration && <>
+
             <button
               type="button"
               className="btn btnPrimary"
@@ -1439,7 +1592,8 @@ export default function WhatsappSummaryClient({
               type="button"
               className="btn btnSecondary"
               onClick={handleOpenMessagesModal}
-              disabled={isMessagesActionDisabled || isLoading || !apiToken}
+              disabled={isLoading || !apiToken}
+              title={isMessagesActionDisabled ? 'Consultar conversas já armazenadas' : 'Consultar conversas'}
             >
               👁️ Consultar Conversas
             </button>
@@ -1449,6 +1603,8 @@ export default function WhatsappSummaryClient({
                 ? `${dayReadiness.reason} Mensagens: ${dayReadiness.messages}. Áudios transcritos: ${dayReadiness.audioTranscribed}/${dayReadiness.audioTotal}.`
                 : 'Verificando o histórico e os áudios desta data...'}
             </p>
+
+            </>}
 
             {profile?.role === 'admin' && selectedDateSummary && (
               <button
@@ -1464,6 +1620,35 @@ export default function WhatsappSummaryClient({
 
         {/* Área de Trabalho Principal */}
         <section className="custom-scroll whatsappSummaryWorkspace">
+          {isChromeIntegration ? <>
+            {chromeFlow.instruction && chromeInstructionActions && <div className="chromeExtensionInstructions" role="status" aria-live="polite">
+              <p>{chromeFlow.instruction}</p>
+              <div className="chromeExtensionActions">
+                {chromeInstructionActions.showInstall && chromeFlow.installUrl && <a className="btn btnPrimary" href={chromeFlow.installUrl} target="_blank" rel="noopener noreferrer">Instalar / atualizar extensão</a>}
+                {chromeInstructionActions.showOpenWhatsapp && <a className="btn btnPrimary" href="https://web.whatsapp.com" target="_blank" rel="noopener noreferrer">Abrir WhatsApp Web</a>}
+                {chromeInstructionActions.showRestart && <button type="button" className="btn btnPrimary" onClick={() => void chromeFlow.restart().catch(error => showToast(getErrorMessage(error), 'error'))}>Reiniciar coleta interrompida</button>}
+                {chromeInstructionActions.showRetry && <button type="button" className="btn btnPrimary" onClick={() => void chromeFlow.retry().catch(error => showToast(getErrorMessage(error), 'error'))}>Tentar novamente as transcrições</button>}
+                {chromeInstructionActions.showRecheck && <button type="button" className="btn btnSecondary" onClick={() => void chromeFlow.check()}>Verificar novamente</button>}
+              </div>
+              {chromeInstructionActions.showInstallHelp && <details><summary>Como instalar ou atualizar</summary><p>Abra o link da extensão e clique em “Usar no Chrome”. Se já estiver instalada, abra “Gerenciar extensões” no Chrome e verifique se está ativada e atualizada. Depois volte aqui e clique em “Verificar novamente”.</p>{!chromeFlow.installUrl && <p>A extensão ainda não está publicada. Solicite ao administrador o pacote de teste e as instruções de instalação.</p>}</details>}
+            </div>}
+            {chromeFlow.progress && !isLoading && <p className="chromeExtensionProgress" role="status" aria-live="polite">{chromeFlow.progress}</p>}
+            {!isLoading && chromeCollectionWarnings.length > 0 && (
+              <div className="chromeExtensionWarning" role="note">
+                <div className="chromeExtensionWarningHeader">
+                  <span aria-hidden="true">⚠️</span>
+                  <strong>{chromeCollectionWarnings.length === 1 ? 'Aviso da coleta' : `Avisos da coleta (${chromeCollectionWarnings.length})`}</strong>
+                </div>
+                {chromeCollectionWarnings.length === 1 ? (
+                  <p>{chromeCollectionWarnings[0]}</p>
+                ) : (
+                  <ul>
+                    {chromeCollectionWarnings.map(warning => <li key={warning}>{warning}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
+          </> : <>
           {/* Painel de Status Único e Compacto (Celular) */}
           {isCheckingStatus ? (
             <div className={whatsappStatusPanelClass} style={{
@@ -1691,11 +1876,13 @@ export default function WhatsappSummaryClient({
             </div>
           )}
 
+          </>}
+
           {/* Configurações de processamento movidas para o modal acessível via engrenagem */}
 
-          {/* Estado de Carregamento Premium com Skeleton */}
+          {/* Estado de carregamento com indicador compacto */}
           {isLoading && (
-            <div className="whatsappSummaryLoadingCard" style={{
+            <div className="whatsappSummaryLoadingCard" role="status" aria-live="polite" style={{
               backgroundColor: 'var(--bg-secondary)',
               borderRadius: 'var(--radius-lg)',
               border: '1px solid var(--border-color)',
@@ -1705,7 +1892,6 @@ export default function WhatsappSummaryClient({
               alignItems: 'center',
               justifyContent: 'center',
               gap: '1.5rem',
-              minHeight: '300px',
               animation: 'fadeIn 0.3s ease-out'
             }}>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -1713,19 +1899,30 @@ export default function WhatsappSummaryClient({
                 <span className="dot" style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: 'var(--accent-blue)', animation: 'bounce 1.4s infinite ease-in-out both 0.2s' }} style-delayed="true" />
                 <span className="dot" style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#10b981', animation: 'bounce 1.4s infinite ease-in-out both 0.4s' }} />
               </div>
-              <div style={{ textAlign: 'center' }}>
-                <h4 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
-                  {loadingSteps[loadingStep]}
+              <div style={{ textAlign: 'center', maxWidth: '520px' }}>
+                <h4 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.35rem', overflowWrap: 'anywhere' }}>
+                  {isChromeIntegration && chromeFlow.progress ? chromeFlow.progress : loadingSteps[loadingStep]}
                 </h4>
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                  Aguarde enquanto a inteligência artificial analisa e agrupa os dados por cliente.
+                  {isChromeIntegration
+                    ? 'Mantenha o Chrome e uma aba do WhatsApp Web abertos enquanto coletamos, transcrevemos e geramos o resumo.'
+                    : 'Aguarde enquanto a inteligência artificial analisa e agrupa os dados por cliente.'}
                 </p>
               </div>
-              {/* Skeleton Cards simulando a estrutura que virá */}
-              <div className="whatsappSummarySkeletonGrid">
-                <div style={{ height: '140px', backgroundColor: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }} />
-                <div style={{ height: '140px', backgroundColor: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }} />
-              </div>
+              <ol className="whatsappSummaryLoadingSteps" aria-label="Etapas do processamento">
+                {loadingVisualSteps.map((step, index) => (
+                  <li
+                    key={step.id}
+                    className={`whatsappSummaryLoadingStep is-${step.status}`}
+                    aria-current={step.status === 'active' ? 'step' : undefined}
+                  >
+                    <span className="whatsappSummaryLoadingStepDot" aria-hidden="true">
+                      {step.status === 'done' ? '✓' : index + 1}
+                    </span>
+                    <span className="whatsappSummaryLoadingStepLabel">{step.label}</span>
+                  </li>
+                ))}
+              </ol>
             </div>
           )}
 
@@ -2872,7 +3069,7 @@ export default function WhatsappSummaryClient({
                 </div>
               ) : (
                 (() => {
-                  const filteredChats = filterWhatsappConversations(chatConversations, searchQuery);
+                  const filteredChats = sortWhatsappConversationsByRecent(filterWhatsappConversations(chatConversations, searchQuery));
                   const activeChat = chatConversations.find(chat => chat.chatKey === selectedChatKey);
 
                   return (
@@ -3013,7 +3210,8 @@ export default function WhatsappSummaryClient({
               )}
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+            <div className="comparisonExportActions">
+              {isChromeIntegration && <button type="button" className="btn btnSecondary" disabled={isLoadingModalMessages || chromeFlow.busy || !chatConversations.length} onClick={() => void handleExportComparison()} title="Exporta todas as conversas e transcrições salvas da data, sem aplicar o filtro de busca. O arquivo contém dados pessoais.">Exportar para comparar IAs</button>}
               <button
                 type="button"
                 className="btn btnSecondary"
@@ -3592,6 +3790,22 @@ export default function WhatsappSummaryClient({
           to { opacity: 1; transform: translateY(0); }
         }
       `}</style>
+      {chatSelectionModal && (
+        <ChatSelectionModal
+          request={chatSelectionModal.request}
+          onConfirm={chatSelectionModal.onConfirm}
+          onCancel={chatSelectionModal.onCancel}
+        />
+      )}
+      {pendingReviewModal && (
+        <PendingReviewModal
+          review={pendingReviewModal.review}
+          onReadAudio={chromeFlow.readPendingAudio}
+          onToggleIgnoreAudio={chromeFlow.setAudioIgnored}
+          onConfirm={pendingReviewModal.onConfirm}
+          onCancel={pendingReviewModal.onCancel}
+        />
+      )}
       {/* Modal de Confirmação Personalizado */}
       {confirmModal.isOpen && (
         <div style={{

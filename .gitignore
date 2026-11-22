@@ -44,3 +44,11 @@ next-env.d.ts
 # WhatsApp Local Data
 /whatsapp-service/data/
 /.migration-data/
+
+# Isolated Chrome integration runtime and generated extension package
+/.extension-data/
+/chrome-extension/dist/
+/chrome-extension/store/
+/chrome-extension/*.zip
+/workers/whatsapp-extension/.wrangler/
+/tools/summary-comparison/__pycache__/

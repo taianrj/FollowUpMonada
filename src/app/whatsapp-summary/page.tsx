@@ -1,4 +1,6 @@
 import React from 'react';
+import { isLocalExtension, localExtensionSummaries } from '@/lib/whatsapp-extension/server';
+import { getWhatsappIntegrationMode } from '@/lib/whatsapp/integration-mode';
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import WhatsappSummaryClient from '@/components/WhatsappSummaryClient';
@@ -75,9 +77,20 @@ export default async function WhatsappSummaryPage() {
     console.warn('Tabela whatsapp_summaries ainda não foi criada no banco de dados.', err);
   }
 
+  const integrationMode = getWhatsappIntegrationMode();
+  const localExtension = integrationMode === 'chrome_extension' && isLocalExtension();
+  if (localExtension) {
+    const localSummaries = await localExtensionSummaries(user.id);
+    initialSummaries = [...localSummaries, ...initialSummaries.filter(s => !localSummaries.some(local => local.summary_date === s.summary_date))];
+    initialSummaryDates = [...new Set([...initialSummaryDates, ...localSummaries.map(s => s.summary_date)])];
+
+  }
+
   return (
     <WhatsappSummaryClient
       initialDate={getSaoPauloDateString()}
+      integrationMode={integrationMode}
+      localExtension={localExtension}
       profile={profile}
       initialClients={(clients || []) as Client[]}
       initialStatuses={(statuses || []) as Status[]}
