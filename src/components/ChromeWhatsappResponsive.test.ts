@@ -19,7 +19,7 @@ describe('interface da integração Chrome preserva o fluxo Baileys', () => {
     expect(css).toContain('.chromeExtensionActions > *, .chromeExtensionSetting { min-height: 44px; max-width: 100%; white-space: normal; }');
     expect(css).toContain('@media (max-width: 767px)');
     expect(source).toContain('Como instalar ou atualizar');
-    expect(source).toContain('Imagens não são interpretadas neste modo.');
+    expect(source).not.toContain('Imagens não são interpretadas');
     expect(source).toContain('Canais/newsletters e mídias sem texto útil não entram no resumo.');
     expect(source).toContain('Exportar para comparar IAs');
     expect(css).toContain('.comparisonExportActions { flex-direction: column; align-items: stretch; }');

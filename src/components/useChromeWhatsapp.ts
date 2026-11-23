@@ -117,7 +117,7 @@ export function useChromeWhatsapp(enabled: boolean, userId: string, initialTrans
       const ping = await rawSendToExtension<ExtensionPing>(config.extensionId, { action: 'ping', userId });
       if (!versionCompatible(ping.version, config.minimumVersion) || !ping.accountId) throw new Error(ping.instruction || 'Atualize a extensão ou conecte o WhatsApp Web.');
       if (status.binding?.accountId !== ping.accountId) {
-        if (!await confirmRef.current(status.binding ? 'A conta do WhatsApp mudou' : 'Vincular WhatsApp ao Mônada?', `Vincular a conta ${ping.accountId.split('@')[0]} ao seu usuário? As conversas das datas escolhidas serão enviadas ao Mônada e aos provedores de IA para resumo e transcrição quando habilitada. Imagens não serão analisadas. O histórico de outras contas será preservado separadamente.`)) return null;
+        if (!await confirmRef.current(status.binding ? 'A conta do WhatsApp mudou' : 'Vincular WhatsApp ao Mônada?', `Vincular a conta ${ping.accountId.split('@')[0]} ao seu usuário? As conversas das datas escolhidas serão enviadas ao Mônada e aos provedores de IA para resumo e transcrição quando habilitada. O histórico de outras contas será preservado separadamente.`)) return null;
         await extensionApi('binding', { accountId: ping.accountId, confirmRebind: !!status.binding });
       }
       const hasExistingSummary = Boolean(saved || options?.hasExistingSummary);

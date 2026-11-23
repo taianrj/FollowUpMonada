@@ -1575,7 +1575,7 @@ export default function WhatsappSummaryClient({
                 </span>
               </label>
               <details className="chromeExtensionHint"><summary>Dados neste computador</summary><p>Conversas e transcrições ficam na extensão por até 30 dias da coleta. Áudios pendentes ficam por até 7 dias. Mantenha o Chrome e uma aba do Mônada abertos para processar; a retomada ocorre neste computador.</p><button type="button" className="btn btnSecondary" disabled={chromeFlow.busy} onClick={() => void chromeFlow.forget().catch(error => showToast(getErrorMessage(error), 'error'))}>Apagar conversas deste computador</button></details>
-              <span className="chromeExtensionHint">Imagens não são interpretadas neste modo. Canais/newsletters e mídias sem texto útil não entram no resumo.{localExtension && ' Teste local: novos resumos ficam apenas neste computador.'}</span>
+              <span className="chromeExtensionHint">Canais/newsletters e mídias sem texto útil não entram no resumo.{localExtension && ' Teste local: novos resumos ficam apenas neste computador.'}</span>
             </>}
             {!isChromeIntegration && <>
 

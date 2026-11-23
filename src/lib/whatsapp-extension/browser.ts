@@ -78,7 +78,7 @@ export async function previewConversations(
   if (!ping.accountId) throw new Error(ping.instruction || 'Abra o WhatsApp Web e conecte sua conta.');
   const { binding } = await call<ExtensionStatus>('status');
   if (binding?.accountId !== ping.accountId) {
-    const approved = await confirm(binding ? 'A conta do WhatsApp mudou' : 'Vincular WhatsApp ao Mônada?', `Vincular a conta ${ping.accountId.split('@')[0]} ao seu usuário? Esta consulta lê os textos localmente, sem gerar resumo ou transcrever áudios. Ao usar Gerar Resumo, as conversas serão enviadas ao Mônada e aos provedores de IA para resumo e transcrição quando habilitada. Imagens não serão analisadas. O histórico de outras contas será preservado separadamente.`);
+    const approved = await confirm(binding ? 'A conta do WhatsApp mudou' : 'Vincular WhatsApp ao Mônada?', `Vincular a conta ${ping.accountId.split('@')[0]} ao seu usuário? Esta consulta lê os textos localmente, sem gerar resumo ou transcrever áudios. Ao usar Gerar Resumo, as conversas serão enviadas ao Mônada e aos provedores de IA para resumo e transcrição quando habilitada. O histórico de outras contas será preservado separadamente.`);
     if (!approved) return [];
     await call('binding', { accountId: ping.accountId, confirmRebind: !!binding });
   }
